@@ -208,6 +208,12 @@ abstract class VirtualNode(
         }
     }
 
+    fun addVirtualNetworkInterface(networkInterface: VirtualNetworkInterface){
+        _virtualNetworkInterfaces.update { it->
+            it + networkInterface
+        }
+    }
+
     override fun nextMmcpMessageId() = mmcpMessageIdAtomic.incrementAndGet()
 
 

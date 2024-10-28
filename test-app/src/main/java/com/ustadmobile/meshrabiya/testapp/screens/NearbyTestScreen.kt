@@ -10,14 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -30,13 +28,50 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSavedStateRegistryOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ustadmobile.meshrabiya.testapp.ViewModelFactory
+import com.ustadmobile.meshrabiya.testapp.appstate.AppUiState
+import com.ustadmobile.meshrabiya.testapp.viewmodel.NearbyTestUiState
 import com.ustadmobile.meshrabiya.testapp.viewmodel.NearbyTestViewModel
+import org.kodein.di.compose.localDI
 
 @Composable
-fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
-    // Use single uiState instead of multiple state collections
+fun NearbyTestRoute(
+    viewModel: NearbyTestViewModel = viewModel(
+        factory = ViewModelFactory(
+            di = localDI(),
+            owner = LocalSavedStateRegistryOwner.current,
+            vmFactory = {
+                NearbyTestViewModel(it)
+            },
+            defaultArgs = null,
+        )
+    ),
+    onSetAppUiState: (AppUiState) -> Unit,
+) {
     val uiState by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(uiState.appUiState) {
+        onSetAppUiState(uiState.appUiState)
+    }
+
+    NearbyTestScreen(
+        uiState = uiState,
+        onSendMessage = viewModel::sendMessage,
+        onStartNetwork = viewModel::startNetwork,
+        onStopNetwork = viewModel::stopNetwork
+    )
+}
+
+@Composable
+fun NearbyTestScreen(
+    uiState: NearbyTestUiState,
+    onSendMessage: (String) -> Unit,
+    onStartNetwork: () -> Unit,
+    onStopNetwork: () -> Unit
+) {
     var messageText by remember { mutableStateOf("") }
     val logScrollState = rememberLazyListState()
 
@@ -47,7 +82,7 @@ fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
     ) {
         Button(
             onClick = {
-                if (uiState.isNetworkRunning) viewModel.stopNetwork() else viewModel.startNetwork()
+                if (uiState.isNetworkRunning) onStopNetwork() else onStartNetwork()
             },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(
@@ -59,13 +94,31 @@ fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Discovered Nodes
         Text(
-            "Endpoints: ${uiState.endpoints.joinToString(", ") { it.endpointId }}",
-            style = MaterialTheme.typography.titleMedium
+            text = "Discovered Nodes: ${
+                uiState.discoveredEndpoints.joinToString(", ") {
+                    it.ipAddress?.hostAddress ?: "Unknown IP"
+                }
+            }",
+            style = MaterialTheme.typography.bodyLarge
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Connected Nodes
+        Text(
+            text = "Connected Nodes: ${
+                uiState.connectedEndpoints.joinToString(", ") {
+                    it.ipAddress?.hostAddress ?: "Unknown IP"
+                }
+            }",
+            style = MaterialTheme.typography.bodyLarge
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Messages section
         Text("Messages:", style = MaterialTheme.typography.titleMedium)
         LazyColumn(
             modifier = Modifier
@@ -76,31 +129,25 @@ fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
             contentPadding = PaddingValues(bottom = 8.dp)
         ) {
             items(uiState.messages) { message ->
-                Card(
-                    modifier = Modifier
-                        .wrapContentWidth()
-                        .padding(vertical = 4.dp)
-                        .align(Alignment.Start),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(
-                            text = "Sender: ${message.sender}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = message.message,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(
+                        text = "Sender: ${message.sender}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = message.message,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Divider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // Message input
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -109,13 +156,15 @@ fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
                 value = messageText,
                 onValueChange = { messageText = it },
                 label = { Text("Message") },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f)
             )
+
             Spacer(modifier = Modifier.width(8.dp))
+
             Button(
                 onClick = {
                     if (messageText.isNotBlank()) {
-                        viewModel.sendMessage(messageText)
+                        onSendMessage(messageText)  // Use the passed function
                         messageText = ""
                     }
                 },
@@ -128,8 +177,8 @@ fun NearbyTestScreen(viewModel: NearbyTestViewModel) {
             }
         }
 
+        // Logs section
         Spacer(modifier = Modifier.height(16.dp))
-
         Text("Logs:", style = MaterialTheme.typography.titleMedium)
         LazyColumn(
             state = logScrollState,

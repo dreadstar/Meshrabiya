@@ -42,6 +42,7 @@ import com.ustadmobile.meshrabiya.testapp.appstate.AppUiState
 import com.ustadmobile.meshrabiya.testapp.screens.InfoScreen
 import com.ustadmobile.meshrabiya.testapp.screens.LocalVirtualNodeScreen
 import com.ustadmobile.meshrabiya.testapp.screens.LogListScreen
+import com.ustadmobile.meshrabiya.testapp.screens.NearbyTestRoute
 import com.ustadmobile.meshrabiya.testapp.screens.NearbyTestScreen
 import com.ustadmobile.meshrabiya.testapp.screens.NeighborNodeListScreen
 import com.ustadmobile.meshrabiya.testapp.screens.OpenSourceLicensesScreen
@@ -276,9 +277,8 @@ fun AppNavHost(
         }
 
         composable("chat") {
-            val viewModel: NearbyTestViewModel = viewModel()
-            NearbyTestScreen(
-                viewModel = viewModel
+            NearbyTestRoute(
+                onSetAppUiState = onSetAppUiState
             )
         }
 

@@ -1,14 +1,15 @@
 package com.ustadmobile.meshrabiya.testapp.viewmodel
 
-import android.app.Application
 import android.util.Log
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.meshrabiya.lib_nearby.nearby.NearbyVirtualNetwork
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.testapp.appstate.AppUiState
+import com.ustadmobile.meshrabiya.testapp.appstate.FabState
 import com.ustadmobile.meshrabiya.testapp.server.ChatMessage
 import com.ustadmobile.meshrabiya.testapp.server.ChatServer
-import com.ustadmobile.meshrabiya.testapp.server.MeshrabiyaDatagramSocket
+import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -18,18 +19,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.kodein.di.DI
+import org.kodein.di.instance
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import kotlin.random.Random
 
-
 class NearbyTestViewModel(
-    application: Application
-) : AndroidViewModel(application) {
-
+    di: DI
+) : ViewModel() {
     private val _uiState = MutableStateFlow(NearbyTestUiState())
     val uiState: StateFlow<NearbyTestUiState> = _uiState.asStateFlow()
 
+    private val virtualNode: AndroidVirtualNode by di.instance()
     private var nearbyNetwork: NearbyVirtualNetwork? = null
     private var chatServer: ChatServer? = null
     private var isNetworkInitialized = false
@@ -54,21 +56,23 @@ class NearbyTestViewModel(
 
     init {
         initializeNearbyNetwork()
+        updateAppUiState()
     }
 
     private fun initializeNearbyNetwork() {
         try {
-            val virtualIpAddress = "$IP_PREFIX${Random.nextInt(IP_START, IP_END)}.${Random.nextInt(IP_START, IP_END)}"
-
             nearbyNetwork = NearbyVirtualNetwork(
-                context = getApplication(),
+                context = virtualNode.appContext,
                 name = "Device-${Random.nextInt(DEVICE_NAME_SUFFIX_LIMIT)}",
                 serviceId = NETWORK_SERVICE_ID,
-                virtualIpAddress = ipToInt(virtualIpAddress),
+                virtualIpAddress = virtualNode.addressAsInt,
                 broadcastAddress = ipToInt(BROADCAST_IP_ADDRESS),
                 logger = logger
             ) { packet ->
                 handleIncomingPacket(packet)
+            }
+            nearbyNetwork?.let { nearby ->
+                virtualNode.addVirtualNetworkInterface(nearby)
             }
 
             chatServer = nearbyNetwork?.let { network ->
@@ -77,7 +81,7 @@ class NearbyTestViewModel(
                 }
             }
 
-            logger(Log.INFO, "Network initialized with IP: $virtualIpAddress")
+            logger(Log.INFO, "Network initialized with IP: ${virtualNode.address.hostAddress}")
         } catch (e: Exception) {
             logger(Log.ERROR, "Failed to initialize network", e)
         }
@@ -87,23 +91,26 @@ class NearbyTestViewModel(
         viewModelScope.launch {
             try {
                 nearbyNetwork?.endpointStatusFlow?.collect { endpointMap ->
+                    // Get discovered endpoints
+                    val discoveredEndpoints = endpointMap.values
+                        .distinctBy { it.ipAddress?.hostAddress }
+                        .filter { it.ipAddress != null }
+
+                    // Get connected endpoints
                     val connectedEndpoints = endpointMap.values
                         .filter { it.status == NearbyVirtualNetwork.EndpointStatus.CONNECTED }
-                        .distinctBy { it.endpointId }
+                        .distinctBy { it.ipAddress?.hostAddress }
 
-                    _uiState.update { it.copy(endpoints = connectedEndpoints) }
-
-                    logger(
-                        Log.INFO,
-                        "Connected endpoints: ${connectedEndpoints.joinToString { "${it.endpointId}: ${it.ipAddress?.hostAddress}" }}"
-                    )
+                    _uiState.update { it.copy(
+                        discoveredEndpoints = discoveredEndpoints,
+                        connectedEndpoints = connectedEndpoints
+                    ) }
                 }
             } catch (e: Exception) {
                 logger(Log.ERROR, "Error observing endpoints", e)
             }
         }
     }
-
     private fun observeChatMessages(server: ChatServer) {
         viewModelScope.launch {
             try {
@@ -167,6 +174,20 @@ class NearbyTestViewModel(
         }
     }
 
+    // Add this function to update AppUiState
+    private fun updateAppUiState() {
+        _uiState.update { prev ->
+            prev.copy(
+                appUiState = AppUiState(
+                    title = "Nearby Network",
+                    fabState = FabState(
+                        visible = false
+                    )
+                )
+            )
+        }
+    }
+
     fun stopNetwork() {
         if (!isNetworkInitialized) {
             logger(Log.INFO, "Network is not running")
@@ -178,6 +199,7 @@ class NearbyTestViewModel(
                 chatServer?.close()
                 nearbyNetwork?.close()
                 resetState()
+                updateAppUiState()  // Make sure AppUiState is maintained
                 logger(Log.INFO, "Network stopped successfully")
             } catch (e: Exception) {
                 logger(Log.ERROR, "Failed to stop network", e)
@@ -186,7 +208,11 @@ class NearbyTestViewModel(
     }
 
     private fun resetState() {
-        _uiState.update { NearbyTestUiState() }
+        _uiState.update { prev ->
+            NearbyTestUiState().copy(
+                appUiState = prev.appUiState  // Keep the AppUiState
+            )
+        }
         isNetworkInitialized = false
     }
 
@@ -234,15 +260,14 @@ class NearbyTestViewModel(
         private const val NETWORK_SERVICE_ID = "com.ustadmobile.meshrabiya.test"
         private const val DEVICE_NAME_SUFFIX_LIMIT = 1000
         private const val RETRY_DELAY = 5000L
-        private const val IP_PREFIX = "169.254."
-        private const val IP_START = 1
-        private const val IP_END = 255
     }
 }
 
 data class NearbyTestUiState(
+    val appUiState: AppUiState = AppUiState(),
     val isNetworkRunning: Boolean = false,
-    val endpoints: List<NearbyVirtualNetwork.EndpointInfo> = emptyList(),
+    val discoveredEndpoints: List<NearbyVirtualNetwork.EndpointInfo> = emptyList(),
+    val connectedEndpoints: List<NearbyVirtualNetwork.EndpointInfo> = emptyList(),
     val logs: List<String> = emptyList(),
     val messages: List<ChatMessage> = emptyList()
 )
