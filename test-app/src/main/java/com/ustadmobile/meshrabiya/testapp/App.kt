@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.asInetAddress
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.testapp.domain.AddNearbyNetworkUseCase
 import com.ustadmobile.meshrabiya.testapp.server.TestAppServer
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.vnet.randomApipaAddr
@@ -96,6 +97,14 @@ class App: Application(), DIAware {
                 json = instance(),
                 address = instance(tag = TAG_VIRTUAL_ADDRESS),
                 dataStore = applicationContext.dataStore
+            )
+        }
+
+        bind<AddNearbyNetworkUseCase>() with singleton {
+            AddNearbyNetworkUseCase(
+                virtualNode = instance(),
+                context = applicationContext,
+                logger = instance(),
             )
         }
 

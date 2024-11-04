@@ -1,10 +1,16 @@
 package com.ustadmobile.meshrabiya.testapp
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -28,6 +34,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,7 +45,9 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.testapp.appstate.AppUiState
+import com.ustadmobile.meshrabiya.testapp.domain.AddNearbyNetworkUseCase
 import com.ustadmobile.meshrabiya.testapp.screens.InfoScreen
 import com.ustadmobile.meshrabiya.testapp.screens.LocalVirtualNodeScreen
 import com.ustadmobile.meshrabiya.testapp.screens.LogListScreen
@@ -56,6 +65,7 @@ import org.kodein.di.DI
 import org.kodein.di.DIAware
 import org.kodein.di.android.closestDI
 import org.kodein.di.compose.withDI
+import org.kodein.di.direct
 import org.kodein.di.instance
 import java.net.URLEncoder
 
@@ -106,6 +116,33 @@ fun MeshrabiyaTestApp(
     di: DI
 ) = withDI(di) {
     val navController: NavHostController = rememberNavController()
+    val logger: MNetLogger = di.direct.instance()
+
+    val permissionRequest = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantResult ->
+        if(grantResult.all { it.value }) {
+            //permissions were accepted
+            logger(Log.WARN, "Meshrabiya: Permissions granted")
+            val addNearbyUseCase: AddNearbyNetworkUseCase = di.direct.instance()
+            addNearbyUseCase()
+        }else {
+            logger(Log.WARN, "Meshrabiya: Permissions not granted")
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        logger(Log.INFO, "Launching permission request")
+        permissionRequest.launch(
+            arrayOf(
+                NEARBY_WIFI_PERMISSION_NAME,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+            )
+        )
+    }
+
     var appUiState: AppUiState by remember {
         mutableStateOf(AppUiState())
     }

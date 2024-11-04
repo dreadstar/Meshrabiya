@@ -61,6 +61,10 @@ class NearbyTestViewModel(
 
     private fun initializeNearbyNetwork() {
         try {
+            /* Disabled by Mike 4/Nov/24
+            The nearby network should not be initialized by a viewmodel. This leads to a network
+            being started/created.
+
             nearbyNetwork = NearbyVirtualNetwork(
                 context = virtualNode.appContext,
                 name = "Device-${Random.nextInt(DEVICE_NAME_SUFFIX_LIMIT)}",
@@ -82,6 +86,7 @@ class NearbyTestViewModel(
             }
 
             logger(Log.INFO, "Network initialized with IP: ${virtualNode.address.hostAddress}")
+             */
         } catch (e: Exception) {
             logger(Log.ERROR, "Failed to initialize network", e)
         }
@@ -145,6 +150,8 @@ class NearbyTestViewModel(
     }
 
     fun startNetwork() {
+        /*
+        Disabled by Mike 4/Nov/24. As above, virtual network should not be initialized in a viewmodel
         if (isNetworkInitialized) {
             logger(Log.INFO, "Network is already running")
             return
@@ -164,6 +171,8 @@ class NearbyTestViewModel(
                 retryStartNetwork()
             }
         }
+
+         */
     }
 
     private fun retryStartNetwork() {
@@ -255,11 +264,11 @@ class NearbyTestViewModel(
     }
 
     companion object {
-        private const val TAG_NEARBY_TEST = "NearbyTestViewModel"
-        private const val BROADCAST_IP_ADDRESS = "255.255.255.255"
-        private const val NETWORK_SERVICE_ID = "com.ustadmobile.meshrabiya.test"
-        private const val DEVICE_NAME_SUFFIX_LIMIT = 1000
-        private const val RETRY_DELAY = 5000L
+        const val TAG_NEARBY_TEST = "NearbyTestViewModel"
+        const val BROADCAST_IP_ADDRESS = "255.255.255.255"
+        const val NETWORK_SERVICE_ID = "com.ustadmobile.meshrabiya.test"
+        const val DEVICE_NAME_SUFFIX_LIMIT = 1000
+        const val RETRY_DELAY = 5000L
     }
 }
 
