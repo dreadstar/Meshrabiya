@@ -27,6 +27,8 @@ class AddNearbyNetworkUseCase(
                 logger = logger,
             ) { virtualPacket ->
                 virtualNode.route(virtualPacket)
+            }.also {
+                it.start()
             }
         )
     }

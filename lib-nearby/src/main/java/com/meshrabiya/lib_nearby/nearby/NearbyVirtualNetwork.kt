@@ -167,9 +167,13 @@ class NearbyVirtualNetwork(
     }
 
     init {
-        observeEndpointStatusFlow()
+
+    }
+
+    fun start() {
         startAdvertising()
         startDiscovery()
+        observeEndpointStatusFlow()
     }
 
     override fun close() {
