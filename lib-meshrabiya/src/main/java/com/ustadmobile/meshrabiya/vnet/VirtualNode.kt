@@ -8,8 +8,6 @@ import com.ustadmobile.meshrabiya.ext.asInetAddress
 import com.ustadmobile.meshrabiya.ext.prefixMatches
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
-import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotRequest
-import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotResponse
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
@@ -18,7 +16,6 @@ import com.ustadmobile.meshrabiya.mmcp.MmcpPong
 import com.ustadmobile.meshrabiya.portforward.ForwardBindPoint
 import com.ustadmobile.meshrabiya.portforward.UdpForwardRule
 import com.ustadmobile.meshrabiya.util.findFreePort
-import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
 import com.ustadmobile.meshrabiya.vnet.datagram.VirtualDatagramSocket2
 import com.ustadmobile.meshrabiya.vnet.datagram.VirtualDatagramSocketImpl
@@ -47,7 +44,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.Closeable
-import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -347,7 +343,7 @@ abstract class VirtualNode(
     private fun onIncomingMmcpMessage(
         virtualPacket: VirtualPacket,
         receivedFromInterface: VirtualNetworkInterface
-    ): Boolean {
+    ) {
         //This is an Mmcp message
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
@@ -359,12 +355,16 @@ abstract class VirtualNode(
                 }
             )
 
-            val isToThisNode = virtualPacket.header.toAddr == addressAsInt
+            when (mmcpMessage) {
+                is MmcpOriginatorMessage -> {
+                    originatingMessageManager.onReceiveOriginatingMessage(
+                        mmcpMessage = mmcpMessage,
+                        virtualPacket = virtualPacket,
+                        receivedFromInterface = receivedFromInterface,
+                    )
+                }
 
-            var shouldRoute = true
-
-            when {
-                mmcpMessage is MmcpPing && isToThisNode -> {
+                is MmcpPing -> {
                     logger(Log.VERBOSE,
                         message = {
                             "$logPrefix Received ping(id=${mmcpMessage.messageId}) from ${from.addressToDotNotation()}"
@@ -387,7 +387,7 @@ abstract class VirtualNode(
                     route(replyPacket)
                 }
 
-                mmcpMessage is MmcpPong && isToThisNode -> {
+                is MmcpPong -> {
                     logger(
                         Log.VERBOSE,
                         { "$logPrefix Received pong(id=${mmcpMessage.messageId})}" })
@@ -397,45 +397,9 @@ abstract class VirtualNode(
                     }
                 }
 
-                mmcpMessage is MmcpHotspotRequest && isToThisNode -> {
-                    logger(
-                        Log.INFO,
-                        "$logPrefix Received hotspotrequest (id=${mmcpMessage.messageId})",
-                        null
-                    )
-                    coroutineScope.launch {
-                        val hotspotResult = meshrabiyaWifiManager.requestHotspot(
-                            mmcpMessage.messageId, mmcpMessage.hotspotRequest
-                        )
-
-                        if (from != addressAsInt) {
-                            val replyPacket = MmcpHotspotResponse(
-                                messageId = mmcpMessage.messageId,
-                                result = hotspotResult
-                            ).toVirtualPacket(
-                                toAddr = from,
-                                fromAddr = addressAsInt
-                            )
-                            logger(
-                                Log.INFO,
-                                "$logPrefix sending hotspotresponse to ${from.addressToDotNotation()}",
-                                null
-                            )
-                            route(replyPacket)
-                        }
-                    }
-                }
-
-//                mmcpMessage is MmcpOriginatorMessage -> {
-//                    shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
-//                        mmcpMessage = mmcpMessage,
-//                        virtualPacket = virtualPacket,
-//                        receivedFromInterface = receivedFromInterface,
-//                    )
-//                }
-
                 else -> {
                     // do nothing
+                    logger(Log.WARN, "$logPrefix Received unknown MMCP message")
                 }
             }
 
@@ -445,13 +409,9 @@ abstract class VirtualNode(
                     virtualPacket.header
                 )
             )
-
-            return shouldRoute
         } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+            logger(Log.ERROR, "Exception handling MMCP message", e)
         }
-
     }
 
 
@@ -460,8 +420,6 @@ abstract class VirtualNode(
         receivedFromInterface: VirtualNetworkInterface?
     ) {
         try {
-            val fromLastHop = packet.header.lastHopAddr
-
             if (packet.header.hopCount >= config.maxHops) {
                 logger(
                     Log.DEBUG,
@@ -472,26 +430,11 @@ abstract class VirtualNode(
                 return
             }
 
-            val localAddresses = _virtualNetworkInterfaces.value.map { it.virtualAddress.requireAddressAsInt() }
-            when {
-                /*
-                 * Handle originator messages - they will be rebroadcast
-                 */
-                packet.header.toPort == MmcpMessage.PORT_ORIGINATOR && receivedFromInterface != null -> {
-                    val originatorMessage = MmcpMessage.fromVirtualPacket(packet)
-                    if(originatorMessage is MmcpOriginatorMessage) {
-                        originatingMessageManager.onReceiveOriginatingMessage(
-                            mmcpMessage = originatorMessage,
-                            virtualPacket = packet,
-                            receivedFromInterface = receivedFromInterface
-                        )
-                    }else {
-                        logger(Log.WARN, "Drop Mmcp Message - was to port 1 but not an " +
-                                "originator message"
-                        )
-                    }
-                }
+            val localAddresses = _virtualNetworkInterfaces.value.map {
+                it.virtualAddress.requireAddressAsInt()
+            }
 
+            when {
                 /*
                  * Packet is destined for an interface on this node
                  */
@@ -518,7 +461,6 @@ abstract class VirtualNode(
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
                     if (originatorMessage != null) {
-
                         originatorMessage.receivedFromInterface?.send(
                             nextHopAddress = packet.header.toAddr.asInetAddress(),
                             virtualPacket = packet
@@ -531,56 +473,6 @@ abstract class VirtualNode(
                     }
                 }
             }
-
-//            if (packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt &&
-//                receivedFromInterface != null
-//            ) {
-//                //this is an MMCP message
-//                if (!onIncomingMmcpMessage(packet, receivedFromInterface)) {
-//                    //It was determined that this packet should go no further by MMCP processing
-//                    logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr.addressToDotNotation()}", null)
-//                }
-//            }
-//
-//            if (packet.header.toAddr == addressAsInt) {
-//                //this is an incoming packet - give to the destination virtual socket/forwarding
-//                val listeningSocket = activeSockets[packet.header.toPort]
-//                if (listeningSocket != null) {
-//                    listeningSocket.onIncomingPacket(packet)
-//                } else {
-//                    logger(
-//                        Log.DEBUG,
-//                        "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}"
-//                    )
-//                }
-//            } else {
-//                //packet needs to be sent to next hop / destination
-//                val toAddr = packet.header.toAddr
-//
-//                packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
-//                if (toAddr == ADDR_BROADCAST) {
-//                    originatingMessageManager.neighbors().filter {
-//                        it.first != fromLastHop && it.first != packet.header.fromAddr
-//                    }.forEach {
-//                        logger(Log.VERBOSE,
-//                            message = {
-//                                "$logPrefix broadcast packet " +
-//                                        "from=${packet.header.fromAddr.addressToDotNotation()} " +
-//                                        "lasthop=${fromLastHop.addressToDotNotation()} " +
-//                                        "send to ${it.first.addressToDotNotation()}"
-//                            }
-//                        )
-//
-//                        it.second.receivedFromInterface?.send(
-//                            nextHopAddress = it.,
-//                            virtualPacket = packet,
-//                        )
-//                    }
-//
-//                } else {
-//
-//                }
-//            }
         } catch (e: Exception) {
             logger(
                 Log.ERROR,

@@ -26,14 +26,12 @@ sealed class MmcpMessage(
 
         System.arraycopy(packetPayload, 0, packetData, VirtualPacketHeader.HEADER_SIZE, packetPayload.size)
 
-        val portNum = if(what == WHAT_ORIGINATOR) { PORT_ORIGINATOR } else { 0 }
-
         return VirtualPacket.fromHeaderAndPayloadData(
             header = VirtualPacketHeader(
                 toAddr = toAddr,
-                toPort = portNum,
+                toPort = 0,
                 fromAddr = fromAddr,
-                fromPort = portNum,
+                fromPort = 0,
                 lastHopAddr = lastHopAddr,
                 hopCount =  hopCount,
                 maxHops = 0,
@@ -78,8 +76,6 @@ sealed class MmcpMessage(
         const val WHAT_ORIGINATOR = 7.toByte()
 
         const val MMCP_HEADER_LEN = 5 //1 byte what, 4 bytes message id
-
-        const val PORT_ORIGINATOR = 1
 
         fun fromVirtualPacket(
             packet: VirtualPacket

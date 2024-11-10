@@ -8,7 +8,6 @@ import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
-import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import com.ustadmobile.meshrabiya.vnet.netinterface.VirtualNetworkInterface
 import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketNextHop
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
@@ -26,6 +25,7 @@ import java.net.NoRouteToHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 
 /**
@@ -93,6 +93,7 @@ class OriginatingMessageManager(
         networkInterfaces.forEach { networkInterface ->
             //TODO: This needs to consider telling each neighbor about our other IP addresses
             // so this works properly when there are multiple 'interfaces'
+
             networkInterface.knownNeighbors.forEach { neighborIpAddr ->
                 networkInterface.send(
                     virtualPacket = originatingMessage.toVirtualPacket(
@@ -173,9 +174,9 @@ class OriginatingMessageManager(
         _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
     }
 
-//    private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleWithFixedDelay(
-//        sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
-//    )
+    private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleWithFixedDelay(
+        sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
+    )
 //
 //    private val pingNeighborsFuture = scheduledExecutorService.scheduleWithFixedDelay(
 //        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
@@ -377,7 +378,7 @@ class OriginatingMessageManager(
     }
 
     fun close() {
-//        sendOriginatorMessagesFuture.cancel(true)
+        sendOriginatorMessagesFuture.cancel(true)
 //        pingNeighborsFuture.cancel(true)
 //        checkLostNodesFuture.cancel(true)
         scope.cancel("$logPrefix closed")

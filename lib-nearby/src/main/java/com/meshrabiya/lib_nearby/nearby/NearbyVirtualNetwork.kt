@@ -25,6 +25,7 @@ import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import com.ustadmobile.meshrabiya.vnet.VirtualRouter
 import com.ustadmobile.meshrabiya.vnet.netinterface.VSocket
 import com.ustadmobile.meshrabiya.vnet.netinterface.VirtualNetworkInterface
 import kotlinx.coroutines.CoroutineScope
@@ -51,7 +52,7 @@ class NearbyVirtualNetwork(
     private val broadcastAddress: Int,
     private val strategy: Strategy = Strategy.P2P_CLUSTER,
     val logger: MNetLogger,
-    private val onPacketReceived: (VirtualPacket) -> Unit
+    private val router: VirtualRouter,
 ) : VirtualNetworkInterface {
 
     override val virtualAddress: InetAddress
@@ -269,10 +270,9 @@ class NearbyVirtualNetwork(
             }.forEach { (endpointId, _) ->
                 sendPacketToEndpoint(endpointId, virtualPacket)
             }
-        }
-        else {
+        } else {
             val matchingEndpoint = connectedEndpoints.entries.find { (_, info) ->
-                info.ipAddress.address?.contentEquals(nextHopAddress.address) == true
+                info.ipAddress.address.contentEquals(nextHopAddress.address)
             }
 
             if (matchingEndpoint != null) {
@@ -294,8 +294,12 @@ class NearbyVirtualNetwork(
     private fun sendPacketToEndpoint(endpointId: String, virtualPacket: VirtualPacket) {
         val payload = Payload.fromBytes(virtualPacket.data)
         connectionsClient.sendPayload(endpointId, payload)
-            .addOnSuccessListener { log(LogLevel.INFO, "Virtual packet sent to $endpointId") }
-            .addOnFailureListener { e -> log(LogLevel.ERROR, "Failed to send virtual packet to $endpointId", e) }
+            .addOnSuccessListener {
+                log(LogLevel.INFO, "Virtual packet sent to $endpointId")
+            }
+            .addOnFailureListener { e ->
+                log(LogLevel.ERROR, "Failed to send virtual packet to $endpointId", e)
+            }
     }
 
     override fun connectSocket(nextHopAddress: InetAddress, destAddress: InetAddress, destPort: Int): VSocket {
@@ -494,9 +498,9 @@ class NearbyVirtualNetwork(
         }
 
         try {
-            onPacketReceived(virtualPacket)
+            router.route(virtualPacket, this)
         } catch (e: Exception) {
-            log(LogLevel.ERROR, "Error processing VirtualPacket from $endpointId", e)
+            log(LogLevel.ERROR, "Error routing VirtualPacket from $endpointId", e)
         }
     }
 

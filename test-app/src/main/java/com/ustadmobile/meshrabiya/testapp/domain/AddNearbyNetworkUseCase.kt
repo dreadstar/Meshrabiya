@@ -35,9 +35,8 @@ class AddNearbyNetworkUseCase(
                     virtualIpAddress = virtualNode.addressAsInt,
                     broadcastAddress = InetAddress.getByName("255.255.255.255").requireAddressAsInt(),
                     logger = logger,
-                ) { virtualPacket ->
-                    virtualNode.route(virtualPacket)
-                }.also {
+                    router = virtualNode,
+                ).also {
                     it.start()
                 }
             )
