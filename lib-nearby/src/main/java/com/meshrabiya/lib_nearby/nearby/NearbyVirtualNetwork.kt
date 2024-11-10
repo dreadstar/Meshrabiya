@@ -17,9 +17,10 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
+import com.meshrabiya.lib_nearby.nearby.ext.toPrettyString
 import com.ustadmobile.meshrabiya.ext.addressToByteArray
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
-import com.ustadmobile.meshrabiya.ext.asInetAddress
+import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
@@ -83,49 +84,82 @@ class NearbyVirtualNetwork(
     private val _endpointStatusFlow = MutableStateFlow<Map<String, EndpointInfo>>(mutableMapOf())
     val endpointStatusFlow = _endpointStatusFlow.asStateFlow()
 
+    private fun ConnectionInfo.requireAddress(): InetAddress {
+        return InetAddress.getByName(endpointName.substringAfter("|"))
+    }
+
     /**
-     * Connection lifecycle manager callback.
-     * Handles the complete connection lifecycle:
-     * - Connection initiation
-     * - Connection establishment
-     * - Connection termination
-     * Updates endpoint status flow to reflect current connection states.
+     * If two endpoints discover each other and then attempt to connect at the same time, then this
+     * will cause an error. This will happen if both nodes are looking to form additional outgoing
+     * connections.
+     *
+     * To avoid this, we use a system where nodes will yield (wait for 10 seconds by default) to a
+     * higher virtual IP address to avoid such a clash.
+     */
+    private val InetAddress.shouldYieldWhenConnecting: Boolean
+        get() = requireAddressAsInt() > virtualIpAddress
+
+    /**
+     *
      */
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             log(LogLevel.INFO, "onConnectionInitiated: $endpointId / incoming=${connectionInfo.isIncomingConnection}")
             assertNotClosed()
 
+            _endpointStatusFlow.update { prev ->
+                prev.toMutableMap().also {
+                    it.compute(endpointId) { _, _existingInfo ->
+                        _existingInfo?.copy(
+                            status = EndpointStatus.CONNECTING,
+                            isOutgoing = !connectionInfo.isIncomingConnection,
+                        ) ?: EndpointInfo(
+                            endpointId = endpointId,
+                            status = EndpointStatus.CONNECTING,
+                            ipAddress = connectionInfo.requireAddress(),
+                            isOutgoing = !connectionInfo.isIncomingConnection,
+                        )
+                    }
+                }
+            }
 
             log(LogLevel.INFO, "onConnectionInitiated: Accepting connection from $endpointId")
             connectionsClient.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+            log(LogLevel.INFO, "onConnectionResult for $endpointId status=${result.status.toPrettyString()}")
             assertNotClosed()
-
-            log(LogLevel.INFO, "onConnectionResult for $endpointId: success=${result.status.isSuccess} result=$result")
 
             //As per https://developers.google.com/nearby/connections/android/manage-connections
             when(result.status.statusCode) {
                 ConnectionsStatusCodes.STATUS_OK -> {
                     log(LogLevel.INFO, "onConnectionResult: Success! Connected with $endpointId")
-                    updateEndpointStatus(endpointId, EndpointStatus.CONNECTED)
                 }
 
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
                     log(LogLevel.ERROR, "onConnectionResult: Rejected by other side: $endpointId")
-                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
                 }
 
                 ConnectionsStatusCodes.STATUS_ERROR -> {
                     log(LogLevel.ERROR, "onConnectionResult: Error: $endpointId: code ${result.status.statusCode}")
-                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
                 }
 
                 else -> {
                     log(LogLevel.ERROR, "onConnectionResult: Unknown status: $endpointId: code ${result.status.statusCode}")
-                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+                }
+            }
+
+            _endpointStatusFlow.update { prev ->
+                prev.toMutableMap().also { map ->
+                    map.computeIfPresent(endpointId) { _, endpointInfo ->
+                        endpointInfo.copy(
+                            status = if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK)
+                                EndpointStatus.CONNECTED
+                            else
+                                EndpointStatus.DISCONNECTED
+                        )
+                    }
                 }
             }
         }
@@ -133,7 +167,13 @@ class NearbyVirtualNetwork(
         override fun onDisconnected(endpointId: String) {
             assertNotClosed()
             log(LogLevel.INFO, "onDisconnected: Disconnected from endpoint: $endpointId")
-            updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+            _endpointStatusFlow.update { prev ->
+                prev.toMutableMap().also { map ->
+                    map.computeIfPresent(endpointId) { _, endpointInfo ->
+                        endpointInfo.copy(status = EndpointStatus.DISCONNECTED)
+                    }
+                }
+            }
         }
     }
 
@@ -341,9 +381,12 @@ class NearbyVirtualNetwork(
     }
 
     /**
-     * Monitors endpoint status changes and manages connections.
-     * - Tracks connected endpoint count
-     * - Initiates new connections when below desired threshold
+     * Observe endpoints and initiate connections to endpoints as required. This happens when:
+     *  a) We have less connections than desired
+     *  b) There are available endpoints to connect to
+     *
+     * Handling this as a flow ensures the process is initiated when new nodes are discovered or
+     * existing connections are lost, or any combination.
      */
     private fun observeEndpointStatusFlow() {
         scope.launch {
@@ -354,18 +397,29 @@ class NearbyVirtualNetwork(
 
                 // Only proceed if we need more connections
                 if (connectedEndpoints < desiredOutgoingConnections) {
-                    val disconnectedEndpoints = endpointMap.values.filter {
+                    val endpointsToConnectTo = endpointMap.values.filter {
                         it.status == EndpointStatus.DISCONNECTED
+                    }.take(desiredOutgoingConnections - connectedEndpoints)
+
+                    val endpointIdsToConnect = endpointsToConnectTo.map { it.endpointId }.toSet()
+
+                    //Update the status of each endpoint that we are going to try to connect to
+                    //so that when the flow updates there is no possibility of trying to connect
+                    //to the same endpoint again
+                    _endpointStatusFlow.update { prev ->
+                        prev.mapValues { entry ->
+                            if(entry.key in endpointIdsToConnect) {
+                                entry.value.copy(
+                                    status = EndpointStatus.CONNECTING
+                                )
+                            }else {
+                                entry.value
+                            }
+                        }
                     }
 
-                    disconnectedEndpoints.forEach { endpoint ->
-                        if (endpoint.status != EndpointStatus.CONNECTED &&
-                            endpoint.status != EndpointStatus.CONNECTING
-                        ) {
-                            delay(Random.nextLong(0, 10_000))
-                            log(LogLevel.INFO, "Requesting connection to: ${endpoint.endpointId}")
-                            requestConnection(endpoint.endpointId)
-                        }
+                    endpointsToConnectTo.forEach {
+                        launchConnectionRequest(it)
                     }
                 }
             }
@@ -373,47 +427,46 @@ class NearbyVirtualNetwork(
     }
 
     /**
-     * Initiates connection to a specific endpoint.
-     * Handles connection state management:
-     * - Prevents duplicate connection attempts
-     * - Updates endpoint status
-     * - Processes connection failures
+     * Connects to the given endpoint. Will yield as per the yield logic if required.
      *
-     * @param endpointId Target endpoint identifier
+     * @param endpointInfo Target endpoint identifier
      */
-    private fun requestConnection(endpointId: String) {
+    private fun launchConnectionRequest(endpointInfo: EndpointInfo) {
         assertNotClosed()
 
-        // Get current endpoint state
-        val currentEndpoint = _endpointStatusFlow.value[endpointId]
+        val endpointId = endpointInfo.endpointId
+        scope.launch {
+            if(endpointInfo.ipAddress.shouldYieldWhenConnecting) {
+                log(LogLevel.INFO, "launchConnectionRequest : waiting to yield for other node")
+                delay(YIELD_WAIT.toLong())
 
-        // Skip if already connected or connecting
-        if (currentEndpoint?.status == EndpointStatus.CONNECTED ||
-            currentEndpoint?.status == EndpointStatus.CONNECTING) {
-            log(LogLevel.INFO, "Skip connection request - endpoint $endpointId status: ${currentEndpoint.status}")
-            return
-        }
+                val statusAfterYield = _endpointStatusFlow.value[endpointId]
 
-        // Update status to CONNECTING
-        updateEndpointStatus(endpointId, EndpointStatus.CONNECTING)
-
-        connectionsClient.requestConnection(name, endpointId, connectionLifecycleCallback)
-            .addOnSuccessListener {
-                log(LogLevel.INFO, "Connection request sent to endpoint: $endpointId: success")
-            }
-            .addOnFailureListener { e ->
-                when ((e as? ApiException)?.statusCode) {
-                    8003 -> { // Already connected
-                        log(LogLevel.ERROR, "ERROR: FFS: Endpoint $endpointId is already connected")
-                        //Do not make any update to the status
-                        //updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
-                    }
-                    else -> {
-                        log(LogLevel.ERROR, "Failed to request connection to endpoint: $endpointId", e)
-                        updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
-                    }
+                val connectedAfterYield = statusAfterYield?.status == EndpointStatus.CONNECTED
+                log(LogLevel.INFO, "launchConnectionRequest: connected after yield = $connectedAfterYield")
+                if(connectedAfterYield) {
+                    return@launch
                 }
             }
+
+            connectionsClient.requestConnection(name, endpointId, connectionLifecycleCallback)
+                .addOnSuccessListener {
+                    log(LogLevel.INFO, "Connection request sent to endpoint: $endpointId: success")
+                }
+                .addOnFailureListener { e ->
+                    when ((e as? ApiException)?.statusCode) {
+                        8003 -> { // Already connected
+                            log(LogLevel.ERROR, "ERROR: Endpoint $endpointId is already connected")
+                            //Do not make any update to the status
+                            //updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+                        }
+                        else -> {
+                            log(LogLevel.ERROR, "Failed to request connection to endpoint: $endpointId", e)
+                            updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+                        }
+                    }
+                }
+        }
     }
 
     /**
@@ -438,33 +491,6 @@ class NearbyVirtualNetwork(
         } catch (e: Exception) {
             log(LogLevel.ERROR, "Failed to convert payload to VirtualPacket from endpoint: $endpointId", e)
             return
-        }
-
-        // Get sender's virtual IP (not broadcast address)
-        val fromAddr = virtualPacket.header.fromAddr.takeIf {
-            !it.addressToDotNotation().equals("255.255.255.255")
-        }
-
-        if (fromAddr != null) {
-            _endpointStatusFlow.update { currentMap ->
-                currentMap.toMutableMap().apply {
-                    val existingInfo = this[endpointId]
-                    this[endpointId] = existingInfo?.copy(
-                        ipAddress = fromAddr.asInetAddress(),
-                        status = existingInfo.status,
-                        isOutgoing = existingInfo.isOutgoing
-                    ) ?: EndpointInfo(
-                        endpointId = endpointId,
-                        status = EndpointStatus.CONNECTED,
-                        ipAddress = fromAddr.asInetAddress(),
-                        isOutgoing = false
-                    )
-                }
-            }
-
-            // Also update IP map
-            endpointIpMap[endpointId] = fromAddr.asInetAddress()
-            log(LogLevel.DEBUG, "Updated IP mapping for endpoint $endpointId to ${fromAddr.addressToDotNotation()}")
         }
 
         try {
@@ -549,5 +575,11 @@ class NearbyVirtualNetwork(
             log(LogLevel.ERROR, "assertNotClosed: Network is closed")
             throw IllegalStateException("Network is closed")
         }
+    }
+
+    companion object {
+
+        const val YIELD_WAIT = 10_000
+
     }
 }
