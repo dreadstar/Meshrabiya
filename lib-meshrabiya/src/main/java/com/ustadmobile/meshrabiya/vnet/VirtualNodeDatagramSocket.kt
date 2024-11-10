@@ -61,11 +61,11 @@ class VirtualNodeDatagramSocket(
                 socket.receive(rxPacket)
 
                 val rxVirtualPacket = VirtualPacket.fromDatagramPacket(rxPacket)
-                router.route(
-                    packet = rxVirtualPacket,
-                    datagramPacket = rxPacket,
-                    virtualNodeDatagramSocket = this,
-                )
+//                router.route(
+//                    packet = rxVirtualPacket,
+//                    datagramPacket = rxPacket,
+//                    virtualNodeDatagramSocket = this,
+//                )
             }catch(e: Exception) {
                 if(!socket.isClosed)
                     logger(Log.WARN, "$logPrefix : run : exception handling packet", e)

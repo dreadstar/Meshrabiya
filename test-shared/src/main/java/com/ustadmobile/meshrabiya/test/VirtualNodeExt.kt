@@ -7,13 +7,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 
+@Deprecated("Should be removed - we are not using addNeighbor at a node level anymore")
 fun VirtualNode.connectTo(other: VirtualNode, timeout: Long = 5000) {
-    addNewNeighborConnection(
-        address = InetAddress.getLoopbackAddress(),
-        port = other.localDatagramPort,
-        neighborNodeVirtualAddr = other.addressAsInt,
-        socket = this.datagramSocket
-    )
 
     //wait for connections to be ready
     runBlocking {

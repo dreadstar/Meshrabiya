@@ -55,12 +55,7 @@ class AndroidVirtualNode(
      * established call addNewNeighborConnection to initialize the exchange of originator messages.
      */
     private val newWifiConnectionListener = MeshrabiyaWifiManagerAndroid.OnNewWifiConnectionListener {
-        addNewNeighborConnection(
-            address = it.neighborInetAddress,
-            port = it.neighborPort,
-            neighborNodeVirtualAddr =  it.neighborVirtualAddress,
-            socket = it.socket,
-        )
+
     }
 
     override val meshrabiyaWifiManager: MeshrabiyaWifiManagerAndroid = MeshrabiyaWifiManagerAndroid(

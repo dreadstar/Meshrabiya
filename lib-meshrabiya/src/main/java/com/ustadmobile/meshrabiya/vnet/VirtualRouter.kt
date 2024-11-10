@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.vnet
 
 import com.ustadmobile.meshrabiya.vnet.datagram.VirtualDatagramSocketImpl
+import com.ustadmobile.meshrabiya.vnet.netinterface.VirtualNetworkInterface
 import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketNextHop
 import java.net.DatagramPacket
 import java.net.InetAddress
@@ -15,14 +16,15 @@ interface VirtualRouter {
     val networkPrefixLength: Int
 
     /**
-     * Route the given incoming packet.
+     * Route a given packet. This could be a newly created packet or a packet received by an
+     * interface
      *
-     * @param packet the packet received
+     * @param packet the packet to route
+     * @param receivedFromInterface
      */
     fun route(
         packet: VirtualPacket,
-        datagramPacket: DatagramPacket? = null,
-        virtualNodeDatagramSocket: VirtualNodeDatagramSocket? = null,
+        receivedFromInterface: VirtualNetworkInterface? = null,
     )
 
     /**

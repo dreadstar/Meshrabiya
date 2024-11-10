@@ -9,6 +9,7 @@ import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
 import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
@@ -48,11 +49,12 @@ class NearbyVirtualNetwork(
     private val virtualIpAddress: Int,
     private val broadcastAddress: Int,
     private val strategy: Strategy = Strategy.P2P_CLUSTER,
-    override val logger: MNetLogger,
+    val logger: MNetLogger,
     private val onPacketReceived: (VirtualPacket) -> Unit
 ) : VirtualNetworkInterface {
 
-    override val virtualAddress: InetAddress get() = InetAddress.getByAddress(virtualIpAddress.addressToByteArray())
+    override val virtualAddress: InetAddress
+        get() = InetAddress.getByAddress(virtualIpAddress.addressToByteArray())
 
     private val streamReplies = ConcurrentHashMap<Int, CompletableFuture<InputStream>>()
 
@@ -66,7 +68,7 @@ class NearbyVirtualNetwork(
     data class EndpointInfo(
         val endpointId: String,
         val status: EndpointStatus,
-        val ipAddress: InetAddress?,
+        val ipAddress: InetAddress,
         val isOutgoing: Boolean
     )
 
@@ -91,84 +93,55 @@ class NearbyVirtualNetwork(
      */
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
-            checkClosed()
+            log(LogLevel.INFO, "onConnectionInitiated: $endpointId / incoming=${connectionInfo.isIncomingConnection}")
+            assertNotClosed()
 
-            // Check current state first
-            val currentState = _endpointStatusFlow.value[endpointId]?.status
-            if (currentState == EndpointStatus.CONNECTED) {
-                log(LogLevel.INFO, "Already connected to endpoint: $endpointId")
-                return
-            }
 
-            val endpointIp = try {
-                val parts = connectionInfo.endpointName.split("|")
-                if (parts.size > 1) InetAddress.getByName(parts[1]) else null
-            } catch (e: Exception) {
-                log(LogLevel.ERROR, "Failed to parse IP from endpoint name", e)
-                null
-            }
-
-            log(LogLevel.INFO, "Connection initiated with endpoint: $endpointId (IP: ${endpointIp?.hostAddress})")
+            log(LogLevel.INFO, "onConnectionInitiated: Accepting connection from $endpointId")
             connectionsClient.acceptConnection(endpointId, payloadCallback)
-
-            _endpointStatusFlow.update { currentMap ->
-                currentMap.toMutableMap().apply {
-                    val existingInfo = this[endpointId]
-                    this[endpointId] = existingInfo?.copy(
-                        status = EndpointStatus.CONNECTING,
-                        ipAddress = endpointIp ?: existingInfo.ipAddress
-                    ) ?: EndpointInfo(
-                        endpointId = endpointId,
-                        status = EndpointStatus.CONNECTING,
-                        ipAddress = endpointIp,
-                        isOutgoing = false
-                    )
-                }
-            }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            checkClosed()
-            if (result.status.isSuccess) {
-                log(LogLevel.INFO, "Connection successful with endpoint: $endpointId")
-                _endpointStatusFlow.update { currentMap ->
-                    currentMap.toMutableMap().apply {
-                        val current = this[endpointId]
-                        if (current != null) {
-                            this[endpointId] = current.copy(
-                                status = EndpointStatus.CONNECTED,
-                                ipAddress = current.ipAddress  // Preserve IP if exists
-                            )
-                        }
-                    }
+            assertNotClosed()
+
+            log(LogLevel.INFO, "onConnectionResult for $endpointId: success=${result.status.isSuccess} result=$result")
+
+            //As per https://developers.google.com/nearby/connections/android/manage-connections
+            when(result.status.statusCode) {
+                ConnectionsStatusCodes.STATUS_OK -> {
+                    log(LogLevel.INFO, "onConnectionResult: Success! Connected with $endpointId")
+                    updateEndpointStatus(endpointId, EndpointStatus.CONNECTED)
                 }
-                // Send ping immediately after successful connection This will help establish IP mapping on both sides
-                sendMmcpPingPacket(endpointId)
-            } else {
-                log(LogLevel.ERROR, "Connection failed with endpoint: $endpointId. Status: ${result.status}")
-                _endpointStatusFlow.update { currentMap ->
-                    currentMap.toMutableMap().apply {
-                        remove(endpointId)
-                    }
+
+                ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
+                    log(LogLevel.ERROR, "onConnectionResult: Rejected by other side: $endpointId")
+                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+                }
+
+                ConnectionsStatusCodes.STATUS_ERROR -> {
+                    log(LogLevel.ERROR, "onConnectionResult: Error: $endpointId: code ${result.status.statusCode}")
+                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
+                }
+
+                else -> {
+                    log(LogLevel.ERROR, "onConnectionResult: Unknown status: $endpointId: code ${result.status.statusCode}")
+                    updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
                 }
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            checkClosed()
-            log(LogLevel.INFO, "Disconnected from endpoint: $endpointId")
-            _endpointStatusFlow.update { currentMap ->
-                currentMap.toMutableMap().apply {
-                    remove(endpointId)
-                }
-            }
-            log(LogLevel.DEBUG, "Current endpoints after disconnect: ${_endpointStatusFlow.value}")
+            assertNotClosed()
+            log(LogLevel.INFO, "onDisconnected: Disconnected from endpoint: $endpointId")
+            updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
         }
     }
 
-    init {
 
-    }
+    override val knownNeighbors: List<InetAddress>
+        get() = _endpointStatusFlow.value.filter {
+            it.value.status == EndpointStatus.CONNECTED
+        }.mapNotNull { it.value.ipAddress }
 
     fun start() {
         startAdvertising()
@@ -199,7 +172,7 @@ class NearbyVirtualNetwork(
      * Throws IllegalStateException if network is closed.
      */
     private fun startAdvertising() {
-        checkClosed()
+        assertNotClosed()
         // Send actual virtual IP address, not broadcast
         val deviceNameWithIP = "$name|${virtualAddress.hostAddress}"
         val advertisingOptions = AdvertisingOptions.Builder().setStrategy(strategy).build()
@@ -222,7 +195,7 @@ class NearbyVirtualNetwork(
      * Throws IllegalStateException if network is closed.
      */
     private fun startDiscovery() {
-        checkClosed()
+        assertNotClosed()
         val discoveryOptions = DiscoveryOptions.Builder().setStrategy(strategy).build()
         log(LogLevel.INFO, "request start discovery: serviceId = $serviceId")
         connectionsClient.startDiscovery(
@@ -243,19 +216,23 @@ class NearbyVirtualNetwork(
      * @throws IllegalArgumentException if target endpoint not found for unicast
      */
     override fun send(virtualPacket: VirtualPacket, nextHopAddress: InetAddress) {
-        val connectedEndpoints = _endpointStatusFlow.value.filter { it.value.status == EndpointStatus.CONNECTED }
+        val connectedEndpoints = _endpointStatusFlow.value.filter {
+            it.value.status == EndpointStatus.CONNECTED
+        }
 
         //If the nextHopAddress is the broadcast address, send to all known points.
         //Else, send only to the related endpoint; if not found, throw exception.
         if (nextHopAddress.address.contentEquals(InetAddress.getByAddress(broadcastAddress.addressToByteArray()).address)) {
             log(LogLevel.INFO, "Broadcasting packet to all connected endpoints")
-            connectedEndpoints.forEach { (endpointId, _) ->
+            connectedEndpoints.filter {
+                it.value.status == EndpointStatus.CONNECTED
+            }.forEach { (endpointId, _) ->
                 sendPacketToEndpoint(endpointId, virtualPacket)
             }
         }
         else {
             val matchingEndpoint = connectedEndpoints.entries.find { (_, info) ->
-                info.ipAddress?.address?.contentEquals(nextHopAddress.address) == true
+                info.ipAddress.address?.contentEquals(nextHopAddress.address) == true
             }
 
             if (matchingEndpoint != null) {
@@ -297,7 +274,7 @@ class NearbyVirtualNetwork(
      */
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            checkClosed()
+            assertNotClosed()
 
             // Check if already connected
             val currentState = _endpointStatusFlow.value[endpointId]?.status
@@ -308,26 +285,28 @@ class NearbyVirtualNetwork(
 
             val endpointIp = try {
                 val parts = info.endpointName.split("|")
-                if (parts.size > 1) InetAddress.getByName(parts[1]) else null
+                if (parts.size > 1) InetAddress.getByName(parts[1]) else return
             } catch (e: Exception) {
                 log(LogLevel.ERROR, "Failed to parse IP from endpoint name", e)
-                null
+                return
             }
 
-            log(LogLevel.DEBUG, "New endpoint found: $endpointId with Virtual IP: ${endpointIp?.hostAddress}")
+            log(LogLevel.DEBUG, "New endpoint found: $endpointId")
 
-            val updatedMap = ConcurrentHashMap<String, EndpointInfo>(_endpointStatusFlow.value)
-            updatedMap[endpointId] = EndpointInfo(
-                endpointId = endpointId,
-                status = EndpointStatus.DISCONNECTED,
-                ipAddress = endpointIp,
-                isOutgoing = false
-            )
-            _endpointStatusFlow.value = updatedMap
+            _endpointStatusFlow.update { prev ->
+                prev.toMutableMap().also {
+                    it[endpointId] = EndpointInfo(
+                        endpointId = endpointId,
+                        status = EndpointStatus.DISCONNECTED,
+                        ipAddress = endpointIp,
+                        isOutgoing = false
+                    )
+                }
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
-            checkClosed()
+            assertNotClosed()
             log(LogLevel.INFO, "Lost endpoint: $endpointId")
             _endpointStatusFlow.update { currentMap ->
                 currentMap.toMutableMap().apply {
@@ -347,7 +326,7 @@ class NearbyVirtualNetwork(
      */
     val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            checkClosed()
+            assertNotClosed()
             when (payload.type) {
                 Payload.Type.BYTES -> handleBytesPayload(endpointId, payload)
                 Payload.Type.STREAM -> handleStreamPayload(endpointId, payload)
@@ -356,7 +335,7 @@ class NearbyVirtualNetwork(
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            checkClosed()
+            assertNotClosed()
             log(LogLevel.DEBUG, "Payload transfer update for $endpointId: ${update.status}")
         }
     }
@@ -381,8 +360,10 @@ class NearbyVirtualNetwork(
 
                     disconnectedEndpoints.forEach { endpoint ->
                         if (endpoint.status != EndpointStatus.CONNECTED &&
-                            endpoint.status != EndpointStatus.CONNECTING) {
-                            log(LogLevel.INFO, "Initiating connection to: ${endpoint.endpointId}")
+                            endpoint.status != EndpointStatus.CONNECTING
+                        ) {
+                            delay(Random.nextLong(0, 10_000))
+                            log(LogLevel.INFO, "Requesting connection to: ${endpoint.endpointId}")
                             requestConnection(endpoint.endpointId)
                         }
                     }
@@ -401,7 +382,7 @@ class NearbyVirtualNetwork(
      * @param endpointId Target endpoint identifier
      */
     private fun requestConnection(endpointId: String) {
-        checkClosed()
+        assertNotClosed()
 
         // Get current endpoint state
         val currentEndpoint = _endpointStatusFlow.value[endpointId]
@@ -418,13 +399,14 @@ class NearbyVirtualNetwork(
 
         connectionsClient.requestConnection(name, endpointId, connectionLifecycleCallback)
             .addOnSuccessListener {
-                log(LogLevel.INFO, "Connection request sent to endpoint: $endpointId")
+                log(LogLevel.INFO, "Connection request sent to endpoint: $endpointId: success")
             }
             .addOnFailureListener { e ->
                 when ((e as? ApiException)?.statusCode) {
                     8003 -> { // Already connected
-                        log(LogLevel.INFO, "Endpoint $endpointId is already connected")
-                        updateEndpointStatus(endpointId, EndpointStatus.CONNECTED)
+                        log(LogLevel.ERROR, "ERROR: FFS: Endpoint $endpointId is already connected")
+                        //Do not make any update to the status
+                        //updateEndpointStatus(endpointId, EndpointStatus.DISCONNECTED)
                     }
                     else -> {
                         log(LogLevel.ERROR, "Failed to request connection to endpoint: $endpointId", e)
@@ -444,7 +426,7 @@ class NearbyVirtualNetwork(
      * @param payload Received byte payload
      */
     private fun handleBytesPayload(endpointId: String, payload: Payload) {
-        checkClosed()
+        assertNotClosed()
 
         val bytes = payload.asBytes() ?: run {
             log(LogLevel.WARNING, "Received null payload from endpoint: $endpointId")
@@ -459,7 +441,7 @@ class NearbyVirtualNetwork(
         }
 
         // Get sender's virtual IP (not broadcast address)
-        val fromAddr = virtualPacket.header.fromAddr?.takeIf {
+        val fromAddr = virtualPacket.header.fromAddr.takeIf {
             !it.addressToDotNotation().equals("255.255.255.255")
         }
 
@@ -502,7 +484,7 @@ class NearbyVirtualNetwork(
      * @param payload Stream payload data
      */
     private fun handleStreamPayload(endpointId: String, payload: Payload) {
-        checkClosed()
+        assertNotClosed()
         payload.asStream()?.asInputStream()?.use { inputStream ->
             val header = inputStream.readNearbyStreamHeader()
 
@@ -521,14 +503,15 @@ class NearbyVirtualNetwork(
     private fun updateEndpointStatus(endpointId: String, status: EndpointStatus) {
         _endpointStatusFlow.update { currentMap ->
             currentMap.toMutableMap().apply {
-                this[endpointId] = this[endpointId]?.copy(status = status)
-                    ?: EndpointInfo(endpointId, status, null, false)
+                this[endpointId]?.also { currentVal ->
+                    this[endpointId] = currentVal.copy(status = status)
+                }
             }
         }
     }
 
     private fun sendMmcpPingPacket(endpointId: String) {
-        checkClosed()
+        assertNotClosed()
         // Use virtual IP instead of broadcast for ping
         val mmcpPing = MmcpPing(Random.nextInt())
         val virtualPacket = mmcpPing.toVirtualPacket(virtualIpAddress, virtualIpAddress)  // Changed here
@@ -540,7 +523,7 @@ class NearbyVirtualNetwork(
     }
 
     private fun sendMmcpPongPacket(endpointId: String, replyToMessageId: Int) {
-        checkClosed()
+        assertNotClosed()
         val mmcpPong = MmcpPong(Random.nextInt(), replyToMessageId)
         val virtualPacket = mmcpPong.toVirtualPacket(virtualIpAddress, broadcastAddress)
         val payload = Payload.fromBytes(virtualPacket.data)
@@ -561,8 +544,9 @@ class NearbyVirtualNetwork(
         }
     }
 
-    private fun checkClosed() {
+    private fun assertNotClosed() {
         if (isClosed.get()) {
+            log(LogLevel.ERROR, "assertNotClosed: Network is closed")
             throw IllegalStateException("Network is closed")
         }
     }

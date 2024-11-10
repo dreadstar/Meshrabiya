@@ -34,9 +34,16 @@ import java.net.InetAddress
 interface VirtualNetworkInterface : Closeable {
 
     val virtualAddress: InetAddress
-    val logger: MNetLogger
+
     /**
-     * Send the given VirtualPacket over this VirtualNetworkInterface to the NextHopAddress
+     * List the known neighbors of this VirtualNetworkInterface (providing the Virtual IP address of
+     * each neighbor). This is used by the OriginatingMessageManager to send out originating
+     * messages and ping neighbors.
+     */
+    val knownNeighbors: List<InetAddress>
+
+    /**
+     * Send the given VirtualPacket over this VirtualNetworkInterface to the nextHopAddress
      *
      * @param nextHopAddress the Virtual Address of the next hop to which the packet should be sent.
      * @param virtualPacket the VirtualPacket to send. The final destination may (or may not) be the

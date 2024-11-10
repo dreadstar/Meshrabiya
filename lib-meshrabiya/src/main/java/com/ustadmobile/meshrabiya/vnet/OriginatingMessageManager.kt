@@ -17,23 +17,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
-import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.NoRouteToHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 
 /**
@@ -96,66 +88,32 @@ class OriginatingMessageManager(
             }
         )
 
-
-        //TODO: This should be a loop - it should go over all known addresses and broadcast for each one
-        //It should then go over each INTERFACE and send the broadcast - the interface is responsible
-        //to know who the neighbors are
-
         val networkInterfaces = virtualNetworkInterfaces()
-        val addresses = networkInterfaces.map { it.virtualAddress }
 
-        networkInterfaces.forEach { virtualNetworkInterface ->
-
-            val networkInterfaceAddress = virtualNetworkInterface.virtualAddress.requireAddressAsInt()
-
-            addresses.forEach { address->
-                val packet = originatingMessage.toVirtualPacket(
-                    toAddr = ADDR_BROADCAST,
-                    fromAddr = address.requireAddressAsInt(),
-                    lastHopAddr = networkInterfaceAddress,
-                    hopCount = 1,
-                )
-
-                virtualNetworkInterface.send(packet, ADDR_BROADCAST.asInetAddress())
-            }
-        }
-
-
-        val neighbors = originatorMessages.filter {
-            it.value.hopCount == 1.toByte()
-        }
-
-        neighbors.forEach { (neighborAddr, lastOriginatorMessage) ->
-            try {
-                val outgoingAddr = selectOutgoingAddrForDestination(neighborAddr.asInetAddress())
-                val packet = originatingMessage.toVirtualPacket(
-                    toAddr = neighborAddr,
-                    fromAddr = outgoingAddr.requireAddressAsInt(),
-                    lastHopAddr = outgoingAddr.requireAddressAsInt(),
-                    hopCount = 1,
-                )
-                lastOriginatorMessage.receivedFromInterface?.send(
-                    virtualPacket = packet,
-                    nextHopAddress = lastOriginatorMessage.lastHopAddr.asInetAddress()
-                )
-            } catch (e: Exception) {
-                logger(
-                    Log.WARN,
-                    "$logPrefix : sendOriginatingMessagesRunnable: exception sending to ${neighborAddr.addressToDotNotation()}",
-                    e
+        networkInterfaces.forEach { networkInterface ->
+            //TODO: This needs to consider telling each neighbor about our other IP addresses
+            // so this works properly when there are multiple 'interfaces'
+            networkInterface.knownNeighbors.forEach { neighborIpAddr ->
+                networkInterface.send(
+                    virtualPacket = originatingMessage.toVirtualPacket(
+                        toAddr = neighborIpAddr.requireAddressAsInt(),
+                        fromAddr = networkInterface.virtualAddress.requireAddressAsInt(),
+                        lastHopAddr = networkInterface.virtualAddress.requireAddressAsInt(),
+                        hopCount = 1,
+                    ),
+                    nextHopAddress = neighborIpAddr,
                 )
             }
         }
-    //TODO: check on each interface if there are any known neighbors for which we do not have
-        //current originator messages
+
     }
 
     private val pingNeighborsRunnable = Runnable {
 
         val neighbors = neighbors()
-        neighbors.forEach {
-            val neighborVirtualAddr = it.first
-            val lastOrigininatorMessage = it.second
+        neighbors.forEach { neighbor ->
+            val neighborVirtualAddr = neighbor.first
+            val lastOrigininatorMessage = neighbor.second
             val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
             pendingPings.add(
                 PendingPing(
@@ -177,9 +135,8 @@ class OriginatingMessageManager(
                 val networkInterfaceAddress = virtualNetworkInterface.virtualAddress.requireAddressAsInt()
 
                 addresses.forEach { address->
-                    it.second.receivedFromSocket.send(
-                        nextHopAddress = lastOrigininatorMessage.lastHopRealInetAddr,
-                        nextHopPort = lastOrigininatorMessage.lastHopRealPort,
+                    virtualNetworkInterface.send(
+                        nextHopAddress = neighborVirtualAddr.asInetAddress(),
                         virtualPacket = pingMessage.toVirtualPacket(
                             toAddr = neighborVirtualAddr,
                             fromAddr = networkInterfaceAddress,
@@ -216,20 +173,20 @@ class OriginatingMessageManager(
         _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
     }
 
-    private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleAtFixedRate(
-        sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
-    )
-
-    private val pingNeighborsFuture = scheduledExecutorService.scheduleAtFixedRate(
-        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
-    )
-
-    private val checkLostNodesFuture = scheduledExecutorService.scheduleAtFixedRate(
-        checkLostNodesRunnable,
-        lostNodeCheckInterval.toLong(),
-        lostNodeCheckInterval.toLong(),
-        TimeUnit.MILLISECONDS
-    )
+//    private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleWithFixedDelay(
+//        sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
+//    )
+//
+//    private val pingNeighborsFuture = scheduledExecutorService.scheduleWithFixedDelay(
+//        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
+//    )
+//
+//    private val checkLostNodesFuture = scheduledExecutorService.scheduleWithFixedDelay(
+//        checkLostNodesRunnable,
+//        lostNodeCheckInterval.toLong(),
+//        lostNodeCheckInterval.toLong(),
+//        TimeUnit.MILLISECONDS
+//    )
 
     @Volatile
     private var closed = false
@@ -253,9 +210,8 @@ class OriginatingMessageManager(
 
     fun onReceiveOriginatingMessage(
         mmcpMessage: MmcpOriginatorMessage,
-        datagramPacket: DatagramPacket,
-        datagramSocket: VirtualNodeDatagramSocket,
         virtualPacket: VirtualPacket,
+        receivedFromInterface: VirtualNetworkInterface,
     ): Boolean {
         assertNotClosed()
         //Dont keep originator messages in our own table for this node
@@ -280,8 +236,6 @@ class OriginatingMessageManager(
         //via some other (suboptimal) route with more hops
         val currentlyKnownSentTime = (currentOriginatorMessage?.originatorMessage?.sentTime ?: 0)
         val currentlyKnownHopCount = (currentOriginatorMessage?.hopCount ?: Byte.MAX_VALUE)
-        val receivedFromRealInetAddr = datagramPacket.address
-        val receivedFromSocket = datagramSocket
         val isMoreRecentOrBetter = mmcpMessage.sentTime > currentlyKnownSentTime
                 || mmcpMessage.sentTime == currentlyKnownSentTime && virtualPacket.header.hopCount < currentlyKnownHopCount
         val isNewNeighbor = virtualPacket.header.hopCount == 1.toByte() &&
@@ -305,9 +259,7 @@ class OriginatingMessageManager(
                 timeReceived = System.currentTimeMillis(),
                 lastHopAddr = virtualPacket.header.lastHopAddr,
                 hopCount = virtualPacket.header.hopCount,
-                lastHopRealInetAddr = receivedFromRealInetAddr,
-                receivedFromSocket = receivedFromSocket,
-                lastHopRealPort = datagramPacket.port
+                receivedFromInterface = receivedFromInterface,
             )
             logger(
                 Log.VERBOSE,
@@ -318,6 +270,8 @@ class OriginatingMessageManager(
             )
 
             _state.value = originatorMessages.toMap()
+
+            //TODO: rebroadcast it
         }
 
         if (isNewNeighbor) {
@@ -372,8 +326,6 @@ class OriginatingMessageManager(
 
 
     fun lookupNextHopForChainSocket(address: InetAddress, port: Int): ChainSocketNextHop {
-
-
         val addressInt = address.requireAddressAsInt()
 
         val originatorMessage = originatorMessages[addressInt]
@@ -384,96 +336,12 @@ class OriginatingMessageManager(
                 ChainSocketNextHop(InetAddress.getLoopbackAddress(), port, true, null)
             }
 
-            //Destination is a direct neighbor (final destination) - connect to the actual socket itself
-            originatorMessage != null && originatorMessage.hopCount == 1.toByte() -> {
-                ChainSocketNextHop(
-                    originatorMessage.lastHopRealInetAddr, port, true,
-                    originatorMessage.receivedFromSocket.boundNetwork
-                )
-            }
-
-            //Destination is not a direct neighbor, but we have a route there
-            originatorMessage != null -> {
-                ChainSocketNextHop(
-                    originatorMessage.lastHopRealInetAddr,
-                    originatorMessage.lastHopRealPort, false,
-                    originatorMessage.receivedFromSocket.boundNetwork
-                )
-            }
 
             //No route available to reach the given address
             else -> {
                 logger(Log.ERROR, "$logPrefix : No route to virtual host: $address")
                 throw NoRouteToHostException("No route to virtual host $address")
             }
-        }
-    }
-
-
-    /**
-     * Run the process to add a new neighbor (e.g. after a Wifi station connection is established).
-     *
-     * This will send originating messages to the neighbor node and wait until we receive an
-     * originating message reply (up until a timeout)
-     *
-     * @param neighborRealInetAddr the InetAddress of the neighbor (e.g. real IP address)
-     * @param neighborRealPort The port on which the neighbor is running VirtualNodeDatagramSocket
-     * @param socket our VirtualNodeDatagramSocket through which we will attempt to communicate with
-     *        the new neighbor - this is often the socket bound to a Network object after a new
-     *        wifi connection is established
-     * @param timeout the timeout (in ms) for the new connection to be established. If the timeout
-     *        is exceeded an exception will be thrown
-     * @param sendInterval the interval period for sending out originating messages to the new neighbor
-     */
-    suspend fun addNeighbor(
-        neighborRealInetAddr: InetAddress,
-        neighborRealPort: Int,
-        socket: VirtualNodeDatagramSocket,
-        timeout: Int = 15_000,
-        sendInterval: Int = 1_000,
-    ) {
-        logger(Log.DEBUG, "$logPrefix: addNeighbor - sending originating messages out")
-
-        val sendOriginatingMessageJob = scope.launch {
-            while (isActive) {
-                try {
-                    val originatingMessage = makeOriginatingMessage()
-                    virtualNetworkInterfaces().forEach { iface ->
-                        val localAddress = iface.virtualAddress
-                        socket.send(
-                            nextHopAddress = neighborRealInetAddr,
-                            nextHopPort = neighborRealPort,
-                            virtualPacket = originatingMessage.toVirtualPacket(
-                                toAddr = ADDR_BROADCAST,
-                                fromAddr = localAddress.requireAddressAsInt(),
-                                lastHopAddr = localAddress.requireAddressAsInt(),
-                                hopCount = 1,
-                            )
-                        )
-                    }
-                } catch (e: Exception) {
-                    logger(
-                        Log.WARN,
-                        "$logPrefix : addNeighbor : exception trying to send originating message",
-                        e
-                    )
-                }
-                delay(sendInterval.toLong())
-            }
-        }
-
-        try {
-            withTimeout(timeout.toLong()) {
-                val replyMessage = receivedMessages.filter {
-                    it.lastHopRealInetAddr == neighborRealInetAddr && it.lastHopRealPort == neighborRealPort
-                }.first()
-                logger(
-                    Log.DEBUG, "$logPrefix addNeighbor - received originating message reply " +
-                            "from ${replyMessage.lastHopAddr.addressToDotNotation()}"
-                )
-            }
-        } finally {
-            sendOriginatingMessageJob.cancel()
         }
     }
 
@@ -507,10 +375,11 @@ class OriginatingMessageManager(
         logger(Log.INFO, "$logPrefix Selected outgoing address ${outgoingInterface.virtualAddress} with ${bestRoute.hopCount} hops to reach $destination")
         return outgoingInterface.virtualAddress
     }
+
     fun close() {
-        sendOriginatorMessagesFuture.cancel(true)
-        pingNeighborsFuture.cancel(true)
-        checkLostNodesFuture.cancel(true)
+//        sendOriginatorMessagesFuture.cancel(true)
+//        pingNeighborsFuture.cancel(true)
+//        checkLostNodesFuture.cancel(true)
         scope.cancel("$logPrefix closed")
         closed = true
     }

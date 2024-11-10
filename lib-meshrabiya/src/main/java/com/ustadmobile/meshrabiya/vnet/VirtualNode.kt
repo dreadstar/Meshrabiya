@@ -4,6 +4,7 @@ import android.util.Log
 import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.ext.addressToByteArray
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
+import com.ustadmobile.meshrabiya.ext.asInetAddress
 import com.ustadmobile.meshrabiya.ext.prefixMatches
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
@@ -131,12 +132,9 @@ abstract class VirtualNode(
         val timeReceived: Long,
         val lastHopAddr: Int,
         val hopCount: Byte,
-        val lastHopRealInetAddr: InetAddress,
-        val receivedFromSocket: VirtualNodeDatagramSocket,
-        val lastHopRealPort: Int,
         val receivedFromInterface: VirtualNetworkInterface? = null,
 
-        )
+    )
 
     @Suppress("unused") //Part of the API
     enum class Zone {
@@ -348,8 +346,7 @@ abstract class VirtualNode(
 
     private fun onIncomingMmcpMessage(
         virtualPacket: VirtualPacket,
-        datagramPacket: DatagramPacket?,
-        datagramSocket: VirtualNodeDatagramSocket?,
+        receivedFromInterface: VirtualNetworkInterface
     ): Boolean {
         //This is an Mmcp message
         try {
@@ -429,14 +426,13 @@ abstract class VirtualNode(
                     }
                 }
 
-                mmcpMessage is MmcpOriginatorMessage -> {
-                    shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
-                        mmcpMessage = mmcpMessage,
-                        datagramPacket = datagramPacket ?: return false,
-                        datagramSocket = datagramSocket ?: return false,
-                        virtualPacket = virtualPacket,
-                    )
-                }
+//                mmcpMessage is MmcpOriginatorMessage -> {
+//                    shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
+//                        mmcpMessage = mmcpMessage,
+//                        virtualPacket = virtualPacket,
+//                        receivedFromInterface = receivedFromInterface,
+//                    )
+//                }
 
                 else -> {
                     // do nothing
@@ -461,8 +457,7 @@ abstract class VirtualNode(
 
     override fun route(
         packet: VirtualPacket,
-        datagramPacket: DatagramPacket?,
-        virtualNodeDatagramSocket: VirtualNodeDatagramSocket?
+        receivedFromInterface: VirtualNetworkInterface?
     ) {
         try {
             val fromLastHop = packet.header.lastHopAddr
@@ -477,57 +472,55 @@ abstract class VirtualNode(
                 return
             }
 
-            if (packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt) {
-                //this is an MMCP message
-                if (!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)) {
-                    //It was determined that this packet should go no further by MMCP processing
-                    logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
-                }
-            }
-
-            if (packet.header.toAddr == addressAsInt) {
-                //this is an incoming packet - give to the destination virtual socket/forwarding
-                val listeningSocket = activeSockets[packet.header.toPort]
-                if (listeningSocket != null) {
-                    listeningSocket.onIncomingPacket(packet)
-                } else {
-                    logger(
-                        Log.DEBUG,
-                        "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}"
-                    )
-                }
-            } else {
-                //packet needs to be sent to next hop / destination
-                val toAddr = packet.header.toAddr
-
-                packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
-                if (toAddr == ADDR_BROADCAST) {
-                    originatingMessageManager.neighbors().filter {
-                        it.first != fromLastHop && it.first != packet.header.fromAddr
-                    }.forEach {
-                        logger(Log.VERBOSE,
-                            message = {
-                                "$logPrefix broadcast packet " +
-                                        "from=${packet.header.fromAddr.addressToDotNotation()} " +
-                                        "lasthop=${fromLastHop.addressToDotNotation()} " +
-                                        "send to ${it.first.addressToDotNotation()}"
-                            }
-                        )
-
-                        it.second.receivedFromSocket.send(
-                            nextHopAddress = it.second.lastHopRealInetAddr,
-                            nextHopPort = it.second.lastHopRealPort,
+            val localAddresses = _virtualNetworkInterfaces.value.map { it.virtualAddress.requireAddressAsInt() }
+            when {
+                /*
+                 * Handle originator messages - they will be rebroadcast
+                 */
+                packet.header.toPort == MmcpMessage.PORT_ORIGINATOR && receivedFromInterface != null -> {
+                    val originatorMessage = MmcpMessage.fromVirtualPacket(packet)
+                    if(originatorMessage is MmcpOriginatorMessage) {
+                        originatingMessageManager.onReceiveOriginatingMessage(
+                            mmcpMessage = originatorMessage,
                             virtualPacket = packet,
+                            receivedFromInterface = receivedFromInterface
+                        )
+                    }else {
+                        logger(Log.WARN, "Drop Mmcp Message - was to port 1 but not an " +
+                                "originator message"
                         )
                     }
+                }
 
-                } else {
+                /*
+                 * Packet is destined for an interface on this node
+                 */
+                packet.header.toAddr in localAddresses-> {
+                    if(packet.header.toPort == 0 && receivedFromInterface != null) {
+                        onIncomingMmcpMessage(packet, receivedFromInterface)
+                    }else {
+                        val listeningSocket = activeSockets[packet.header.toPort]
+                        if (listeningSocket != null) {
+                            listeningSocket.onIncomingPacket(packet)
+                        } else {
+                            logger(
+                                Log.DEBUG,
+                                "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}"
+                            )
+                        }
+                    }
+                }
+
+                /*
+                 * Packet needs to hop to its final destination
+                 */
+                else -> {
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
                     if (originatorMessage != null) {
-                        originatorMessage.receivedFromSocket.send(
-                            nextHopAddress = originatorMessage.lastHopRealInetAddr,
-                            nextHopPort = originatorMessage.lastHopRealPort,
+
+                        originatorMessage.receivedFromInterface?.send(
+                            nextHopAddress = packet.header.toAddr.asInetAddress(),
                             virtualPacket = packet
                         )
                     } else {
@@ -538,6 +531,56 @@ abstract class VirtualNode(
                     }
                 }
             }
+
+//            if (packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt &&
+//                receivedFromInterface != null
+//            ) {
+//                //this is an MMCP message
+//                if (!onIncomingMmcpMessage(packet, receivedFromInterface)) {
+//                    //It was determined that this packet should go no further by MMCP processing
+//                    logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr.addressToDotNotation()}", null)
+//                }
+//            }
+//
+//            if (packet.header.toAddr == addressAsInt) {
+//                //this is an incoming packet - give to the destination virtual socket/forwarding
+//                val listeningSocket = activeSockets[packet.header.toPort]
+//                if (listeningSocket != null) {
+//                    listeningSocket.onIncomingPacket(packet)
+//                } else {
+//                    logger(
+//                        Log.DEBUG,
+//                        "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}"
+//                    )
+//                }
+//            } else {
+//                //packet needs to be sent to next hop / destination
+//                val toAddr = packet.header.toAddr
+//
+//                packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
+//                if (toAddr == ADDR_BROADCAST) {
+//                    originatingMessageManager.neighbors().filter {
+//                        it.first != fromLastHop && it.first != packet.header.fromAddr
+//                    }.forEach {
+//                        logger(Log.VERBOSE,
+//                            message = {
+//                                "$logPrefix broadcast packet " +
+//                                        "from=${packet.header.fromAddr.addressToDotNotation()} " +
+//                                        "lasthop=${fromLastHop.addressToDotNotation()} " +
+//                                        "send to ${it.first.addressToDotNotation()}"
+//                            }
+//                        )
+//
+//                        it.second.receivedFromInterface?.send(
+//                            nextHopAddress = it.,
+//                            virtualPacket = packet,
+//                        )
+//                    }
+//
+//                } else {
+//
+//                }
+//            }
         } catch (e: Exception) {
             logger(
                 Log.ERROR,
@@ -550,34 +593,6 @@ abstract class VirtualNode(
 
     override fun lookupNextHopForChainSocket(address: InetAddress, port: Int): ChainSocketNextHop {
         return originatingMessageManager.lookupNextHopForChainSocket(address, port)
-    }
-
-
-    /**
-     * Respond to a new
-     */
-    fun addNewNeighborConnection(
-        address: InetAddress,
-        port: Int,
-        neighborNodeVirtualAddr: Int,
-        socket: VirtualNodeDatagramSocket,
-    ) {
-        logger(
-            Log.DEBUG,
-            "$logPrefix addNewNeighborConnection connection to virtual addr " +
-                    "${neighborNodeVirtualAddr.addressToDotNotation()} " +
-                    "via datagram to $address:$port",
-            null
-        )
-
-        coroutineScope.launch {
-            originatingMessageManager.addNeighbor(
-                neighborRealInetAddr = address,
-                neighborRealPort = port,
-                socket = socket,
-            )
-        }
-
     }
 
     fun addPongListener(listener: PongListener) {
