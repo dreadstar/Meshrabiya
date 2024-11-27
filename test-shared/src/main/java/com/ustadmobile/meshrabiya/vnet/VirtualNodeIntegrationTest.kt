@@ -120,14 +120,14 @@ abstract class VirtualNodeIntegrationTest {
             val pongMessage = AtomicReference<MmcpPong>()
             val node1ToNode2Ping = MmcpPing(Random.nextInt())
 
-            node1.addPongListener(object: PongListener{
-                override fun onPongReceived(fromNode: Int, pong: MmcpPong) {
-                    if(pong.replyToMessageId == node1ToNode2Ping.messageId) {
-                        pongMessage.set(pong)
-                        latch.countDown()
-                    }
-                }
-            })
+//            node1.addPongListener(object: PongListener{
+//                override fun onPongReceived(fromNode: Int, pong: MmcpPong) {
+//                    if(pong.replyToMessageId == node1ToNode2Ping.messageId) {
+//                        pongMessage.set(pong)
+//                        latch.countDown()
+//                    }
+//                }
+//            })
 
             node1.route(
                 node1ToNode2Ping.toVirtualPacket(

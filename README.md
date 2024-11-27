@@ -1,5 +1,32 @@
 # Meshrabiya
 
+Meshrabiya is a mesh network library for Android that can seamlessly route data over multiple hops
+(e.g. from device A to device D via device B and C) using standard TCP and UDP connections. Each node
+is assigned one or more virtual IP addresses. Developers can then send data using any normal TCP
+and UDP connections between any devices on the mesh using the virtual IP addresses, without having 
+to worry about multihop mesh routing, as if all the devices were connected to a local WiFi network.
+
+Meshrabiya creates a virtual network that supports TCP, UDP and anything that runs over those 
+[transport layers](https://en.wikipedia.org/wiki/Transport_layer) in environments where there is 
+no local WiFi access point by routing those transport layers over different underlying adapters including 
+Google Nearby (which supports Bluetooth). It is not intended to provide encryption and/or security 
+that is expected to be provided higher levels of the network stack (e.g. the application layer).
+
+Supported adapters:
+* Google Nearby
+
+# How it works
+
+* Routing is based on the [B.A.T.M.A.N.](https://en.wikipedia.org/wiki/B.A.T.M.A.N.) concept where 
+  each node tracks known neighbors (using the underlying transport layer e.g. Google Nearby discovery
+  for Nearby, network service discovery for 'normal' WiFi networks, etc) and broadcasts an originator
+  message to all known neighbors. This message is rebroadcast up to a maximum number of times (time
+  to live). If Node A wants to send data to Node C, it doesn't need to know the full route. It 
+  remembers that it received an originating message from Node C via Node B, so any traffic to Node C
+  will be sent to Node B, which in turn can send it to Node C and so forth.
+
+
+
 Meshrabiya is a mesh network for Android that operates over WiFi. It allows applications
 to seamlessly communicate over multiple hops and multiple WiFi direct and/or Local Only Hotspots.
 Each device is given a "virtual" IP address (typically a random auto-generated address

@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.mmcp
 
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
+import com.ustadmobile.meshrabiya.vnet.netinterface.VirtualNetworkInterface
 
 /**
  * Contains the MmcpMessage as received and the packet header (e.g. from/to values etc). The packet
@@ -10,4 +11,5 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
 data class MmcpMessageAndPacketHeader(
     val message: MmcpMessage,
     val packetHeader: VirtualPacketHeader,
+    val receivedFromInterface: VirtualNetworkInterface,
 )

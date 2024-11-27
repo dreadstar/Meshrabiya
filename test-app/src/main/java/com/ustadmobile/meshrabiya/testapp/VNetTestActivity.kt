@@ -49,7 +49,6 @@ import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.testapp.appstate.AppUiState
 import com.ustadmobile.meshrabiya.testapp.domain.AddNearbyNetworkUseCase
 import com.ustadmobile.meshrabiya.testapp.screens.InfoScreen
-import com.ustadmobile.meshrabiya.testapp.screens.LocalVirtualNodeScreen
 import com.ustadmobile.meshrabiya.testapp.screens.LogListScreen
 import com.ustadmobile.meshrabiya.testapp.screens.NearbyTestRoute
 import com.ustadmobile.meshrabiya.testapp.screens.NearbyTestScreen
@@ -185,20 +184,6 @@ fun MeshrabiyaTestApp(
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = navController.currentDestination?.route == "localvirtualnode",
-                    label = { Text("This Node") },
-                    onClick = {
-                        navController.navigate("localvirtualnode")
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Default.PhoneAndroid,
-                            contentDescription = null
-                        )
-                    }
-                )
-
-                NavigationBarItem(
                     selected = navController.currentDestination?.route == "network",
                     label = { Text("Network") },
                     onClick = {
@@ -302,13 +287,6 @@ fun AppNavHost(
         navController = navController,
         startDestination = startDestination
     ) {
-        composable("localvirtualnode") {
-            LocalVirtualNodeScreen(
-                onSetAppUiState = onSetAppUiState,
-                snackbarHostState = snackbarHostState,
-            )
-        }
-
         composable("neighbornodes") {
             NeighborNodeListScreen(
                 onSetAppUiState = onSetAppUiState,

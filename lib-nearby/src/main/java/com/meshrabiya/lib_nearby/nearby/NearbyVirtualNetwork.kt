@@ -433,7 +433,7 @@ class NearbyVirtualNetwork(
     /**
      * Connects to the given endpoint. Will yield as per the yield logic if required.
      *
-     * @param endpointInfo Target endpoint identifier
+     * @param endpointInfo EndpointInfo for the node we want to connect to (as provided by Nearby)
      */
     private fun launchConnectionRequest(endpointInfo: EndpointInfo) {
         assertNotClosed()

@@ -5,6 +5,7 @@ import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.asInetAddress
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
@@ -20,16 +21,25 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import java.net.InetAddress
 import java.net.NoRouteToHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 /**
+ * OriginatingMessageManager handles broadcasting originator messages, tracking received originating
+ * messages from other nodes, and tracking the ping time between this node and all known neighbor
+ * nodes.
+ *
  * @param virtualNetworkInterfaces function that provide a list of current virtual ip addresses for node.
+ * @param incomingMmcpMessages a flow of incoming MMCP messages that will be observed to watch for
+ *        originator messages and ping replies.
  */
 
 class OriginatingMessageManager(
@@ -39,7 +49,8 @@ class OriginatingMessageManager(
     private val nextMmcpMessageId: () -> Int,
     private val getWifiState: () -> MeshrabiyaWifiState,
     private val pingTimeout: Int = 15_000,
-    private val originatingMessageNodeLostThreshold: Int = 10000,
+    private val originatingMessageNodeLostThreshold: Int = 10_000,
+    private val incomingMmcpMessages: Flow<MmcpMessageAndPacketHeader> = emptyFlow(),
     lostNodeCheckInterval: Int = 1_000,
 ) {
 
@@ -89,21 +100,25 @@ class OriginatingMessageManager(
         )
 
         val networkInterfaces = virtualNetworkInterfaces()
+        val localAddresses = networkInterfaces.map { it.virtualAddress }
 
         networkInterfaces.forEach { networkInterface ->
-            //TODO: This needs to consider telling each neighbor about our other IP addresses
-            // so this works properly when there are multiple 'interfaces'
-
             networkInterface.knownNeighbors.forEach { neighborIpAddr ->
-                networkInterface.send(
-                    virtualPacket = originatingMessage.toVirtualPacket(
-                        toAddr = neighborIpAddr.requireAddressAsInt(),
-                        fromAddr = networkInterface.virtualAddress.requireAddressAsInt(),
-                        lastHopAddr = networkInterface.virtualAddress.requireAddressAsInt(),
-                        hopCount = 1,
-                    ),
-                    nextHopAddress = neighborIpAddr,
-                )
+                localAddresses.forEach { localAddr ->
+                    networkInterface.send(
+                        virtualPacket = originatingMessage.toVirtualPacket(
+                            toAddr = neighborIpAddr.requireAddressAsInt(),
+                            fromAddr = localAddr.requireAddressAsInt(),
+                            lastHopAddr = networkInterface.virtualAddress.requireAddressAsInt(),
+                            hopCount = if(localAddr == networkInterface.virtualAddress) {
+                                1
+                            }else {
+                                2
+                            },
+                        ),
+                        nextHopAddress = neighborIpAddr,
+                    )
+                }
             }
         }
 
@@ -114,8 +129,8 @@ class OriginatingMessageManager(
         val neighbors = neighbors()
         neighbors.forEach { neighbor ->
             val neighborVirtualAddr = neighbor.first
-            val lastOrigininatorMessage = neighbor.second
             val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
+
             pendingPings.add(
                 PendingPing(
                     pingMessage,
@@ -123,33 +138,27 @@ class OriginatingMessageManager(
                     System.currentTimeMillis()
                 )
             )
+
             logger(
                 priority = Log.VERBOSE,
                 message = { "$logPrefix pingNeighborsRunnable: send ping to ${neighborVirtualAddr.addressToDotNotation()}" }
             )
 
             val networkInterfaces = virtualNetworkInterfaces()
-            val addresses = networkInterfaces.map { it.virtualAddress }
 
             networkInterfaces.forEach { virtualNetworkInterface ->
-
-                val networkInterfaceAddress = virtualNetworkInterface.virtualAddress.requireAddressAsInt()
-
-                addresses.forEach { address->
+                virtualNetworkInterface.knownNeighbors.forEach { neighbor ->
                     virtualNetworkInterface.send(
                         nextHopAddress = neighborVirtualAddr.asInetAddress(),
                         virtualPacket = pingMessage.toVirtualPacket(
                             toAddr = neighborVirtualAddr,
-                            fromAddr = networkInterfaceAddress,
-                            lastHopAddr = networkInterfaceAddress,
+                            fromAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
+                            lastHopAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
                             hopCount = 1,
                         )
                     )
-
                 }
             }
-
-
         }
 
         //Remove expired pings
@@ -177,20 +186,33 @@ class OriginatingMessageManager(
     private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleWithFixedDelay(
         sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
     )
-//
-//    private val pingNeighborsFuture = scheduledExecutorService.scheduleWithFixedDelay(
-//        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
-//    )
-//
-//    private val checkLostNodesFuture = scheduledExecutorService.scheduleWithFixedDelay(
-//        checkLostNodesRunnable,
-//        lostNodeCheckInterval.toLong(),
-//        lostNodeCheckInterval.toLong(),
-//        TimeUnit.MILLISECONDS
-//    )
 
-    @Volatile
-    private var closed = false
+    private val pingNeighborsFuture = scheduledExecutorService.scheduleWithFixedDelay(
+        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
+    )
+
+    private val closed = AtomicBoolean(false)
+
+    init {
+        scope.launch {
+            incomingMmcpMessages.collect { incomingMmcpMessage ->
+                when(val message = incomingMmcpMessage.message) {
+                    is MmcpOriginatorMessage -> {
+                        onReceiveOriginatingMessage(
+                            message,
+                            incomingMmcpMessage.packetHeader,
+                            incomingMmcpMessage.receivedFromInterface)
+                    }
+                    is MmcpPong -> {
+                        onPongReceived(incomingMmcpMessage.packetHeader.fromAddr, message)
+                    }
+                    else -> {
+                        //Do nothing
+                    }
+                }
+            }
+        }
+    }
 
 
     private fun makeOriginatingMessage(): MmcpOriginatorMessage {
@@ -204,14 +226,14 @@ class OriginatingMessageManager(
 
 
     private fun assertNotClosed() {
-        if (closed)
+        if (closed.get())
             throw IllegalStateException("$logPrefix is closed!")
     }
 
 
-    fun onReceiveOriginatingMessage(
+    private fun onReceiveOriginatingMessage(
         mmcpMessage: MmcpOriginatorMessage,
-        virtualPacket: VirtualPacket,
+        packetHeader: VirtualPacketHeader,
         receivedFromInterface: VirtualNetworkInterface,
     ): Boolean {
         assertNotClosed()
@@ -220,17 +242,15 @@ class OriginatingMessageManager(
             Log.VERBOSE,
             message = {
                 "$logPrefix received originating message from " +
-                        "${virtualPacket.header.fromAddr.addressToDotNotation()} via " +
-                        virtualPacket.header.lastHopAddr.addressToDotNotation()
+                        "${packetHeader.fromAddr.addressToDotNotation()} via " +
+                        packetHeader.lastHopAddr.addressToDotNotation()
             }
         )
 
 
-        val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0
-        MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
-            ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
+        val connectionPingTime = neighborPingTimes[packetHeader.lastHopAddr]?.pingTime ?: 0
 
-        val currentOriginatorMessage = originatorMessages[virtualPacket.header.fromAddr]
+        val currentOriginatorMessage = originatorMessages[packetHeader.fromAddr]
 
 
         //Update this only if it is more recent and/or better. It might be that we are getting it back
@@ -238,28 +258,28 @@ class OriginatingMessageManager(
         val currentlyKnownSentTime = (currentOriginatorMessage?.originatorMessage?.sentTime ?: 0)
         val currentlyKnownHopCount = (currentOriginatorMessage?.hopCount ?: Byte.MAX_VALUE)
         val isMoreRecentOrBetter = mmcpMessage.sentTime > currentlyKnownSentTime
-                || mmcpMessage.sentTime == currentlyKnownSentTime && virtualPacket.header.hopCount < currentlyKnownHopCount
-        val isNewNeighbor = virtualPacket.header.hopCount == 1.toByte() &&
-                !originatorMessages.containsKey(virtualPacket.header.fromAddr)
+                || mmcpMessage.sentTime == currentlyKnownSentTime && packetHeader.hopCount < currentlyKnownHopCount
+        val isNewNeighbor = packetHeader.hopCount == 1.toByte() &&
+                !originatorMessages.containsKey(packetHeader.fromAddr)
 
         logger(
             Log.VERBOSE,
             message = {
                 "$logPrefix received originating message from " +
-                        "${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}" +
+                        "${packetHeader.fromAddr.addressToDotNotation()} via ${packetHeader.lastHopAddr.addressToDotNotation()}" +
                         " messageId=${mmcpMessage.messageId} " +
-                        " hopCount=${virtualPacket.header.hopCount} sentTime=${mmcpMessage.sentTime} " +
+                        " hopCount=${packetHeader.hopCount} sentTime=${mmcpMessage.sentTime} " +
                         " Currently known: senttime=$currentlyKnownSentTime  hop count = $currentlyKnownHopCount " +
                         "isMoreRecentOrBetter=$isMoreRecentOrBetter "
             }
         )
 
         if (currentOriginatorMessage == null || isMoreRecentOrBetter) {
-            originatorMessages[virtualPacket.header.fromAddr] = VirtualNode.LastOriginatorMessage(
+            originatorMessages[packetHeader.fromAddr] = VirtualNode.LastOriginatorMessage(
                 originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime),
                 timeReceived = System.currentTimeMillis(),
-                lastHopAddr = virtualPacket.header.lastHopAddr,
-                hopCount = virtualPacket.header.hopCount,
+                lastHopAddr = packetHeader.lastHopAddr,
+                hopCount = packetHeader.hopCount,
                 receivedFromInterface = receivedFromInterface,
             )
             logger(
@@ -283,7 +303,7 @@ class OriginatingMessageManager(
         return isMoreRecentOrBetter
     }
 
-    fun onPongReceived(
+    private fun onPongReceived(
         fromVirtualAddr: Int,
         pong: MmcpPong,
     ) {
@@ -378,11 +398,14 @@ class OriginatingMessageManager(
     }
 
     fun close() {
-        sendOriginatorMessagesFuture.cancel(true)
-//        pingNeighborsFuture.cancel(true)
-//        checkLostNodesFuture.cancel(true)
-        scope.cancel("$logPrefix closed")
-        closed = true
+        if(!closed.getAndSet(true)) {
+            sendOriginatorMessagesFuture.cancel(true)
+            pingNeighborsFuture.cancel(true)
+            scope.cancel("$logPrefix closed")
+            logger(Log.INFO, "$logPrefix closed")
+        }else {
+            logger(Log.INFO, "$logPrefix: Already closed")
+        }
     }
 
 }

@@ -104,8 +104,6 @@ abstract class VirtualNode(
 
     abstract val meshrabiyaWifiManager: MeshrabiyaWifiManager
 
-    private val pongListeners = CopyOnWriteArrayList<PongListener>()
-
     protected val logPrefix: String = "[VirtualNode ${addressAsInt.addressToDotNotation()}]"
 
     protected val iDatagramSocketFactory = VirtualNodeReturnPathSocketFactory(this)
@@ -136,16 +134,6 @@ abstract class VirtualNode(
     enum class Zone {
         VNET, REAL
     }
-
-    private val originatingMessageManager = OriginatingMessageManager(
-        virtualNetworkInterfaces = {
-            _virtualNetworkInterfaces.value
-        },
-        logger = logger,
-        scheduledExecutorService = scheduledExecutor,
-        nextMmcpMessageId = this::nextMmcpMessageId,
-        getWifiState = { _state.value.wifiState },
-    )
 
     private val localPort = findFreePort(0)
 
@@ -180,6 +168,17 @@ abstract class VirtualNode(
 
     val incomingMmcpMessages: Flow<MmcpMessageAndPacketHeader> =
         _incomingMmcpMessages.asSharedFlow()
+
+    private val originatingMessageManager = OriginatingMessageManager(
+        virtualNetworkInterfaces = {
+            _virtualNetworkInterfaces.value
+        },
+        logger = logger,
+        scheduledExecutorService = scheduledExecutor,
+        nextMmcpMessageId = this::nextMmcpMessageId,
+        getWifiState = { _state.value.wifiState },
+        incomingMmcpMessages =  incomingMmcpMessages,
+    )
 
     private val activeSockets: MutableMap<Int, VirtualDatagramSocketImpl> = ConcurrentHashMap()
 
@@ -356,14 +355,6 @@ abstract class VirtualNode(
             )
 
             when (mmcpMessage) {
-                is MmcpOriginatorMessage -> {
-                    originatingMessageManager.onReceiveOriginatingMessage(
-                        mmcpMessage = mmcpMessage,
-                        virtualPacket = virtualPacket,
-                        receivedFromInterface = receivedFromInterface,
-                    )
-                }
-
                 is MmcpPing -> {
                     logger(Log.VERBOSE,
                         message = {
@@ -387,26 +378,16 @@ abstract class VirtualNode(
                     route(replyPacket)
                 }
 
-                is MmcpPong -> {
-                    logger(
-                        Log.VERBOSE,
-                        { "$logPrefix Received pong(id=${mmcpMessage.messageId})}" })
-                    originatingMessageManager.onPongReceived(from, mmcpMessage)
-                    pongListeners.forEach {
-                        it.onPongReceived(from, mmcpMessage)
-                    }
-                }
-
                 else -> {
                     // do nothing
-                    logger(Log.WARN, "$logPrefix Received unknown MMCP message")
                 }
             }
 
             _incomingMmcpMessages.tryEmit(
                 MmcpMessageAndPacketHeader(
                     mmcpMessage,
-                    virtualPacket.header
+                    virtualPacket.header,
+                    receivedFromInterface,
                 )
             )
         } catch (e: Exception) {
@@ -485,14 +466,6 @@ abstract class VirtualNode(
 
     override fun lookupNextHopForChainSocket(address: InetAddress, port: Int): ChainSocketNextHop {
         return originatingMessageManager.lookupNextHopForChainSocket(address, port)
-    }
-
-    fun addPongListener(listener: PongListener) {
-        pongListeners += listener
-    }
-
-    fun removePongListener(listener: PongListener) {
-        pongListeners -= listener
     }
 
     open suspend fun setWifiHotspotEnabled(
