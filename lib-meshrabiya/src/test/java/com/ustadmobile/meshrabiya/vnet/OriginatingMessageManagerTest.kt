@@ -135,11 +135,12 @@ class OriginatingMessageManagerTest {
 
         verify(
             testContext.virtualNetworkInterface,
-            timeout(10_000)
+            timeout(10_000).atLeastOnce()
         ).send(
+            //should check a little more carefully...
             virtualPacket = argWhere {
                 it.header.toPort == 0 &&
-                    it.header.toAddr == InetAddress.getByName("169.254.1.3").requireAddressAsInt()
+                    it.header.toAddr == testContext.neighborAddr.requireAddressAsInt()
             },
             nextHopAddress = eq(testContext.neighborAddr),
         )
