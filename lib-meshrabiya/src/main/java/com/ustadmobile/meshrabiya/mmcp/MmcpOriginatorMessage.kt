@@ -16,7 +16,7 @@ import java.nio.ByteOrder
 class MmcpOriginatorMessage(
     messageId: Int,
     val pingTimeSum: Short,
-    val connectConfig: WifiConnectConfig?,
+    val connectConfig: WifiConnectConfig? = null,
     val sentTime: Long = System.currentTimeMillis(),
 ): MmcpMessage(WHAT_ORIGINATOR, messageId) {
     override fun toBytes(): ByteArray {

@@ -10,6 +10,9 @@ class MmcpPing(
 
     //There is no need for equals/hashcode here because there is no real payload
 
+    override fun toString(): String {
+        return "MmcpPing(messageId=$messageId)"
+    }
 
     companion object {
 

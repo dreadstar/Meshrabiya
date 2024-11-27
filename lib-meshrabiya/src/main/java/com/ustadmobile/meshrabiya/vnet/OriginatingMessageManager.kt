@@ -2,7 +2,6 @@ package com.ustadmobile.meshrabiya.vnet
 
 import android.util.Log
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
-import com.ustadmobile.meshrabiya.ext.asInetAddress
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
@@ -22,6 +21,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.net.InetAddress
 import java.net.NoRouteToHostException
@@ -51,7 +51,7 @@ class OriginatingMessageManager(
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10_000,
     private val incomingMmcpMessages: Flow<MmcpMessageAndPacketHeader> = emptyFlow(),
-    lostNodeCheckInterval: Int = 1_000,
+    lostNodeCheckInterval: Int = 3_000,
 ) {
 
     private val logPrefix = "[OriginatingMessageManager for ${virtualNetworkInterfaces}] "
@@ -66,6 +66,9 @@ class OriginatingMessageManager(
 
     private val _state = MutableStateFlow<Map<Int, VirtualNode.LastOriginatorMessage>>(emptyMap())
 
+    /**
+     *
+     */
     val state: Flow<Map<Int, VirtualNode.LastOriginatorMessage>> = _state.asStateFlow()
 
     private val receivedMessages: Flow<VirtualNode.LastOriginatorMessage> = MutableSharedFlow(
@@ -75,7 +78,7 @@ class OriginatingMessageManager(
     data class PendingPing(
         val ping: MmcpPing,
         val toVirtualAddr: Int,
-        val timesent: Long
+        val timesent: Long = System.currentTimeMillis(),
     )
 
     data class PingTime(
@@ -125,39 +128,33 @@ class OriginatingMessageManager(
     }
 
     private val pingNeighborsRunnable = Runnable {
+        val networkInterfaces = virtualNetworkInterfaces()
 
-        val neighbors = neighbors()
-        neighbors.forEach { neighbor ->
-            val neighborVirtualAddr = neighbor.first
-            val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
-
-            pendingPings.add(
-                PendingPing(
-                    pingMessage,
-                    neighborVirtualAddr,
-                    System.currentTimeMillis()
-                )
-            )
-
-            logger(
-                priority = Log.VERBOSE,
-                message = { "$logPrefix pingNeighborsRunnable: send ping to ${neighborVirtualAddr.addressToDotNotation()}" }
-            )
-
-            val networkInterfaces = virtualNetworkInterfaces()
-
-            networkInterfaces.forEach { virtualNetworkInterface ->
-                virtualNetworkInterface.knownNeighbors.forEach { neighbor ->
-                    virtualNetworkInterface.send(
-                        nextHopAddress = neighborVirtualAddr.asInetAddress(),
-                        virtualPacket = pingMessage.toVirtualPacket(
-                            toAddr = neighborVirtualAddr,
-                            fromAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
-                            lastHopAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
-                            hopCount = 1,
-                        )
+        networkInterfaces.forEach { virtualNetworkInterface ->
+            virtualNetworkInterface.knownNeighbors.forEach { neighborVirtualAddr ->
+                val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
+                pendingPings.add(
+                    PendingPing(
+                        ping = pingMessage,
+                        toVirtualAddr = neighborVirtualAddr.requireAddressAsInt(),
                     )
-                }
+                )
+
+                virtualNetworkInterface.send(
+                    nextHopAddress = neighborVirtualAddr,
+                    virtualPacket = pingMessage.toVirtualPacket(
+                        toAddr = neighborVirtualAddr.requireAddressAsInt(),
+                        fromAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
+                        lastHopAddr = virtualNetworkInterface.virtualAddress.requireAddressAsInt(),
+                        hopCount = 1,
+                    )
+                )
+
+                logger(
+                    priority = Log.VERBOSE,
+                    message = { "$logPrefix pingNeighborsRunnable: send ping to $neighborVirtualAddr " +
+                            "pendingPings=$pendingPings" }
+                )
             }
         }
 
@@ -168,8 +165,14 @@ class OriginatingMessageManager(
 
     private val checkLostNodesRunnable = Runnable {
         val timeNow = System.currentTimeMillis()
-        val nodesLost = originatorMessages.entries.filter {
+        val nodesLost = originatorMessages.filter {
             (timeNow - it.value.timeReceived) > originatingMessageNodeLostThreshold
+        }
+
+        if(nodesLost.isNotEmpty()) {
+            _state.update { prev ->
+                prev.filter { !nodesLost.containsKey(it.key) }
+            }
         }
 
         nodesLost.forEach {
@@ -179,8 +182,6 @@ class OriginatingMessageManager(
             })
             originatorMessages.remove(it.key)
         }
-
-        _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
     }
 
     private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleWithFixedDelay(
@@ -188,7 +189,11 @@ class OriginatingMessageManager(
     )
 
     private val pingNeighborsFuture = scheduledExecutorService.scheduleWithFixedDelay(
-        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
+        pingNeighborsRunnable, 1000, 5_000, TimeUnit.MILLISECONDS
+    )
+
+    private val checkLostNodesFuture = scheduledExecutorService.scheduleWithFixedDelay(
+        checkLostNodesRunnable, 1000, lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
     )
 
     private val closed = AtomicBoolean(false)
@@ -316,7 +321,8 @@ class OriginatingMessageManager(
         if (pendingPing == null) {
             logger(
                 Log.WARN, "$logPrefix : onPongReceived : pong from " +
-                        "${fromVirtualAddr.addressToDotNotation()} does not match any known sent ping"
+                        "${fromVirtualAddr.addressToDotNotation()} " +
+                        "reply to message id = ${pong.replyToMessageId} does not match any known sent ping"
             )
             return
         }
@@ -401,6 +407,7 @@ class OriginatingMessageManager(
         if(!closed.getAndSet(true)) {
             sendOriginatorMessagesFuture.cancel(true)
             pingNeighborsFuture.cancel(true)
+            checkLostNodesFuture.cancel(true)
             scope.cancel("$logPrefix closed")
             logger(Log.INFO, "$logPrefix closed")
         }else {
