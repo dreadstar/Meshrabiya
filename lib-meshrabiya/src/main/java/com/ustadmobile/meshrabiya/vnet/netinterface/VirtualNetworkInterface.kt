@@ -33,7 +33,15 @@ import java.net.InetAddress
  */
 interface VirtualNetworkInterface : Closeable {
 
+    /**
+     * The Virtual IP address assigned to this network interface
+     */
     val virtualAddress: InetAddress
+
+    /**
+     * The broadcast IP address for this interface
+     */
+    val broadcastAddress: InetAddress
 
     /**
      * List the known neighbors of this VirtualNetworkInterface (providing the Virtual IP address of

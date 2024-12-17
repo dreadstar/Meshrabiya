@@ -27,16 +27,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class AndroidVirtualNode(
     val appContext: Context,
+    nodeName: String,
     port: Int = 0,
     json: Json = Json,
     logger: MNetLogger = MNetLoggerStdout(),
     dataStore: DataStore<Preferences>,
-    address: InetAddress = randomApipaInetAddr(),
     config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
 ): VirtualNode(
     port = port,
     logger = logger,
-    address = address,
+    nodeName = nodeName,
     json = json,
     config = config,
 ) {
@@ -49,26 +49,6 @@ class AndroidVirtualNode(
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         bluetoothManager.adapter
     }
-
-    /**
-     * Listen to the WifiManager for new wifi station connections being established.. When they are
-     * established call addNewNeighborConnection to initialize the exchange of originator messages.
-     */
-    private val newWifiConnectionListener = MeshrabiyaWifiManagerAndroid.OnNewWifiConnectionListener {
-
-    }
-
-    override val meshrabiyaWifiManager: MeshrabiyaWifiManagerAndroid = MeshrabiyaWifiManagerAndroid(
-        appContext = appContext,
-        logger = logger,
-        localNodeAddr = addressAsInt,
-        router = this,
-        chainSocketFactory = chainSocketFactory,
-        ioExecutor = connectionExecutor,
-        dataStore = dataStore,
-        json = json,
-        onNewWifiConnectionListener = newWifiConnectionListener,
-    )
 
     private val _bluetoothState = MutableStateFlow(MeshrabiyaBluetoothState())
 
@@ -103,8 +83,6 @@ class AndroidVirtualNode(
     }
 
     private val receiverRegistered = AtomicBoolean(false)
-
-
 
     init {
         appContext.registerReceiver(

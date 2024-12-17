@@ -72,21 +72,15 @@ fun randomApipaInetAddr() = InetAddress.getByAddress(randomApipaAddr().addressTo
 /**
  * Mashrabiya Node
  *
- * Connection refers to the underlying "real" connection to some other device. There may be multiple
- * connections to the same remote node (e.g. Bluetooth, Sockets running over WiFi, etc)
- *
  * Addresses are 32 bit integers in the APIPA range
  */
 abstract class VirtualNode(
     val port: Int = 0,
     val json: Json = Json,
     val logger: MNetLogger = MNetLoggerStdout(),
-    final override val address: InetAddress = randomApipaInetAddr(),
-    override val networkPrefixLength: Int = 16,
+    val nodeName: String,
     val config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
 ) : VirtualRouter, Closeable {
-
-    val addressAsInt: Int = address.requireAddressAsInt()
 
     //This executor is used for direct I/O activities
     protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
@@ -102,9 +96,7 @@ abstract class VirtualNode(
 
     val state: Flow<LocalNodeState> = _state.asStateFlow()
 
-    abstract val meshrabiyaWifiManager: MeshrabiyaWifiManager
-
-    protected val logPrefix: String = "[VirtualNode ${addressAsInt.addressToDotNotation()}]"
+    protected val logPrefix: String = "[VirtualNode $nodeName]"
 
     protected val iDatagramSocketFactory = VirtualNodeReturnPathSocketFactory(this)
 
@@ -127,7 +119,6 @@ abstract class VirtualNode(
         val lastHopAddr: Int,
         val hopCount: Byte,
         val receivedFromInterface: VirtualNetworkInterface? = null,
-
     )
 
     @Suppress("unused") //Part of the API
@@ -136,30 +127,6 @@ abstract class VirtualNode(
     }
 
     private val localPort = findFreePort(0)
-
-    val datagramSocket = VirtualNodeDatagramSocket(
-        socket = DatagramSocket(localPort),
-        ioExecutorService = connectionExecutor,
-        router = this,
-        localNodeVirtualAddress = addressAsInt,
-        logger = logger,
-    )
-
-    protected val chainSocketFactory: ChainSocketFactory = ChainSocketFactoryImpl(
-        virtualRouter = this,
-        logger = logger,
-    )
-
-    val socketFactory: SocketFactory
-        get() = chainSocketFactory
-
-    private val chainSocketServer = ChainSocketServer(
-        serverSocket = ServerSocket(localPort),
-        executorService = connectionExecutor,
-        chainSocketFactory = chainSocketFactory,
-        name = addressAsInt.addressToDotNotation(),
-        logger = logger
-    )
 
     private val _incomingMmcpMessages = MutableSharedFlow<MmcpMessageAndPacketHeader>(
         replay = 8,
@@ -183,13 +150,6 @@ abstract class VirtualNode(
     private val activeSockets: MutableMap<Int, VirtualDatagramSocketImpl> = ConcurrentHashMap()
 
     init {
-        _state.update { prev ->
-            prev.copy(
-                address = addressAsInt,
-                connectUri = generateConnectLink(hotspot = null).uri
-            )
-        }
-
         coroutineScope.launch {
             originatingMessageManager.state.collect {
                 _state.update { prev ->
@@ -322,28 +282,10 @@ abstract class VirtualNode(
     }
 
 
-    override val localDatagramPort: Int
-        get() = datagramSocket.localPort
-
-
-    protected fun generateConnectLink(
-        hotspot: WifiConnectConfig?,
-        bluetoothConfig: MeshrabiyaBluetoothState? = null,
-    ): MeshrabiyaConnectLink {
-        return MeshrabiyaConnectLink.fromComponents(
-            nodeAddr = addressAsInt,
-            port = localDatagramPort,
-            hotspotConfig = hotspot,
-            bluetoothConfig = bluetoothConfig,
-            json = json,
-        )
-    }
-
     private fun onIncomingMmcpMessage(
         virtualPacket: VirtualPacket,
         receivedFromInterface: VirtualNetworkInterface
     ) {
-        //This is an Mmcp message
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
             val from = virtualPacket.header.fromAddr
@@ -468,33 +410,7 @@ abstract class VirtualNode(
         return originatingMessageManager.lookupNextHopForChainSocket(address, port)
     }
 
-    open suspend fun setWifiHotspotEnabled(
-        enabled: Boolean,
-        preferredBand: ConnectBand = ConnectBand.BAND_2GHZ,
-        hotspotType: HotspotType = HotspotType.AUTO,
-    ): LocalHotspotResponse? {
-        return if (enabled) {
-            meshrabiyaWifiManager.requestHotspot(
-                requestMessageId = nextMmcpMessageId(),
-                request = LocalHotspotRequest(
-                    preferredBand = preferredBand,
-                    preferredType = hotspotType,
-                )
-            )
-        } else {
-            meshrabiyaWifiManager.deactivateHotspot()
-            LocalHotspotResponse(
-                responseToMessageId = 0,
-                config = null,
-                errorCode = 0,
-                redirectAddr = 0,
-            )
-        }
-    }
-
     override fun close() {
-        datagramSocket.close(closeSocket = true)
-        chainSocketServer.close(closeSocket = true)
         coroutineScope.cancel(message = "VirtualNode closed")
 
         connectionExecutor.shutdown()

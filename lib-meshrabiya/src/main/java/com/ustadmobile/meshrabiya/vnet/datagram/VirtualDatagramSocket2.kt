@@ -11,9 +11,11 @@ class VirtualDatagramSocket2(
     router: VirtualRouter,
     localVirtualAddress: Int,
     logger: MNetLogger,
-): DatagramSocket(VirtualDatagramSocketImpl(
-    router = router,
-    localVirtualAddress = localVirtualAddress,
-    logger = logger,
-))
+): DatagramSocket(
+    VirtualDatagramSocketImpl(
+        router = router,
+        localVirtualAddress = localVirtualAddress,
+        logger = logger,
+    )
+)
 
