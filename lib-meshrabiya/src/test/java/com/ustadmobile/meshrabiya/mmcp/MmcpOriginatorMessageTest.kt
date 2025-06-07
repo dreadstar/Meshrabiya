@@ -8,6 +8,9 @@ import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
 import org.junit.Assert
 import org.junit.Test
 import java.net.Inet6Address
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class MmcpOriginatorMessageTest {
 
@@ -70,5 +73,145 @@ class MmcpOriginatorMessageTest {
         Assert.assertEquals(originatorMessage.connectConfig, messageFromPacket.connectConfig)
     }
 
+    @Test
+    fun `test packed mesh info encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test setting and getting packed info
+        message.packedMeshInfo = 0x1234567890ABCDEFL
+        assertEquals(0x1234567890ABCDEFL, message.packedMeshInfo)
+    }
 
+    @Test
+    fun `test neighbor count encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test various neighbor counts
+        val testCounts = listOf(0, 1, 5, 10, 15, 31)
+        for (count in testCounts) {
+            message.neighborCount = count
+            assertEquals(count, message.neighborCount)
+        }
+    }
+
+    @Test
+    fun `test centrality encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test various centrality values
+        val testValues = listOf(0.0f, 0.25f, 0.5f, 0.75f, 1.0f)
+        for (value in testValues) {
+            message.centrality = value
+            assertEquals(value, message.centrality, 0.01f)
+        }
+    }
+
+    @Test
+    fun `test signal strength encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test various signal strengths
+        val testStrengths = listOf(-100, -80, -60, -40, -20)
+        for (strength in testStrengths) {
+            message.signalStrength = strength
+            assertEquals(strength, message.signalStrength)
+        }
+    }
+
+    @Test
+    fun `test battery level encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test various battery levels
+        val testLevels = listOf(0, 25, 50, 75, 100)
+        for (level in testLevels) {
+            message.batteryLevel = level
+            assertEquals(level, message.batteryLevel)
+        }
+    }
+
+    @Test
+    fun `test internet connectivity encoding and decoding`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test both states
+        message.hasInternetConnectivity = true
+        assertTrue(message.hasInternetConnectivity)
+        
+        message.hasInternetConnectivity = false
+        assertFalse(message.hasInternetConnectivity)
+    }
+
+    @Test
+    fun `test all fields together`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Set all fields
+        message.neighborCount = 5
+        message.centrality = 0.75f
+        message.signalStrength = -65
+        message.batteryLevel = 80
+        message.hasInternetConnectivity = true
+        
+        // Verify all fields
+        assertEquals(5, message.neighborCount)
+        assertEquals(0.75f, message.centrality, 0.01f)
+        assertEquals(-65, message.signalStrength)
+        assertEquals(80, message.batteryLevel)
+        assertTrue(message.hasInternetConnectivity)
+    }
+
+    @Test
+    fun `test field boundaries`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Test neighbor count boundaries
+        message.neighborCount = 0
+        assertEquals(0, message.neighborCount)
+        
+        message.neighborCount = 31
+        assertEquals(31, message.neighborCount)
+        
+        // Test centrality boundaries
+        message.centrality = 0.0f
+        assertEquals(0.0f, message.centrality, 0.01f)
+        
+        message.centrality = 1.0f
+        assertEquals(1.0f, message.centrality, 0.01f)
+        
+        // Test signal strength boundaries
+        message.signalStrength = -100
+        assertEquals(-100, message.signalStrength)
+        
+        message.signalStrength = -20
+        assertEquals(-20, message.signalStrength)
+        
+        // Test battery level boundaries
+        message.batteryLevel = 0
+        assertEquals(0, message.batteryLevel)
+        
+        message.batteryLevel = 100
+        assertEquals(100, message.batteryLevel)
+    }
+
+    @Test
+    fun `test field independence`() {
+        val message = MmcpOriginatorMessage()
+        
+        // Set initial values
+        message.neighborCount = 5
+        message.centrality = 0.5f
+        message.signalStrength = -70
+        message.batteryLevel = 50
+        message.hasInternetConnectivity = true
+        
+        // Change one field and verify others remain unchanged
+        message.neighborCount = 10
+        
+        assertEquals(10, message.neighborCount)
+        assertEquals(0.5f, message.centrality, 0.01f)
+        assertEquals(-70, message.signalStrength)
+        assertEquals(50, message.batteryLevel)
+        assertTrue(message.hasInternetConnectivity)
+    }
 }
