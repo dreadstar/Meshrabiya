@@ -31,6 +31,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import com.ustadmobile.meshrabiya.beta.BetaTestLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
 
 
 class OriginatingMessageManager(
@@ -44,6 +46,7 @@ class OriginatingMessageManager(
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
     lostNodeCheckInterval: Int = 1_000,
+    private val betaLogger: BetaTestLogger? = null
 ) {
 
     private val logPrefix ="[OriginatingMessageManager for ${localNodeInetAddr}] "
@@ -84,115 +87,141 @@ class OriginatingMessageManager(
     // Add a map to store neighbor fitness and role info
     private val neighborFitnessInfo: MutableMap<Int, Pair<Int, Byte>> = ConcurrentHashMap()
 
+    // Track multi-hop neighbor info
+    private val neighborCentralityInfo: MutableMap<Int, Float> = ConcurrentHashMap()
+
+    private fun logBeta(level: LogLevel, message: String, throwable: Throwable? = null) {
+        betaLogger?.log(level, message, throwable)
+    }
+
     private val sendOriginatingMessageRunnable = Runnable {
-        val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
+        try {
+            val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
+            logBeta(LogLevel.DEBUG, "Sending originating message: $originatingMessage")
 
-        logger(
-            priority = Log.VERBOSE,
-            message = { "$logPrefix sending originating message " +
-                    "messageId=${originatingMessage.messageId} sentTime=${originatingMessage.sentTime}"
+            logger(
+                priority = Log.VERBOSE,
+                message = { "$logPrefix sending originating message " +
+                        "messageId=${originatingMessage.messageId} sentTime=${originatingMessage.sentTime}"
+                }
+            )
+
+            val packet = originatingMessage.toVirtualPacket(
+                toAddr = ADDR_BROADCAST,
+                fromAddr = localNodeAddress,
+                lastHopAddr = localNodeAddress,
+                hopCount = 1,
+            )
+
+            val neighbors = originatorMessages.filter {
+                it.value.hopCount == 1.toByte()
             }
-        )
 
-        val packet = originatingMessage.toVirtualPacket(
-            toAddr = ADDR_BROADCAST,
-            fromAddr = localNodeAddress,
-            lastHopAddr = localNodeAddress,
-            hopCount = 1,
-        )
-
-        val neighbors = originatorMessages.filter {
-            it.value.hopCount == 1.toByte()
-        }
-
-        neighbors.forEach {
-            val lastOriginatorMessage = it.value
-            try {
-                lastOriginatorMessage.receivedFromSocket.send(
-                    nextHopAddress = lastOriginatorMessage.lastHopRealInetAddr,
-                    nextHopPort = lastOriginatorMessage.lastHopRealPort,
-                    virtualPacket = packet,
-                )
-            }catch(e: Exception) {
-                logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable: exception sending to " +
-                        "${it.key.addressToDotNotation()} through ${it.value.lastHopRealInetAddr}:${it.value.lastHopRealPort}",
-                    e)
+            neighbors.forEach {
+                val lastOriginatorMessage = it.value
+                try {
+                    lastOriginatorMessage.receivedFromSocket.send(
+                        nextHopAddress = lastOriginatorMessage.lastHopRealInetAddr,
+                        nextHopPort = lastOriginatorMessage.lastHopRealPort,
+                        virtualPacket = packet,
+                    )
+                }catch(e: Exception) {
+                    logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable: exception sending to " +
+                            "${it.key.addressToDotNotation()} through ${it.value.lastHopRealInetAddr}:${it.value.lastHopRealPort}",
+                        e)
+                }
             }
-        }
 
-        //check if we have an active station connection but have lost the originating message from
-        // the hotspot node e.g. node slowed down for a while, app restart, etc.
-        //Send it an originating message even if we haven't receive one from it lately
-        //This could help restore a connection that died temporarily.
-        val stationState = getWifiState().wifiStationState
-        val stationNeighborInetAddr = stationState.config?.linkLocalAddr
-        val stationDatagramPort = stationState.config?.port
-        if(stationNeighborInetAddr != null &&
-            !neighbors.any { it.value.lastHopRealInetAddr == stationNeighborInetAddr }
-            && stationDatagramPort != null
-            && stationState.stationBoundDatagramSocket != null
-        ) {
-            logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable: have not received " +
-                    " originating message from hotspot we are connected to as station. Retrying")
-            try {
-                stationState.stationBoundDatagramSocket.send(
-                    nextHopAddress = stationNeighborInetAddr,
-                    nextHopPort = stationDatagramPort,
-                    virtualPacket = packet,
-                )
-            }catch(e: Exception) {
-                logger(Log.ERROR, "$logPrefix : sendOriginatingMessagesRunnable: could not " +
-                        "send originating message to group owner", e)
+            //check if we have an active station connection but have lost the originating message from
+            // the hotspot node e.g. node slowed down for a while, app restart, etc.
+            //Send it an originating message even if we haven't receive one from it lately
+            //This could help restore a connection that died temporarily.
+            val stationState = getWifiState().wifiStationState
+            val stationNeighborInetAddr = stationState.config?.linkLocalAddr
+            val stationDatagramPort = stationState.config?.port
+            if(stationNeighborInetAddr != null &&
+                !neighbors.any { it.value.lastHopRealInetAddr == stationNeighborInetAddr }
+                && stationDatagramPort != null
+                && stationState.stationBoundDatagramSocket != null
+            ) {
+                logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable: have not received " +
+                        " originating message from hotspot we are connected to as station. Retrying")
+                try {
+                    stationState.stationBoundDatagramSocket.send(
+                        nextHopAddress = stationNeighborInetAddr,
+                        nextHopPort = stationDatagramPort,
+                        virtualPacket = packet,
+                    )
+                }catch(e: Exception) {
+                    logger(Log.ERROR, "$logPrefix : sendOriginatingMessagesRunnable: could not " +
+                            "send originating message to group owner", e)
+                }
+            }else if(stationNeighborInetAddr != null && stationState.stationBoundDatagramSocket == null) {
+                logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable : could not send " +
+                        "originating message to group owner socket not set on state")
             }
-        }else if(stationNeighborInetAddr != null && stationState.stationBoundDatagramSocket == null) {
-            logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable : could not send " +
-                    "originating message to group owner socket not set on state")
+        } catch (e: Exception) {
+            logBeta(LogLevel.ERROR, "Error sending originating message", e)
+            logger(Log.ERROR, { "$logPrefix : sendOriginatingMessageRunnable : exception sending originating message" }, e)
         }
-
     }
 
     private val pingNeighborsRunnable = Runnable {
-        val neighbors = neighbors()
-        neighbors.forEach {
-            val neighborVirtualAddr = it.first
-            val lastOrigininatorMessage = it.second
-            val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
-            pendingPings.add(PendingPing(pingMessage, neighborVirtualAddr, System.currentTimeMillis()))
-            logger(
-                priority = Log.VERBOSE,
-                message = { "$logPrefix pingNeighborsRunnable: send ping to ${neighborVirtualAddr.addressToDotNotation()}" }
-            )
-
-            it.second.receivedFromSocket.send(
-                nextHopAddress = lastOrigininatorMessage.lastHopRealInetAddr,
-                nextHopPort = lastOrigininatorMessage.lastHopRealPort,
-                virtualPacket = pingMessage.toVirtualPacket(
-                    toAddr = neighborVirtualAddr,
-                    fromAddr = localNodeAddress,
-                    lastHopAddr = localNodeAddress,
-                    hopCount = 1,
+        try {
+            val neighbors = neighbors()
+            logBeta(LogLevel.DEBUG, "Pinging neighbors: ${neighbors.map { it.first.addressToDotNotation() }.joinToString()}")
+            neighbors.forEach {
+                val neighborVirtualAddr = it.first
+                val lastOrigininatorMessage = it.second
+                val pingMessage = MmcpPing(messageId = nextMmcpMessageId())
+                pendingPings.add(PendingPing(pingMessage, neighborVirtualAddr, System.currentTimeMillis()))
+                logger(
+                    priority = Log.VERBOSE,
+                    message = { "$logPrefix pingNeighborsRunnable: send ping to ${neighborVirtualAddr.addressToDotNotation()}" }
                 )
-            )
-        }
 
-        //Remove expired pings
-        val pingTimeoutThreshold = System.currentTimeMillis() - pingTimeout
-        pendingPings.removeIf { it.timesent < pingTimeoutThreshold }
+                it.second.receivedFromSocket.send(
+                    nextHopAddress = lastOrigininatorMessage.lastHopRealInetAddr,
+                    nextHopPort = lastOrigininatorMessage.lastHopRealPort,
+                    virtualPacket = pingMessage.toVirtualPacket(
+                        toAddr = neighborVirtualAddr,
+                        fromAddr = localNodeAddress,
+                        lastHopAddr = localNodeAddress,
+                        hopCount = 1,
+                    )
+                )
+            }
+
+            //Remove expired pings
+            val pingTimeoutThreshold = System.currentTimeMillis() - pingTimeout
+            pendingPings.removeIf { it.timesent < pingTimeoutThreshold }
+
+            logBeta(LogLevel.DEBUG, "Pinging neighbors: ${neighborFitnessInfo.keys.joinToString { it.addressToDotNotation() }}")
+        } catch (e: Exception) {
+            logBeta(LogLevel.ERROR, "Error pinging neighbors", e)
+            logger(Log.ERROR, { "$logPrefix : pingNeighborsRunnable : exception pinging neighbors" }, e)
+        }
     }
 
     private val checkLostNodesRunnable = Runnable {
-        val timeNow = System.currentTimeMillis()
-        val nodesLost = originatorMessages.entries.filter {
-            (timeNow - it.value.timeReceived) > originatingMessageNodeLostThreshold
-        }
+        try {
+            val timeNow = System.currentTimeMillis()
+            val nodesLost = originatorMessages.entries.filter {
+                (timeNow - it.value.timeReceived) > originatingMessageNodeLostThreshold
+            }
+            logBeta(LogLevel.DEBUG, "Checking lost nodes: ${nodesLost.map { it.key.addressToDotNotation() }.joinToString()}")
+            nodesLost.forEach {
+                logBeta(LogLevel.INFO, "Lost node: ${it.key.addressToDotNotation()} - no contact for ${timeNow - it.value.timeReceived}ms")
+                logger(Log.DEBUG, {"$logPrefix : checkLostNodesRunnable: " +
+                        "Lost ${it.key.addressToDotNotation()} - no contact for ${timeNow - it.value.timeReceived}ms"})
+                originatorMessages.remove(it.key)
+            }
 
-        nodesLost.forEach {
-            logger(Log.DEBUG, {"$logPrefix : checkLostNodesRunnable: " +
-                    "Lost ${it.key.addressToDotNotation()} - no contact for ${timeNow - it.value.timeReceived}ms"})
-            originatorMessages.remove(it.key)
+            _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
+        } catch (e: Exception) {
+            logBeta(LogLevel.ERROR, "Error checking lost nodes", e)
+            logger(Log.ERROR, { "$logPrefix : checkLostNodesRunnable : exception checking lost nodes" }, e)
         }
-
-        _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
     }
 
     private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleAtFixedRate(
@@ -212,13 +241,21 @@ class OriginatingMessageManager(
 
 
     private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpOriginatorMessage {
+        val meshRoleManager = (virtualNode as? AndroidVirtualNode)?.meshRoleManager
+        val neighborCount = meshRoleManager?.getNeighborFitnessInfo()?.size ?: 0
+        val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
+        // Quantize centralityScore to 0-255 (assume 0-10.0 range, scale by 25.5)
+        val quantizedCentrality = (centralityScore.coerceIn(0f, 10f) * 25.5f).toInt().coerceIn(0, 255)
+        val quantizedNeighborCount = neighborCount.coerceIn(0, 255)
+        val quantizedNodeRole = (nodeRole.toInt() and 0x3)
+        val packedMeshInfo = (quantizedCentrality shl 24) or (quantizedNeighborCount shl 16) or (quantizedNodeRole shl 14)
         return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
             pingTimeSum = 0,
             connectConfig = getWifiState().connectConfig,
             sentTime = System.currentTimeMillis(),
             fitnessScore = fitnessScore,
-            nodeRole = nodeRole
+            packedMeshInfo = packedMeshInfo
         )
     }
 
@@ -236,6 +273,7 @@ class OriginatingMessageManager(
         virtualPacket: VirtualPacket,
     ): Boolean {
         assertNotClosed()
+        logBeta(LogLevel.DEBUG, "Received originating message from ${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}, messageId=${mmcpMessage.messageId}, hopCount=${virtualPacket.header.hopCount}, sentTime=${mmcpMessage.sentTime}")
         //Dont keep originator messages in our own table for this node
         logger(
             Log.VERBOSE,
@@ -246,13 +284,11 @@ class OriginatingMessageManager(
             }
         )
 
-
         val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0
         MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
             ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
 
         val currentOriginatorMessage = originatorMessages[virtualPacket.header.fromAddr]
-
 
         //Update this only if it is more recent and/or better. It might be that we are getting it back
         //via some other (suboptimal) route with more hops
@@ -295,15 +331,30 @@ class OriginatingMessageManager(
                 fitnessScore = mmcpMessage.fitnessScore,
                 nodeRole = mmcpMessage.nodeRole
             )
+            // Update neighbor RSSI (if available)
+            val rssi = datagramPacket.javaClass.getDeclaredField("rssi").let { field ->
+                field.isAccessible = true
+                (field.get(datagramPacket) as? Int) ?: 0
+            }
+            (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborSignalStrength(
+                neighborId = virtualPacket.header.fromAddr.toString(),
+                rssi = rssi
+            )
+            // Multi-hop: update neighbor centrality info if available
+            neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
+            // Optionally, use neighborCount for richer mesh awareness
             logger(
                 Log.VERBOSE,
                 message = {
                     "$logPrefix update originator messages: " +
                             "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}; " +
-                            "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}"
+                            "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}" +
+                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}" +
+                            ", multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}"
                 }
             )
             _state.value = originatorMessages.toMap()
+            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}")
         }
 
         if(isNewNeighbor) {
@@ -325,8 +376,7 @@ class OriginatingMessageManager(
         val pendingPing = pendingPings.firstOrNull(pendingPingPredicate)
 
         if(pendingPing == null){
-            logger(Log.WARN, "$logPrefix : onPongReceived : pong from " +
-                    "${fromVirtualAddr.addressToDotNotation()} does not match any known sent ping")
+            logBeta(LogLevel.WARN, "Pong from ${fromVirtualAddr.addressToDotNotation()} does not match any known sent ping")
             return
         }
 
@@ -334,10 +384,7 @@ class OriginatingMessageManager(
 
         //Sometimes unit tests will run very quickly, and test may fail if ping time is 0
         val pingTime = maxOf((timeNow - pendingPing.timesent).toShort(), 1)
-        logger(
-            Log.VERBOSE, {"$logPrefix received ping from ${fromVirtualAddr.addressToDotNotation()} " +
-                "pingTime=$pingTime"}
-        )
+        logBeta(LogLevel.DEBUG, "Received ping from ${fromVirtualAddr.addressToDotNotation()} pingTime=$pingTime")
 
         neighborPingTimes[fromVirtualAddr] = PingTime(
             nodeVirtualAddr = fromVirtualAddr,
@@ -408,6 +455,7 @@ class OriginatingMessageManager(
         timeout: Int = 15_000,
         sendInterval: Int = 1_000,
     ) {
+        logBeta(LogLevel.INFO, "Adding neighbor: $neighborRealInetAddr:$neighborRealPort")
         logger(Log.DEBUG, "$logPrefix: addNeighbor - sending originating messages out")
 
         //send originating packets out to the other device until we get something back from it
@@ -436,8 +484,7 @@ class OriginatingMessageManager(
                 val replyMessage = receivedMessages.filter {
                     it.lastHopRealInetAddr == neighborRealInetAddr && it.lastHopRealPort == neighborRealPort
                 }.first()
-                logger(Log.DEBUG, "$logPrefix addNeighbor - received originating message reply " +
-                        "from ${replyMessage.lastHopAddr.addressToDotNotation()}")
+                logBeta(LogLevel.INFO, "Received originating message reply from ${replyMessage.lastHopAddr.addressToDotNotation()}")
             }
         }finally {
             sendOriginatingMessageJob.cancel()
@@ -462,5 +509,14 @@ class OriginatingMessageManager(
 
     // Add a method to get neighbor fitness info
     fun getNeighborFitnessInfo(): Map<Int, Pair<Int, Byte>> = neighborFitnessInfo.toMap()
+
+    fun gossipFitnessScore() {
+        logBeta(LogLevel.DEBUG, "Gossiping fitness score")
+        // Enhanced gossip protocol: propagate multi-hop neighbor info
+        // For each direct neighbor, include our own neighbor count and centrality score in the message
+        // (In a real implementation, you might extend MmcpOriginatorMessage to carry this info explicitly)
+        sendOriginatingMessageRunnable.run()
+        // Optionally, could send additional messages with multi-hop info, or piggyback on existing ones
+    }
 
 }
