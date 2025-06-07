@@ -24,6 +24,9 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
+import com.ustadmobile.meshrabiya.vnet.NodeRole
+import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
 
 class AndroidVirtualNode(
     val appContext: Context,
@@ -109,7 +112,18 @@ class AndroidVirtualNode(
 
     private val receiverRegistered = AtomicBoolean(false)
 
+    // Add MeshRoleManager
+    val meshRoleManager: MeshRoleManager = MeshRoleManager(this)
 
+    override val originatingMessageManager = OriginatingMessageManager(
+        localNodeInetAddr = address,
+        logger = logger,
+        scheduledExecutorService = scheduledExecutor,
+        nextMmcpMessageId = this::nextMmcpMessageId,
+        getWifiState = { _state.value.wifiState },
+        getFitnessScore = { getCurrentFitnessScore() },
+        getNodeRole = { getCurrentNodeRole() }
+    )
 
     init {
         appContext.registerReceiver(
@@ -182,6 +196,16 @@ class AndroidVirtualNode(
         }else {
             logger(Log.WARN, "$logPrefix : storeBssid: BSSID for $ssid is NULL, can't save to avoid prompts on reconnect")
         }
+    }
+
+    fun getCurrentFitnessScore(): Int {
+        // Calculate and return the current fitness score (as integer)
+        return meshRoleManager.calculateFitnessScore().let { it -> it.fitnessScore }
+    }
+
+    fun getCurrentNodeRole(): Byte {
+        // Return the current node role as a byte
+        return meshRoleManager.currentRole.value.ordinal.toByte()
     }
 
 }

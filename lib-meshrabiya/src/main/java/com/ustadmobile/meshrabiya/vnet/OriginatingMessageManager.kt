@@ -39,6 +39,8 @@ class OriginatingMessageManager(
     private val scheduledExecutorService: ScheduledExecutorService,
     private val nextMmcpMessageId: () -> Int,
     private val getWifiState: () -> MeshrabiyaWifiState,
+    private val getFitnessScore: () -> Int,
+    private val getNodeRole: () -> Byte,
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
     lostNodeCheckInterval: Int = 1_000,
@@ -79,8 +81,11 @@ class OriginatingMessageManager(
 
     private val neighborPingTimes: MutableMap<Int, PingTime> = ConcurrentHashMap()
 
+    // Add a map to store neighbor fitness and role info
+    private val neighborFitnessInfo: MutableMap<Int, Pair<Int, Byte>> = ConcurrentHashMap()
+
     private val sendOriginatingMessageRunnable = Runnable {
-        val originatingMessage = makeOriginatingMessage()
+        val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
 
         logger(
             priority = Log.VERBOSE,
@@ -206,12 +211,14 @@ class OriginatingMessageManager(
     private var closed = false
 
 
-    private fun makeOriginatingMessage(): MmcpOriginatorMessage {
+    private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpOriginatorMessage {
         return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
             pingTimeSum = 0,
             connectConfig = getWifiState().connectConfig,
-            sentTime = System.currentTimeMillis()
+            sentTime = System.currentTimeMillis(),
+            fitnessScore = fitnessScore,
+            nodeRole = nodeRole
         )
     }
 
@@ -280,14 +287,22 @@ class OriginatingMessageManager(
                 receivedFromSocket = receivedFromSocket,
                 lastHopRealPort = datagramPacket.port
             )
+            // Store neighbor fitness and role info
+            neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair(mmcpMessage.fitnessScore, mmcpMessage.nodeRole)
+            // Also update MeshRoleManager if available
+            (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
+                neighborId = virtualPacket.header.fromAddr.toString(),
+                fitnessScore = mmcpMessage.fitnessScore,
+                nodeRole = mmcpMessage.nodeRole
+            )
             logger(
                 Log.VERBOSE,
                 message = {
                     "$logPrefix update originator messages: " +
-                            "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}"
+                            "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}; " +
+                            "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}"
                 }
             )
-
             _state.value = originatorMessages.toMap()
         }
 
@@ -398,7 +413,7 @@ class OriginatingMessageManager(
         //send originating packets out to the other device until we get something back from it
         val sendOriginatingMessageJob = scope.launch {
             try {
-                val originatingMessage = makeOriginatingMessage()
+                val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
                 socket.send(
                     nextHopAddress = neighborRealInetAddr,
                     nextHopPort = neighborRealPort,
@@ -444,5 +459,8 @@ class OriginatingMessageManager(
         scope.cancel("$logPrefix closed")
         closed = true
     }
+
+    // Add a method to get neighbor fitness info
+    fun getNeighborFitnessInfo(): Map<Int, Pair<Int, Byte>> = neighborFitnessInfo.toMap()
 
 }

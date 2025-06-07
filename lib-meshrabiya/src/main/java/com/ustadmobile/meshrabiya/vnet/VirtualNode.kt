@@ -140,6 +140,8 @@ abstract class VirtualNode(
         scheduledExecutorService = scheduledExecutor,
         nextMmcpMessageId = this::nextMmcpMessageId,
         getWifiState = { _state.value.wifiState },
+        getFitnessScore = { 0 }, // TODO: Override in AndroidVirtualNode to provide real value
+        getNodeRole = { 0 }      // TODO: Override in AndroidVirtualNode to provide real value
     )
 
     private val localPort = findFreePort(0)

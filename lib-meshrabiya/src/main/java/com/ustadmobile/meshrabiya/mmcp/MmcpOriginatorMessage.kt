@@ -18,18 +18,24 @@ class MmcpOriginatorMessage(
     val pingTimeSum: Short,
     val connectConfig: WifiConnectConfig?,
     val sentTime: Long = System.currentTimeMillis(),
+    val fitnessScore: Int = 0,
+    val nodeRole: Byte = 0
 ): MmcpMessage(WHAT_ORIGINATOR, messageId) {
     override fun toBytes(): ByteArray {
         val connectConfigSize = connectConfig?.sizeInBytes ?: 0
-        //size will be : ping time sum (2 bytes) + sentTime (8 bytes) + connect config size (2 bytes) + connect config
-        val payloadSize = CONNECT_CONFIG_OFFSET + connectConfigSize
+        //size will be : ping time sum (2 bytes) + sentTime (8 bytes) + connect config size (2 bytes) + connect config + fitnessScore (4 bytes) + nodeRole (1 byte)
+        val payloadSize = CONNECT_CONFIG_OFFSET + connectConfigSize + 4 + 1
         val payload = ByteArray(payloadSize)
         ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
             .putShort(pingTimeSum)
             .putLong(sentTime)
             .putShort(connectConfigSize.toShort())
         connectConfig?.toBytes(payload, CONNECT_CONFIG_OFFSET)
-
+        // Write fitnessScore and nodeRole at the end
+        ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            .position(CONNECT_CONFIG_OFFSET + connectConfigSize)
+            .putInt(fitnessScore)
+            .put(nodeRole)
         return headerAndPayloadToBytes(header, payload)
     }
 
@@ -39,6 +45,8 @@ class MmcpOriginatorMessage(
             pingTimeSum = (this.pingTimeSum + pingTimeIncrement).toShort(),
             connectConfig = connectConfig,
             sentTime = sentTime,
+            fitnessScore = fitnessScore,
+            nodeRole = nodeRole
         )
     }
 
@@ -50,6 +58,8 @@ class MmcpOriginatorMessage(
         if (pingTimeSum != other.pingTimeSum) return false
         if (connectConfig != other.connectConfig) return false
         if (sentTime != other.sentTime) return false
+        if (fitnessScore != other.fitnessScore) return false
+        if (nodeRole != other.nodeRole) return false
 
         return true
     }
@@ -59,6 +69,8 @@ class MmcpOriginatorMessage(
         result = 31 * result + pingTimeSum
         result = 31 * result + (connectConfig?.hashCode() ?: 0)
         result = 31 * result + sentTime.hashCode()
+        result = 31 * result + fitnessScore
+        result = 31 * result + nodeRole
         return result
     }
 
@@ -111,8 +123,13 @@ class MmcpOriginatorMessage(
             }else {
                 null
             }
+            // Read fitnessScore and nodeRole
+            val fitnessOffset = offset + MMCP_HEADER_LEN + CONNECT_CONFIG_OFFSET + connectConfigSize
+            val fitnessBuf = ByteBuffer.wrap(byteArray, fitnessOffset, 5).order(ByteOrder.BIG_ENDIAN)
+            val fitnessScore = fitnessBuf.int
+            val nodeRole = fitnessBuf.get()
 
-            return MmcpOriginatorMessage(header.messageId, pingTimeSum, connectConfig, sentTime)
+            return MmcpOriginatorMessage(header.messageId, pingTimeSum, connectConfig, sentTime, fitnessScore, nodeRole)
         }
 
     }
