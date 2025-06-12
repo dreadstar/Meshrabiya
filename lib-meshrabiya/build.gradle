@@ -37,37 +37,31 @@ android {
 }
 
 dependencies {
-    implementation "androidx.core:core-ktx:$version_androidx_core"
-    implementation "androidx.appcompat:appcompat:$version_appcompat"
-    implementation "com.athaydes.rawhttp:rawhttp-core:$version_rawhttp"
-    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$version_kotlinx_serialization"
-    implementation "androidx.datastore:datastore-preferences:$version_datastore"
+    implementation libs.androidx.core.ktx
+    implementation libs.androidx.appcompat
+    implementation libs.rawhttp.core
+    implementation libs.kotlinx.serialization.json
+    implementation libs.datastore.preferences
 
+    implementation libs.bcprov.jdk18on
+    implementation libs.bcpkix.jdk18on
 
-    implementation "org.bouncycastle:bcprov-jdk18on:$version_bouncycastle"
-    implementation "org.bouncycastle:bcpkix-jdk18on:$version_bouncycastle"
+    implementation libs.ipaddress
 
-    implementation "com.github.seancfoley:ipaddress:$version_ip_address"
+    coreLibraryDesugaring libs.android.desugar.jdk.libs
 
-    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:$version_android_desugaring"
+    testImplementation libs.junit.jupiter
+    testImplementation libs.mockito.kotlin
+    testImplementation libs.turbine
+    testImplementation libs.mockwebserver
+    testImplementation libs.okhttp
 
-    testImplementation project(":test-shared")
-    testImplementation "junit:junit:$version_junit"
-    testImplementation "org.mockito.kotlin:mockito-kotlin:$version_kotlin_mockito"
-    testImplementation "app.cash.turbine:turbine:$version_turbine"
-
-    testImplementation "com.squareup.okhttp3:mockwebserver:$version_mockwebserver"
-    testImplementation "com.squareup.okhttp3:okhttp:$version_okhttp"
-
-    //As per: https://developer.android.com/topic/libraries/testing-support-library/packages.html#gradle-dependencies
-    androidTestImplementation "androidx.test:runner:$version_android_junit_runner"
-    androidTestImplementation "androidx.test:rules:$version_androidx_test_rules"
-
-    androidTestImplementation project(":test-shared")
-    androidTestImplementation "androidx.test.ext:junit:$version_android_test_ext_junit"
-    androidTestImplementation "app.cash.turbine:turbine:$version_turbine"
-    androidTestImplementation "org.mockito:mockito-android:$version_android_mockito"
-    androidTestImplementation "org.mockito.kotlin:mockito-kotlin:$version_kotlin_mockito"
+    androidTestImplementation libs.androidx.junit
+    androidTestImplementation libs.androidx.test.rules
+    androidTestImplementation libs.androidx.test.ext.junit
+    androidTestImplementation libs.turbine
+    androidTestImplementation libs.mockito.android
+    androidTestImplementation libs.mockito.kotlin
 }
 
 publishing {

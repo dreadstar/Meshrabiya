@@ -31,6 +31,7 @@ import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
 import com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager
 import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotRequest
 import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotResponse
+import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -98,9 +99,9 @@ abstract class VirtualNode(
 
     protected val coroutineScope = CoroutineScope(Dispatchers.Default + Job())
 
-    private val mmcpMessageIdAtomic = AtomicInteger()
+    private val messageCounter = AtomicInteger(0)
 
-    protected val _state = MutableStateFlow(LocalNodeState())
+    private val _state = MutableStateFlow(LocalNodeState())
 
     val state: Flow<LocalNodeState> = _state.asStateFlow()
 
@@ -137,11 +138,11 @@ abstract class VirtualNode(
     private val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
-        scheduledExecutorService = scheduledExecutor,
-        nextMmcpMessageId = this::nextMmcpMessageId,
-        getWifiState = { _state.value.wifiState },
-        getFitnessScore = { 0 }, // TODO: Override in AndroidVirtualNode to provide real value
-        getNodeRole = { 0 }      // TODO: Override in AndroidVirtualNode to provide real value
+        scheduledExecutor = scheduledExecutor,
+        nextMmcpMessageId = { nextMmcpMessageId() },
+        getWifiState = { state.value.wifiState },
+        getFitnessScore = { getCurrentFitnessScore() },
+        getNodeRole = { getCurrentNodeRole() }
     )
 
     private val localPort = findFreePort(0)
@@ -198,8 +199,12 @@ abstract class VirtualNode(
         }
     }
 
-    override fun nextMmcpMessageId() = mmcpMessageIdAtomic.incrementAndGet()
+    fun nextMmcpMessageId(): Int {
+        return messageCounter.incrementAndGet()
+    }
 
+    abstract fun getCurrentFitnessScore(): Int
+    abstract fun getCurrentNodeRole(): Byte
 
     override fun allocateUdpPortOrThrow(
         virtualDatagramSocketImpl: VirtualDatagramSocketImpl,
@@ -570,6 +575,14 @@ abstract class VirtualNode(
         }
     }
 
+    fun sendMessage(message: MmcpMessage) {
+        originatingMessageManager.sendMessage(message)
+    }
+
+    fun getCurrentState(): LocalNodeState {
+        return state.value
+    }
+
     override fun close() {
         datagramSocket.close(closeSocket = true)
         chainSocketServer.close(closeSocket = true)
@@ -580,3 +593,9 @@ abstract class VirtualNode(
     }
 
 }
+
+data class LocalNodeState(
+    val wifiState: MeshrabiyaWifiState = MeshrabiyaWifiState(),
+    val bluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState(),
+    val connectUri: String = "",
+)

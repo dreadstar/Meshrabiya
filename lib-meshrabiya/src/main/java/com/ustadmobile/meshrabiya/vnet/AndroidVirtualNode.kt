@@ -27,16 +27,20 @@ import java.util.concurrent.atomic.AtomicBoolean
 import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.vnet.NodeRole
 import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
+import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
+import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
+import java.util.concurrent.ScheduledExecutorService
 
 class AndroidVirtualNode(
-    val appContext: Context,
+    private val context: Context,
     port: Int = 0,
     json: Json = Json,
     logger: MNetLogger = MNetLoggerStdout(),
     dataStore: DataStore<Preferences>,
     address: InetAddress = randomApipaInetAddr(),
     config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
-): VirtualNode(
+    private val scheduledExecutor: ScheduledExecutorService
+) : VirtualNode(
     port = port,
     logger = logger,
     address = address,
@@ -45,9 +49,8 @@ class AndroidVirtualNode(
 ) {
 
     private val bluetoothManager: BluetoothManager by lazy {
-        appContext.getSystemService(BluetoothManager::class.java)
+        context.getSystemService(BluetoothManager::class.java)
     }
-
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         bluetoothManager.adapter
@@ -67,7 +70,7 @@ class AndroidVirtualNode(
     }
 
     override val meshrabiyaWifiManager: MeshrabiyaWifiManagerAndroid = MeshrabiyaWifiManagerAndroid(
-        appContext = appContext,
+        appContext = context,
         logger = logger,
         localNodeAddr = addressAsInt,
         router = this,
@@ -113,20 +116,20 @@ class AndroidVirtualNode(
     private val receiverRegistered = AtomicBoolean(false)
 
     // Add MeshRoleManager
-    val meshRoleManager: MeshRoleManager = MeshRoleManager(this)
+    val meshRoleManager: MeshRoleManager = MeshRoleManager(this, context)
 
     override val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
-        scheduledExecutorService = scheduledExecutor,
-        nextMmcpMessageId = this::nextMmcpMessageId,
-        getWifiState = { _state.value.wifiState },
+        scheduledExecutor = scheduledExecutor,
+        nextMmcpMessageId = { nextMmcpMessageId() },
+        getWifiState = { state.value.wifiState },
         getFitnessScore = { getCurrentFitnessScore() },
         getNodeRole = { getCurrentNodeRole() }
     )
 
     init {
-        appContext.registerReceiver(
+        context.registerReceiver(
             bluetoothStateBroadcastReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         )
 
@@ -150,12 +153,11 @@ class AndroidVirtualNode(
         }
     }
 
-
     override fun close() {
         super.close()
 
         if(receiverRegistered.getAndSet(false)) {
-            appContext.unregisterReceiver(bluetoothStateBroadcastReceiver)
+            context.unregisterReceiver(bluetoothStateBroadcastReceiver)
         }
     }
 
@@ -198,14 +200,17 @@ class AndroidVirtualNode(
         }
     }
 
-    fun getCurrentFitnessScore(): Int {
-        // Calculate and return the current fitness score (as integer)
-        return meshRoleManager.calculateFitnessScore().let { it -> it.fitnessScore }
+    override fun getCurrentFitnessScore(): Int {
+        return meshRoleManager.calculateFitnessScore()
     }
 
-    fun getCurrentNodeRole(): Byte {
-        // Return the current node role as a byte
-        return meshRoleManager.currentRole.value.ordinal.toByte()
+    override fun getCurrentNodeRole(): Byte {
+        return meshRoleManager.getCurrentRole()
     }
 
+    fun updateWifiState(newState: MeshrabiyaWifiState) {
+        _state.update { prev ->
+            prev.copy(wifiState = newState)
+        }
+    }
 }

@@ -4,6 +4,7 @@ import android.util.Log
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
@@ -19,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -33,12 +35,12 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
-
+import java.util.concurrent.atomic.AtomicInteger
 
 class OriginatingMessageManager(
-    localNodeInetAddr: InetAddress,
+    private val localNodeInetAddr: InetAddress,
     private val logger: MNetLogger,
-    private val scheduledExecutorService: ScheduledExecutorService,
+    private val scheduledExecutor: java.util.concurrent.ScheduledExecutorService,
     private val nextMmcpMessageId: () -> Int,
     private val getWifiState: () -> MeshrabiyaWifiState,
     private val getFitnessScore: () -> Int,
@@ -60,9 +62,8 @@ class OriginatingMessageManager(
      */
     private val originatorMessages: MutableMap<Int, VirtualNode.LastOriginatorMessage> = ConcurrentHashMap()
 
-    private val _state = MutableStateFlow<Map<Int, VirtualNode.LastOriginatorMessage>>(emptyMap())
-
-    val state: Flow<Map<Int, VirtualNode.LastOriginatorMessage>> = _state.asStateFlow()
+    private val _state = MutableStateFlow(OriginatingMessageState())
+    val state: StateFlow<OriginatingMessageState> = _state
 
     private val receivedMessages: Flow<VirtualNode.LastOriginatorMessage> = MutableSharedFlow(
         replay = 1 , extraBufferCapacity = 0, onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -89,6 +90,8 @@ class OriginatingMessageManager(
 
     // Track multi-hop neighbor info
     private val neighborCentralityInfo: MutableMap<Int, Float> = ConcurrentHashMap()
+
+    private val messageCounter = AtomicInteger(0)
 
     private fun logBeta(level: LogLevel, message: String, throwable: Throwable? = null) {
         betaLogger?.log(level, message, throwable)
@@ -217,22 +220,24 @@ class OriginatingMessageManager(
                 originatorMessages.remove(it.key)
             }
 
-            _state.takeIf { !nodesLost.isEmpty() }?.value = originatorMessages.toMap()
+            _state.value = OriginatingMessageState(
+                pendingMessages = originatorMessages.toMap()
+            )
         } catch (e: Exception) {
             logBeta(LogLevel.ERROR, "Error checking lost nodes", e)
             logger(Log.ERROR, { "$logPrefix : checkLostNodesRunnable : exception checking lost nodes" }, e)
         }
     }
 
-    private val sendOriginatorMessagesFuture = scheduledExecutorService.scheduleAtFixedRate(
+    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleAtFixedRate(
         sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
     )
 
-    private val pingNeighborsFuture = scheduledExecutorService.scheduleAtFixedRate(
+    private val pingNeighborsFuture = scheduledExecutor.scheduleAtFixedRate(
         pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
     )
 
-    private val checkLostNodesFuture = scheduledExecutorService.scheduleAtFixedRate(
+    private val checkLostNodesFuture = scheduledExecutor.scheduleAtFixedRate(
         checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
     )
 
@@ -353,13 +358,15 @@ class OriginatingMessageManager(
                             ", multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}"
                 }
             )
-            _state.value = originatorMessages.toMap()
+            _state.value = OriginatingMessageState(
+                pendingMessages = originatorMessages.toMap()
+            )
             logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}")
         }
 
         if(isNewNeighbor) {
             //trigger immediate sending of originator messages so it can see us
-            scheduledExecutorService.submit(sendOriginatingMessageRunnable)
+            scheduledExecutor.submit(sendOriginatingMessageRunnable)
         }
 
         return isMoreRecentOrBetter
@@ -519,4 +526,36 @@ class OriginatingMessageManager(
         // Optionally, could send additional messages with multi-hop info, or piggyback on existing ones
     }
 
+    fun sendMessage(message: MmcpMessage) {
+        val messageId = nextMmcpMessageId()
+        val originatorMessage = MmcpOriginatorMessage(
+            messageId = messageId,
+            messageType = message.messageType,
+            messageData = message.toVirtualPacket().data,
+            logger = logger,
+        )
+
+        _state.value = _state.value.copy(
+            pendingMessages = _state.value.pendingMessages + (messageId to originatorMessage)
+        )
+    }
+
+    fun handlePong(pong: MmcpPong) {
+        val messageId = pong.messageId
+        _state.value = _state.value.copy(
+            pendingMessages = _state.value.pendingMessages.filterKeys { it != messageId }
+        )
+    }
+
+    fun getCurrentState(): OriginatingMessageState {
+        return state.value
+    }
+
+    fun getNextMessageId(): Int {
+        return messageCounter.incrementAndGet()
+    }
 }
+
+data class OriginatingMessageState(
+    val pendingMessages: Map<Int, MmcpOriginatorMessage> = emptyMap(),
+)

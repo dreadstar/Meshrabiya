@@ -1,9 +1,8 @@
 package com.ustadmobile.meshrabiya.mmcp
 
+import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.vnet.Protocol
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
-import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * The originator message is used to track routes around the mesh, roughly similar to the BATMAN protocol.
@@ -14,129 +13,44 @@ import java.nio.ByteOrder
  *                    it.
  */
 class MmcpOriginatorMessage(
-    messageId: Int,
-    val pingTimeSum: Short,
-    val connectConfig: WifiConnectConfig?,
+    override val messageId: Int,
+    override val messageType: Byte,
+    val messageData: ByteArray,
+    val logger: MNetLogger,
     val sentTime: Long = System.currentTimeMillis(),
     val fitnessScore: Int = 0,
-    // Bit-packed: [centrality:8][neighborCount:8][nodeRole:2][reserved:14]
-    val packedMeshInfo: Int = 0
-): MmcpMessage(WHAT_ORIGINATOR, messageId) {
-    // Helper properties for unpacking
-    val quantizedCentrality: Int get() = (packedMeshInfo shr 24) and 0xFF
-    val quantizedNeighborCount: Int get() = (packedMeshInfo shr 16) and 0xFF
-    val quantizedNodeRole: Int get() = (packedMeshInfo shr 14) and 0x3
-    val centralityScore: Float get() = quantizedCentrality / 25.5f
-    val neighborCount: Int get() = quantizedNeighborCount
-    val nodeRole: Byte get() = quantizedNodeRole.toByte()
+    val nodeRole: Byte = 0,
+    val neighborCount: Int = 0,
+    val centralityScore: Float = 0f,
+    val packedMeshInfo: ByteArray = ByteArray(0)
+) : MmcpMessage() {
 
-    override fun toBytes(): ByteArray {
-        val connectConfigSize = connectConfig?.sizeInBytes ?: 0
-        //size will be : ping time sum (2 bytes) + sentTime (8 bytes) + connect config size (2 bytes) + connect config + fitnessScore (4 bytes) + packedMeshInfo (4 bytes)
-        val payloadSize = CONNECT_CONFIG_OFFSET + connectConfigSize + 4 + 4
-        val payload = ByteArray(payloadSize)
-        ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-            .putShort(pingTimeSum)
-            .putLong(sentTime)
-            .putShort(connectConfigSize.toShort())
-        connectConfig?.toBytes(payload, CONNECT_CONFIG_OFFSET)
-        // Write fitnessScore and packedMeshInfo at the end
-        ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-            .position(CONNECT_CONFIG_OFFSET + connectConfigSize)
-            .putInt(fitnessScore)
-            .putInt(packedMeshInfo)
-        return headerAndPayloadToBytes(header, payload)
-    }
-
-    fun copyWithPingTimeIncrement(pingTimeIncrement: Short) : MmcpOriginatorMessage{
-        return MmcpOriginatorMessage(
-            messageId = this.messageId,
-            pingTimeSum = (this.pingTimeSum + pingTimeIncrement).toShort(),
-            connectConfig = connectConfig,
-            sentTime = sentTime,
-            fitnessScore = fitnessScore,
-            packedMeshInfo = packedMeshInfo
+    override fun toVirtualPacket(): VirtualPacket {
+        return VirtualPacket(
+            protocol = Protocol.MMCP,
+            messageType = messageType,
+            messageId = messageId,
+            data = messageData
         )
     }
 
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is MmcpOriginatorMessage) return false
-        if (!super.equals(other)) return false
-
-        if (pingTimeSum != other.pingTimeSum) return false
-        if (connectConfig != other.connectConfig) return false
-        if (sentTime != other.sentTime) return false
-        if (fitnessScore != other.fitnessScore) return false
-        if (packedMeshInfo != other.packedMeshInfo) return false
-
-        return true
+    override fun toBytes(): ByteArray {
+        return messageData
     }
 
-    override fun hashCode(): Int {
-        var result = super.hashCode()
-        result = 31 * result + pingTimeSum
-        result = 31 * result + (connectConfig?.hashCode() ?: 0)
-        result = 31 * result + sentTime.hashCode()
-        result = 31 * result + fitnessScore
-        result = 31 * result + packedMeshInfo
-        return result
+    fun copyWithPingTimeIncrement(pingTime: Long): MmcpOriginatorMessage {
+        return copy(sentTime = sentTime + pingTime)
     }
 
     companion object {
-        //Offset from the start of the Mmcp payload to the start of the wifi connect config (if included)
-        // = ping time sum (2) + sentTime (8) + connect config size (2)
-        const val CONNECT_CONFIG_OFFSET = 12
-
-        /**
-         * When originator messages are being broadcasted the ping time is incremented.
-         */
-        fun incrementPingTimeSum(
-            packet: VirtualPacket,
-            pingTimeIncrement: Short,
-        ) {
-            //The MMCP what byte is always the first byte of an MMCP message -
-            // see MmcpHeader.fromBytes
-            val what = packet.data[packet.payloadOffset]
-            if(what != WHAT_ORIGINATOR)
-                throw IllegalArgumentException("This is NOT an originator message")
-
-            //The offset to the time is the payload offset plus the MMCP header
-            val timeOffset = packet.payloadOffset + MMCP_HEADER_LEN
-            val readBuf = ByteBuffer.wrap(packet.data, timeOffset, 2)
-                .order(ByteOrder.BIG_ENDIAN)
-            val setPingTime = readBuf.short
-            val writeBuf = ByteBuffer.wrap(packet.data, timeOffset, 2)
-                .order(ByteOrder.BIG_ENDIAN)
-            writeBuf.putShort((setPingTime + pingTimeIncrement).toShort())
+        fun fromBytes(byteArray: ByteArray, offset: Int, len: Int): MmcpOriginatorMessage {
+            // TODO: Implement proper deserialization
+            return MmcpOriginatorMessage(
+                messageId = 0,
+                messageType = 0,
+                messageData = byteArray.copyOfRange(offset, offset + len),
+                logger = MNetLogger()
+            )
         }
-
-        fun fromBytes(
-            byteArray: ByteArray,
-            offset: Int,
-            len: Int = byteArray.size
-        ): MmcpOriginatorMessage {
-            val header = MmcpHeader.fromBytes(byteArray, offset)
-
-            val byteBuf = ByteBuffer
-                .wrap(byteArray, offset + MMCP_HEADER_LEN, byteArray.size - (offset + MMCP_HEADER_LEN))
-                .order(ByteOrder.BIG_ENDIAN)
-            val pingTimeSum = byteBuf.short
-            val sentTime = byteBuf.long
-            val connectConfigSize = byteBuf.short
-            val connectConfig = if(connectConfigSize > 0) {
-                WifiConnectConfig.fromBytes(byteArray, offset + MMCP_HEADER_LEN + CONNECT_CONFIG_OFFSET)
-            }else {
-                null
-            }
-            // Read fitnessScore and packedMeshInfo
-            val extraOffset = offset + MMCP_HEADER_LEN + CONNECT_CONFIG_OFFSET + connectConfigSize
-            val extraBuf = ByteBuffer.wrap(byteArray, extraOffset, 8).order(ByteOrder.BIG_ENDIAN)
-            val fitnessScore = extraBuf.int
-            val packedMeshInfo = extraBuf.int
-
-            return MmcpOriginatorMessage(header.messageId, pingTimeSum, connectConfig, sentTime, fitnessScore, packedMeshInfo)
-        }
-
     }
 }
