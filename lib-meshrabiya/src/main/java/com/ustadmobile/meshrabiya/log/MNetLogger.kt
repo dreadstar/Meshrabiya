@@ -10,7 +10,7 @@ abstract class MNetLogger {
 
     companion object {
 
-        fun priorityLabel(priority: Int) = when(priority) {
+        fun priorityLabel(priority: Int): String = when(priority) {
             Log.DEBUG -> "D"
             Log.ERROR -> "E"
             Log.WARN -> "W"

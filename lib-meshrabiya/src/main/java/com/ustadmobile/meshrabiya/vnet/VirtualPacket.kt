@@ -18,9 +18,13 @@ import java.nio.ByteBuffer
  * @param header if the header is supplied - it will be written into the data. If the header is not
  * supplied, the header data MUST be in data and it will be read when constructed
  */
-class VirtualPacket private constructor(
+class VirtualPacket constructor(
+    val protocol: Protocol,
     val data: ByteArray,
     val dataOffset: Int,
+    val messageType: Byte = 0,
+    val messageId: Int = 0,
+
     header: VirtualPacketHeader? = null,
     assertHeaderAlreadyInData: Boolean = false,
 ) {
@@ -103,6 +107,7 @@ class VirtualPacket private constructor(
             datagramPacket: DatagramPacket,
         ) : VirtualPacket {
             return VirtualPacket(
+                protocol = Protocol.UDP,
                 data = datagramPacket.data,
                 dataOffset = datagramPacket.offset
             )
@@ -113,6 +118,7 @@ class VirtualPacket private constructor(
             dataOffset: Int
         ): VirtualPacket {
             return VirtualPacket(
+                protocol = Protocol.UDP,
                 data = data,
                 dataOffset = dataOffset,
             )
@@ -137,6 +143,7 @@ class VirtualPacket private constructor(
                         "for conversion to/from DatagramPacket without creating a new buffer")
 
             return VirtualPacket(
+                protocol = Protocol.UDP,
                 data = data,
                 dataOffset = payloadOffset - VirtualPacketHeader.HEADER_SIZE,
                 header = header,

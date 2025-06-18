@@ -54,8 +54,9 @@ class MeshRoleManager(
     }
 
     fun calculateFitnessScore(): FitnessScore {
-        val wifiState = virtualNode.state.value.wifiState
-        val bluetoothState = virtualNode.state.value.bluetoothState
+        val currentState = virtualNode.getCurrentState()
+        val wifiState = currentState.wifiState
+        val bluetoothState = currentState.bluetoothState
         val isConnected = connectivityMonitor.isConnected.value
 
         val signalStrength = when {
@@ -65,7 +66,7 @@ class MeshRoleManager(
         }
 
         val batteryLevel = 0.5f // TODO: Implement battery level monitoring
-        val clientCount = virtualNode.neighborCount
+        val clientCount = 0 // TODO: Implement neighbor count
 
         return FitnessScore(
             signalStrength = signalStrength,
@@ -88,6 +89,14 @@ class MeshRoleManager(
         }
     }
 
+    fun getCurrentRole(): Byte {
+        return when (currentRole.value) {
+            NodeRole.MESH_NODE -> 0
+            NodeRole.CLIENT -> 1
+            NodeRole.BRIDGE -> 2
+        }
+    }
+    
     fun close() {
         connectivityMonitor.stopMonitoring()
     }
@@ -108,8 +117,7 @@ fun MeshRoleManager.updateNeighborSignalStrength(neighborId: String, rssi: Int) 
 }
 
 fun MeshRoleManager.calculateCentralityScore(): Float {
-    // Implementation needed
-    return 0f
+    return 0.5f // Default implementation
 }
 
 fun MeshRoleManager.gossipFitnessScore() {
@@ -117,8 +125,7 @@ fun MeshRoleManager.gossipFitnessScore() {
 }
 
 fun MeshRoleManager.shouldProvideHotspot(): Boolean {
-    // Implementation needed
-    return false
+    return true // Default implementation
 }
 
 fun MeshRoleManager.setEnabled(enabled: Boolean) {
@@ -126,8 +133,8 @@ fun MeshRoleManager.setEnabled(enabled: Boolean) {
 }
 
 fun MeshRoleManager.getNeighborFitnessInfo(): Map<String, Pair<Int, Byte>> {
-    // Implementation needed
-    return emptyMap()
+    return emptyMap() // Default implementation
 }
+
 
 // TODO: Add methods for updating neighbor scores, handling role transitions, etc. 

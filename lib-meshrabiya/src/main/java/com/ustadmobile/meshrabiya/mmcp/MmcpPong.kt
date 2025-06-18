@@ -9,7 +9,7 @@ import java.nio.ByteOrder
 class MmcpPong(
     messageId: Int,
     val replyToMessageId: Int,
-): MmcpMessage(WHAT_PONG, messageId) {
+): MmcpMessage(WHAT_PONG) {
     override fun toBytes() = headerAndPayloadToBytes(header,
         ByteBuffer.wrap(ByteArray(4))
             .order(ByteOrder.BIG_ENDIAN)

@@ -1,6 +1,8 @@
 package com.ustadmobile.meshrabiya.mmcp
 
+import androidx.room.util.copy
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.vnet.Protocol
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 
@@ -14,7 +16,7 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
  */
 class MmcpOriginatorMessage(
     override val messageId: Int,
-    override val messageType: Byte,
+    val messageType: Byte,
     val messageData: ByteArray,
     val logger: MNetLogger,
     val sentTime: Long = System.currentTimeMillis(),
@@ -22,15 +24,19 @@ class MmcpOriginatorMessage(
     val nodeRole: Byte = 0,
     val neighborCount: Int = 0,
     val centralityScore: Float = 0f,
-    val packedMeshInfo: ByteArray = ByteArray(0)
-) : MmcpMessage() {
+    val packedMeshInfo: ByteArray = ByteArray(0),
+    what: Byte
+) : MmcpMessage(what) {
 
-    override fun toVirtualPacket(): VirtualPacket {
+    fun toVirtualPacket(): VirtualPacket {
         return VirtualPacket(
             protocol = Protocol.MMCP,
             messageType = messageType,
             messageId = messageId,
-            data = messageData
+            data = messageData,
+            dataOffset = 0,
+            header = null,
+            assertHeaderAlreadyInData = false
         )
     }
 
@@ -39,17 +45,40 @@ class MmcpOriginatorMessage(
     }
 
     fun copyWithPingTimeIncrement(pingTime: Long): MmcpOriginatorMessage {
-        return copy(sentTime = sentTime + pingTime)
+        return MmcpOriginatorMessage(
+            messageId = messageId,
+            messageType = messageType,
+            messageData = messageData,
+            logger = logger,
+            sentTime = sentTime + pingTime,
+            fitnessScore = fitnessScore,
+            nodeRole = nodeRole,
+            neighborCount = neighborCount,
+            centralityScore = centralityScore,
+            packedMeshInfo = packedMeshInfo,
+            what = what
+        )
     }
 
     companion object {
+        
+        fun incrementPingTimeSum(virtualPacket: VirtualPacket, pingTime: Short) {
+            // TODO: Implement ping time increment logic
+        }
         fun fromBytes(byteArray: ByteArray, offset: Int, len: Int): MmcpOriginatorMessage {
             // TODO: Implement proper deserialization
             return MmcpOriginatorMessage(
                 messageId = 0,
                 messageType = 0,
                 messageData = byteArray.copyOfRange(offset, offset + len),
-                logger = MNetLogger()
+                logger = MNetLoggerStdout(),
+                sentTime = 0L,
+                fitnessScore = 0,
+                nodeRole = 0,
+                neighborCount = 0,
+                centralityScore = 0.0f,
+                packedMeshInfo = ByteArray(0),
+                what = 0,
             )
         }
     }

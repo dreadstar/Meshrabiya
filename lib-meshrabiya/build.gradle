@@ -7,11 +7,11 @@ plugins {
 
 android {
     namespace 'com.ustadmobile.httpoverbluetooth'
-    compileSdk 33
+    compileSdk 35
 
     defaultConfig {
         minSdk 26
-        targetSdk 33
+        targetSdk 35
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
@@ -47,6 +47,7 @@ dependencies {
     implementation libs.bcpkix.jdk18on
 
     implementation libs.ipaddress
+    implementation libs.androidx.room.runtime.android
 
     coreLibraryDesugaring libs.android.desugar.jdk.libs
 

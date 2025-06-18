@@ -4,7 +4,7 @@ import com.ustadmobile.meshrabiya.util.emptyByteArray
 
 class MmcpPing(
     messageId: Int
-): MmcpMessage(WHAT_PING, messageId) {
+): MmcpMessage(WHAT_PING) {
 
     override fun toBytes() = headerAndPayloadToBytes(header, emptyByteArray())
 

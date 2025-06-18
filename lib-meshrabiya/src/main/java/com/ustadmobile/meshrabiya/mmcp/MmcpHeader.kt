@@ -20,8 +20,6 @@ data class MmcpHeader(
         headerBuf.putInt(messageId)
     }
 
-
-
     companion object {
 
         fun fromBytes(
@@ -36,6 +34,5 @@ data class MmcpHeader(
 
             return MmcpHeader(what, messageId)
         }
-
     }
 }

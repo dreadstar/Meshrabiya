@@ -9,9 +9,9 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
  */
 sealed class MmcpMessage(
     val what: Byte,
-    val messageId: Int,
+    open val messageId: Int = (Math.random() * Int.MAX_VALUE).toInt()
 ) {
-    val header = MmcpHeader(what, messageId)
+    val header: MmcpHeader = MmcpHeader(what, messageId)
 
     abstract fun toBytes(): ByteArray
 
@@ -130,5 +130,3 @@ sealed class MmcpMessage(
     }
 
 }
-
-

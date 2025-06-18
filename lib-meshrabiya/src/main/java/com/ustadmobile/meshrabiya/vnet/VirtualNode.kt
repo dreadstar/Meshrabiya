@@ -95,13 +95,13 @@ abstract class VirtualNode(
     protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
 
     //This executor is used to schedule maintenance e.g. pings etc.
-    protected val scheduledExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
+    protected open val scheduledExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
 
     protected val coroutineScope = CoroutineScope(Dispatchers.Default + Job())
 
     private val messageCounter = AtomicInteger(0)
 
-    private val _state = MutableStateFlow(LocalNodeState())
+    protected val _state = MutableStateFlow(LocalNodeState())
 
     val state: Flow<LocalNodeState> = _state.asStateFlow()
 
@@ -126,7 +126,7 @@ abstract class VirtualNode(
         val lastHopAddr: Int,
         val hopCount: Byte,
         val lastHopRealInetAddr: InetAddress,
-        val receivedFromSocket: VirtualNodeDatagramSocket,
+        val receivedFromSocket: VirtualNodeDatagramSocket?,
         val lastHopRealPort: Int,
     )
 
@@ -135,15 +135,31 @@ abstract class VirtualNode(
         VNET, REAL
     }
 
-    private val originatingMessageManager = OriginatingMessageManager(
-        localNodeInetAddr = address,
-        logger = logger,
-        scheduledExecutor = scheduledExecutor,
-        nextMmcpMessageId = { nextMmcpMessageId() },
-        getWifiState = { state.value.wifiState },
-        getFitnessScore = { getCurrentFitnessScore() },
-        getNodeRole = { getCurrentNodeRole() }
-    )
+    protected open val originatingMessageManager by lazy {
+        val manager = OriginatingMessageManager(
+            localNodeInetAddr = address,
+            logger = logger,
+            scheduledExecutor = scheduledExecutor,
+            nextMmcpMessageId = { nextMmcpMessageId() },
+            getWifiState = { _state.value.wifiState },
+            getFitnessScore = { getCurrentFitnessScore() },
+            getNodeRole = { getCurrentNodeRole() },
+            virtualNode = this
+        )
+        
+        // Start state collection coroutine now that manager is created
+        coroutineScope.launch {
+            manager.state.collect {
+                _state.update { prev ->
+                    prev.copy(
+                        originatorMessages = it.pendingMessages
+                    )
+                }
+            }
+        }
+        
+        manager
+    }
 
     private val localPort = findFreePort(0)
 
@@ -188,18 +204,10 @@ abstract class VirtualNode(
             )
         }
 
-        coroutineScope.launch {
-            originatingMessageManager.state.collect {
-                _state.update { prev ->
-                    prev.copy(
-                        originatorMessages = it
-                    )
-                }
-            }
-        }
+        // Note: originatingMessageManager state collection is now handled in initOriginatingMessageManager()
     }
 
-    fun nextMmcpMessageId(): Int {
+    override fun nextMmcpMessageId(): Int {
         return messageCounter.incrementAndGet()
     }
 
@@ -481,7 +489,7 @@ abstract class VirtualNode(
                             }
                         )
 
-                        it.second.receivedFromSocket.send(
+                        it.second.receivedFromSocket?.send(
                             nextHopAddress = it.second.lastHopRealInetAddr,
                             nextHopPort = it.second.lastHopRealPort,
                             virtualPacket = packet,
@@ -492,7 +500,7 @@ abstract class VirtualNode(
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
                     if(originatorMessage != null) {
-                        originatorMessage.receivedFromSocket.send(
+                        originatorMessage.receivedFromSocket?.send(
                             nextHopAddress = originatorMessage.lastHopRealInetAddr,
                             nextHopPort = originatorMessage.lastHopRealPort,
                             virtualPacket = packet
@@ -580,7 +588,7 @@ abstract class VirtualNode(
     }
 
     fun getCurrentState(): LocalNodeState {
-        return state.value
+        return _state.value
     }
 
     override fun close() {
@@ -594,8 +602,3 @@ abstract class VirtualNode(
 
 }
 
-data class LocalNodeState(
-    val wifiState: MeshrabiyaWifiState = MeshrabiyaWifiState(),
-    val bluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState(),
-    val connectUri: String = "",
-)

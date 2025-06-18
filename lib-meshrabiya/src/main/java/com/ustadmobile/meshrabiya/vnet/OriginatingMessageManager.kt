@@ -45,6 +45,7 @@ class OriginatingMessageManager(
     private val getWifiState: () -> MeshrabiyaWifiState,
     private val getFitnessScore: () -> Int,
     private val getNodeRole: () -> Byte,
+    private val virtualNode: VirtualNode? = null,
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
     lostNodeCheckInterval: Int = 1_000,
@@ -123,7 +124,7 @@ class OriginatingMessageManager(
             neighbors.forEach {
                 val lastOriginatorMessage = it.value
                 try {
-                    lastOriginatorMessage.receivedFromSocket.send(
+                    lastOriginatorMessage.receivedFromSocket?.send(
                         nextHopAddress = lastOriginatorMessage.lastHopRealInetAddr,
                         nextHopPort = lastOriginatorMessage.lastHopRealPort,
                         virtualPacket = packet,
@@ -183,7 +184,7 @@ class OriginatingMessageManager(
                     message = { "$logPrefix pingNeighborsRunnable: send ping to ${neighborVirtualAddr.addressToDotNotation()}" }
                 )
 
-                it.second.receivedFromSocket.send(
+                it.second.receivedFromSocket?.send(
                     nextHopAddress = lastOrigininatorMessage.lastHopRealInetAddr,
                     nextHopPort = lastOrigininatorMessage.lastHopRealPort,
                     virtualPacket = pingMessage.toVirtualPacket(
@@ -256,11 +257,16 @@ class OriginatingMessageManager(
         val packedMeshInfo = (quantizedCentrality shl 24) or (quantizedNeighborCount shl 16) or (quantizedNodeRole shl 14)
         return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
-            pingTimeSum = 0,
-            connectConfig = getWifiState().connectConfig,
+            messageType = MmcpMessage.WHAT_ORIGINATOR,
+            messageData = ByteArray(8), // Temporary data
+            logger = logger,
             sentTime = System.currentTimeMillis(),
             fitnessScore = fitnessScore,
-            packedMeshInfo = packedMeshInfo
+            nodeRole = nodeRole,
+            neighborCount = neighborCount,
+            centralityScore = centralityScore,
+            packedMeshInfo = ByteArray(4),
+            what = MmcpMessage.WHAT_ORIGINATOR
         )
     }
 
@@ -320,7 +326,7 @@ class OriginatingMessageManager(
 
         if(currentOriginatorMessage == null || isMoreRecentOrBetter) {
             originatorMessages[virtualPacket.header.fromAddr] = VirtualNode.LastOriginatorMessage(
-                originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime),
+                originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime.toLong()),
                 timeReceived = System.currentTimeMillis(),
                 lastHopAddr = virtualPacket.header.lastHopAddr,
                 hopCount = virtualPacket.header.hopCount,
@@ -421,14 +427,14 @@ class OriginatingMessageManager(
             //Destination is a direct neighbor (final destination) - connect to the actual socket itself
             originatorMessage != null && originatorMessage.hopCount == 1.toByte() -> {
                 ChainSocketNextHop(originatorMessage.lastHopRealInetAddr, port, true,
-                        originatorMessage.receivedFromSocket.boundNetwork)
+                        originatorMessage.receivedFromSocket?.boundNetwork)
             }
 
             //Destination is not a direct neighbor, but we have a route there
             originatorMessage != null -> {
                 ChainSocketNextHop(originatorMessage.lastHopRealInetAddr,
                     originatorMessage.lastHopRealPort, false,
-                    originatorMessage.receivedFromSocket.boundNetwork)
+                    originatorMessage.receivedFromSocket?.boundNetwork)
             }
 
             //No route available to reach the given address
@@ -530,13 +536,29 @@ class OriginatingMessageManager(
         val messageId = nextMmcpMessageId()
         val originatorMessage = MmcpOriginatorMessage(
             messageId = messageId,
-            messageType = message.messageType,
-            messageData = message.toVirtualPacket().data,
+            messageType = MmcpMessage.WHAT_ORIGINATOR,
+            messageData = ByteArray(8),
             logger = logger,
+            sentTime = System.currentTimeMillis(),
+            fitnessScore = 0,
+            nodeRole = 0,
+            neighborCount = 0,
+            centralityScore = 0f,
+            packedMeshInfo = ByteArray(4),
+            what = MmcpMessage.WHAT_ORIGINATOR
         )
 
+        val lastOriginatorMessage = VirtualNode.LastOriginatorMessage(
+            originatorMessage = originatorMessage,
+            timeReceived = System.currentTimeMillis(),
+            lastHopAddr = localNodeAddress,
+            hopCount = 1,
+            lastHopRealInetAddr = localNodeInetAddr,
+            receivedFromSocket = null, // TODO: Fix this
+            lastHopRealPort = 0
+        )
         _state.value = _state.value.copy(
-            pendingMessages = _state.value.pendingMessages + (messageId to originatorMessage)
+            pendingMessages = _state.value.pendingMessages + (messageId to lastOriginatorMessage)
         )
     }
 
@@ -557,5 +579,5 @@ class OriginatingMessageManager(
 }
 
 data class OriginatingMessageState(
-    val pendingMessages: Map<Int, MmcpOriginatorMessage> = emptyMap(),
+    val pendingMessages: Map<Int, VirtualNode.LastOriginatorMessage> = emptyMap(),
 )

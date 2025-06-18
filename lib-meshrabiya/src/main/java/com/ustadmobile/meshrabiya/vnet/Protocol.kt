@@ -1,5 +1,7 @@
 package com.ustadmobile.meshrabiya.vnet
 
 enum class Protocol {
-    UDP, TCP
+    UDP,
+    TCP,
+    MMCP
 }

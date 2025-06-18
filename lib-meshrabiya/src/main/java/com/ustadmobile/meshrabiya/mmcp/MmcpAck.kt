@@ -12,7 +12,6 @@ class MmcpAck(
     val ackOfMessageId: Int,
 ) : MmcpMessage(
     what = WHAT_ACK,
-    messageId = messageId,
 ){
 
     override fun toBytes() = headerAndPayloadToBytes(header,

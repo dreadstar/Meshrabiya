@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization'
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.1.21'
     id "com.jaredsburrows.license" version "0.9.3"
 }
 
@@ -11,7 +12,7 @@ android {
     }
 
     namespace 'com.ustadmobile.meshrabiya.testapp'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.ustadmobile.meshrabiya.testapp"

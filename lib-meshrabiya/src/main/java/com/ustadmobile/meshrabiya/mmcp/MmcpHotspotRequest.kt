@@ -9,7 +9,7 @@ import java.nio.ByteOrder
 class MmcpHotspotRequest(
     messageId: Int,
     val hotspotRequest: LocalHotspotRequest,
-): MmcpMessage(WHAT_HOTSPOT_REQUEST, messageId) {
+): MmcpMessage(WHAT_HOTSPOT_REQUEST) {
 
 
     override fun toBytes(): ByteArray {

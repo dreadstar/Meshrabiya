@@ -39,7 +39,7 @@ class AndroidVirtualNode(
     dataStore: DataStore<Preferences>,
     address: InetAddress = randomApipaInetAddr(),
     config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
-    private val scheduledExecutor: ScheduledExecutorService
+    private val externalScheduledExecutor: ScheduledExecutorService? = null
 ) : VirtualNode(
     port = port,
     logger = logger,
@@ -47,6 +47,9 @@ class AndroidVirtualNode(
     json = json,
     config = config,
 ) {
+    
+    override val scheduledExecutor: ScheduledExecutorService = 
+        externalScheduledExecutor ?: super.scheduledExecutor
 
     private val bluetoothManager: BluetoothManager by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -117,16 +120,6 @@ class AndroidVirtualNode(
 
     // Add MeshRoleManager
     val meshRoleManager: MeshRoleManager = MeshRoleManager(this, context)
-
-    override val originatingMessageManager = OriginatingMessageManager(
-        localNodeInetAddr = address,
-        logger = logger,
-        scheduledExecutor = scheduledExecutor,
-        nextMmcpMessageId = { nextMmcpMessageId() },
-        getWifiState = { state.value.wifiState },
-        getFitnessScore = { getCurrentFitnessScore() },
-        getNodeRole = { getCurrentNodeRole() }
-    )
 
     init {
         context.registerReceiver(
@@ -201,7 +194,8 @@ class AndroidVirtualNode(
     }
 
     override fun getCurrentFitnessScore(): Int {
-        return meshRoleManager.calculateFitnessScore()
+        val fitnessScore = meshRoleManager.calculateFitnessScore()
+        return fitnessScore.signalStrength + fitnessScore.clientCount
     }
 
     override fun getCurrentNodeRole(): Byte {

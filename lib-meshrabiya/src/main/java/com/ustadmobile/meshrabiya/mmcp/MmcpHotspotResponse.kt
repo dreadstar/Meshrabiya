@@ -5,7 +5,7 @@ import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotResponse
 class MmcpHotspotResponse(
     messageId: Int,
     val result: LocalHotspotResponse,
-) : MmcpMessage(WHAT_HOTSPOT_RESPONSE, messageId) {
+) : MmcpMessage(WHAT_HOTSPOT_RESPONSE) {
 
     override fun toBytes(): ByteArray {
         return headerAndPayloadToBytes(header, result.toBytes())
