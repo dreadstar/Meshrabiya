@@ -1,8 +1,17 @@
 package com.ustadmobile.meshrabiya.mmcp
 
 import com.ustadmobile.meshrabiya.log.MNetLogger
-import com.ustadmobile.meshrabiya.vnet.Protocol
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import android.content.IntentFilter
+import android.bluetooth.BluetoothAdapter
 
 /**
  * The originator message is used to track routes around the mesh, roughly similar to the BATMAN protocol.
@@ -13,43 +22,62 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
  *                    it.
  */
 class MmcpOriginatorMessage(
-    override val messageId: Int,
-    override val messageType: Byte,
-    val messageData: ByteArray,
-    val logger: MNetLogger,
-    val sentTime: Long = System.currentTimeMillis(),
-    val fitnessScore: Int = 0,
-    val nodeRole: Byte = 0,
-    val neighborCount: Int = 0,
-    val centralityScore: Float = 0f,
-    val packedMeshInfo: ByteArray = ByteArray(0)
-) : MmcpMessage() {
-
-    override fun toVirtualPacket(): VirtualPacket {
-        return VirtualPacket(
-            protocol = Protocol.MMCP,
-            messageType = messageType,
-            messageId = messageId,
-            data = messageData
-        )
-    }
+    messageId: Int,
+    val fitnessScore: Int,
+    val nodeRole: Byte,
+    val sentTime: Long,
+    val neighbors: List<Int> = emptyList() // new field
+) : MmcpMessage(WHAT_ORIGINATOR, messageId) {
 
     override fun toBytes(): ByteArray {
-        return messageData
+        val baos = ByteArrayOutputStream()
+        val dos = DataOutputStream(baos)
+        
+        // Write message header
+        dos.writeInt(fitnessScore)
+        dos.writeByte(nodeRole.toInt())
+        dos.writeLong(sentTime)
+        // Write neighbors
+        dos.writeInt(neighbors.size)
+        neighbors.forEach { dos.writeInt(it) }
+        
+        return baos.toByteArray()
     }
 
     fun copyWithPingTimeIncrement(pingTime: Long): MmcpOriginatorMessage {
-        return copy(sentTime = sentTime + pingTime)
+        return MmcpOriginatorMessage(
+            messageId = messageId,
+            fitnessScore = fitnessScore,
+            nodeRole = nodeRole,
+            sentTime = sentTime + pingTime
+        )
     }
 
     companion object {
-        fun fromBytes(byteArray: ByteArray, offset: Int, len: Int): MmcpOriginatorMessage {
-            // TODO: Implement proper deserialization
+        fun fromBytes(
+            byteArray: ByteArray,
+            offset: Int = 0,
+            len: Int = byteArray.size
+        ): MmcpOriginatorMessage {
+            val buffer = ByteBuffer.wrap(byteArray, offset, len).order(ByteOrder.BIG_ENDIAN)
+            buffer.position(offset + 1) // Skip what byte
+            val messageId = buffer.int
+            val fitnessScore = buffer.int
+            val nodeRole = buffer.get()
+            val sentTime = buffer.long
+            val neighbors = mutableListOf<Int>()
+            if (buffer.remaining() >= 4) {
+                val neighborCount = buffer.int
+                repeat(neighborCount) {
+                    if (buffer.remaining() >= 4) neighbors.add(buffer.int)
+                }
+            }
             return MmcpOriginatorMessage(
-                messageId = 0,
-                messageType = 0,
-                messageData = byteArray.copyOfRange(offset, offset + len),
-                logger = MNetLogger()
+                messageId = messageId,
+                fitnessScore = fitnessScore,
+                nodeRole = nodeRole,
+                sentTime = sentTime,
+                neighbors = neighbors
             )
         }
     }

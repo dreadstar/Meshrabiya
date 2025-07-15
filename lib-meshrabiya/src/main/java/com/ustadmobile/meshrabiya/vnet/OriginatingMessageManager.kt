@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class OriginatingMessageManager(
     private val localNodeInetAddr: InetAddress,
     private val logger: MNetLogger,
-    private val scheduledExecutor: java.util.concurrent.ScheduledExecutorService,
+    private val scheduledExecutor: ScheduledExecutorService,
     private val nextMmcpMessageId: () -> Int,
     private val getWifiState: () -> MeshrabiyaWifiState,
     private val getFitnessScore: () -> Int,
@@ -93,13 +93,24 @@ class OriginatingMessageManager(
 
     private val messageCounter = AtomicInteger(0)
 
+    // 1. When sending a gossip message, set neighbors to originatorMessages.keys.toList()
+    private val topologyMap: MutableMap<Int, Set<Int>> = mutableMapOf()
+    fun getTopologyMap(): Map<Int, Set<Int>> = topologyMap
+
     private fun logBeta(level: LogLevel, message: String, throwable: Throwable? = null) {
         betaLogger?.log(level, message, throwable)
     }
 
     private val sendOriginatingMessageRunnable = Runnable {
         try {
-            val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
+            val neighborAddrs = originatorMessages.keys.toList()
+            val originatingMessage = MmcpOriginatorMessage(
+                messageId = nextMmcpMessageId(),
+                fitnessScore = getFitnessScore(),
+                nodeRole = getNodeRole(),
+                sentTime = System.currentTimeMillis(),
+                neighbors = neighborAddrs
+            )
             logBeta(LogLevel.DEBUG, "Sending originating message: $originatingMessage")
 
             logger(
@@ -221,7 +232,7 @@ class OriginatingMessageManager(
             }
 
             _state.value = OriginatingMessageState(
-                pendingMessages = originatorMessages.toMap()
+                pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
         } catch (e: Exception) {
             logBeta(LogLevel.ERROR, "Error checking lost nodes", e)
@@ -246,21 +257,11 @@ class OriginatingMessageManager(
 
 
     private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpOriginatorMessage {
-        val meshRoleManager = (virtualNode as? AndroidVirtualNode)?.meshRoleManager
-        val neighborCount = meshRoleManager?.getNeighborFitnessInfo()?.size ?: 0
-        val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
-        // Quantize centralityScore to 0-255 (assume 0-10.0 range, scale by 25.5)
-        val quantizedCentrality = (centralityScore.coerceIn(0f, 10f) * 25.5f).toInt().coerceIn(0, 255)
-        val quantizedNeighborCount = neighborCount.coerceIn(0, 255)
-        val quantizedNodeRole = (nodeRole.toInt() and 0x3)
-        val packedMeshInfo = (quantizedCentrality shl 24) or (quantizedNeighborCount shl 16) or (quantizedNodeRole shl 14)
         return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
-            pingTimeSum = 0,
-            connectConfig = getWifiState().connectConfig,
-            sentTime = System.currentTimeMillis(),
             fitnessScore = fitnessScore,
-            packedMeshInfo = packedMeshInfo
+            nodeRole = nodeRole,
+            sentTime = System.currentTimeMillis()
         )
     }
 
@@ -289,9 +290,9 @@ class OriginatingMessageManager(
             }
         )
 
-        val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0
-        MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
-            ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
+        val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0.toLong()
+        // MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
+        //     ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
 
         val currentOriginatorMessage = originatorMessages[virtualPacket.header.fromAddr]
 
@@ -320,7 +321,7 @@ class OriginatingMessageManager(
 
         if(currentOriginatorMessage == null || isMoreRecentOrBetter) {
             originatorMessages[virtualPacket.header.fromAddr] = VirtualNode.LastOriginatorMessage(
-                originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime),
+                originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime.toLong()),
                 timeReceived = System.currentTimeMillis(),
                 lastHopAddr = virtualPacket.header.lastHopAddr,
                 hopCount = virtualPacket.header.hopCount,
@@ -331,20 +332,20 @@ class OriginatingMessageManager(
             // Store neighbor fitness and role info
             neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair(mmcpMessage.fitnessScore, mmcpMessage.nodeRole)
             // Also update MeshRoleManager if available
-            (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
-                neighborId = virtualPacket.header.fromAddr.toString(),
-                fitnessScore = mmcpMessage.fitnessScore,
-                nodeRole = mmcpMessage.nodeRole
-            )
+            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
+            //     neighborId = virtualPacket.header.fromAddr.toString(),
+            //     fitnessScore = mmcpMessage.fitnessScore,
+            //     nodeRole = mmcpMessage.nodeRole
+            // )
             // Update neighbor RSSI (if available)
             val rssi = datagramPacket.javaClass.getDeclaredField("rssi").let { field ->
                 field.isAccessible = true
                 (field.get(datagramPacket) as? Int) ?: 0
             }
-            (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborSignalStrength(
-                neighborId = virtualPacket.header.fromAddr.toString(),
-                rssi = rssi
-            )
+            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborSignalStrength(
+            //     neighborId = virtualPacket.header.fromAddr.toString(),
+            //     rssi = rssi
+            // )
             // Multi-hop: update neighbor centrality info if available
             neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
             // Optionally, use neighborCount for richer mesh awareness
@@ -359,7 +360,7 @@ class OriginatingMessageManager(
                 }
             )
             _state.value = OriginatingMessageState(
-                pendingMessages = originatorMessages.toMap()
+                pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
             logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}")
         }
@@ -368,6 +369,12 @@ class OriginatingMessageManager(
             //trigger immediate sending of originator messages so it can see us
             scheduledExecutor.submit(sendOriginatingMessageRunnable)
         }
+
+        // 2. When receiving, update topology map
+        topologyMap[virtualPacket.header.fromAddr] = mmcpMessage.neighbors.toSet()
+
+        // 4. Placeholder for choke point and hop calculations
+        // (to be used by MeshRoleManager)
 
         return isMoreRecentOrBetter
     }
@@ -390,7 +397,7 @@ class OriginatingMessageManager(
         val timeNow = System.currentTimeMillis()
 
         //Sometimes unit tests will run very quickly, and test may fail if ping time is 0
-        val pingTime = maxOf((timeNow - pendingPing.timesent).toShort(), 1)
+        val pingTime = maxOf((timeNow - pendingPing.timesent).toLong(), 1)
         logBeta(LogLevel.DEBUG, "Received ping from ${fromVirtualAddr.addressToDotNotation()} pingTime=$pingTime")
 
         neighborPingTimes[fromVirtualAddr] = PingTime(
@@ -530,9 +537,8 @@ class OriginatingMessageManager(
         val messageId = nextMmcpMessageId()
         val originatorMessage = MmcpOriginatorMessage(
             messageId = messageId,
-            messageType = message.messageType,
-            messageData = message.toVirtualPacket().data,
-            logger = logger,
+            fitnessScore = getFitnessScore(),
+            nodeRole = getNodeRole()
         )
 
         _state.value = _state.value.copy(

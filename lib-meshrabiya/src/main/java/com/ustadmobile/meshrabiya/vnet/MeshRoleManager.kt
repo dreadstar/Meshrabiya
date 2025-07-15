@@ -13,6 +13,9 @@ import android.content.Context
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.beta.ConnectivityMonitor
+import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
+import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
+import java.util.ArrayDeque
 
 /**
  * Enum representing the possible roles a node can take in the mesh.
@@ -49,13 +52,17 @@ class MeshRoleManager(
     private val _currentRole = MutableStateFlow(NodeRole.MESH_NODE)
     val currentRole: StateFlow<NodeRole> = _currentRole
 
+    var chokePointFlag: Boolean = false
+    var centralityScore: Float = 0f
+    var userAllowsTorProxy: Boolean = false // Should be set based on user config
+
     init {
         connectivityMonitor.startMonitoring()
     }
 
     fun calculateFitnessScore(): FitnessScore {
-        val wifiState = virtualNode.state.value.wifiState
-        val bluetoothState = virtualNode.state.value.bluetoothState
+        val wifiState = (virtualNode as? HasNodeState)?.currentNodeState?.wifiState ?: MeshrabiyaWifiState()
+        val bluetoothState = (virtualNode as? HasNodeState)?.currentNodeState?.bluetoothState ?: MeshrabiyaBluetoothState()
         val isConnected = connectivityMonitor.isConnected.value
 
         val signalStrength = when {
@@ -65,7 +72,7 @@ class MeshRoleManager(
         }
 
         val batteryLevel = 0.5f // TODO: Implement battery level monitoring
-        val clientCount = virtualNode.neighborCount
+        val clientCount = virtualNode.neighbors().size
 
         return FitnessScore(
             signalStrength = signalStrength,
@@ -76,12 +83,14 @@ class MeshRoleManager(
 
     fun updateRole() {
         val score = calculateFitnessScore()
+        val centrality = calculateCentralityScore()
+        val combinedScore = score.signalStrength * 0.5f + centrality * 0.5f
         val newRole = when {
-            score.signalStrength > 80 && score.batteryLevel > 0.7f -> NodeRole.MESH_NODE
-            score.signalStrength > 50 && score.batteryLevel > 0.5f -> NodeRole.BRIDGE
+            userAllowsTorProxy || chokePointFlag -> NodeRole.MESH_NODE
+            combinedScore > 80 -> NodeRole.MESH_NODE
+            combinedScore > 50 -> NodeRole.BRIDGE
             else -> NodeRole.CLIENT
         }
-
         if (newRole != currentRole.value) {
             logger.log(LogLevel.INFO, "Role changed from ${currentRole.value} to $newRole")
             _currentRole.value = newRole
@@ -108,8 +117,44 @@ fun MeshRoleManager.updateNeighborSignalStrength(neighborId: String, rssi: Int) 
 }
 
 fun MeshRoleManager.calculateCentralityScore(): Float {
-    // Implementation needed
-    return 0f
+    val topology = (virtualNode.originatingMessageManager as? com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager)?.getTopologyMap() ?: return 0f
+    val myAddr = virtualNode.addressAsInt
+    val minChokePointNeighbors = 2 // or make configurable
+
+    // Choke point detection
+    val chokePointFlag = topology.any { it.value.size <= minChokePointNeighbors }
+
+    // BFS for hops and centrality
+    val visited = mutableSetOf<Int>()
+    val queue = ArrayDeque<Pair<Int, Int>>() // Pair<address, hops>
+    queue.add(myAddr to 0)
+    visited.add(myAddr)
+    var totalHops = 0
+    var maxHops = 0
+    var reachable = 0
+    while (queue.isNotEmpty()) {
+        val (current, hops) = queue.removeFirst()
+        if (hops > 0) {
+            totalHops += hops
+            maxHops = maxOf(maxHops, hops)
+            reachable++
+        }
+        for (neighbor in topology[current] ?: emptySet()) {
+            if (neighbor !in visited) {
+                visited.add(neighbor)
+                queue.add(neighbor to hops + 1)
+            }
+        }
+    }
+    val avgHops = if (reachable > 0) totalHops.toFloat() / reachable else 0f
+    val degree = topology[myAddr]?.size ?: 0
+    val centralityScore = degree + (if (avgHops > 0) 1f / avgHops else 0f)
+
+    // Optionally, store chokePointFlag and centralityScore as properties
+    this.chokePointFlag = chokePointFlag
+    this.centralityScore = centralityScore
+
+    return centralityScore
 }
 
 fun MeshRoleManager.gossipFitnessScore() {

@@ -80,6 +80,10 @@ fun randomApipaInetAddr() = InetAddress.getByAddress(randomApipaAddr().addressTo
  *
  * Addresses are 32 bit integers in the APIPA range
  */
+interface HasNodeState {
+    val currentNodeState: LocalNodeState
+}
+
 abstract class VirtualNode(
     val port: Int = 0,
     val json: Json = Json,
@@ -87,7 +91,7 @@ abstract class VirtualNode(
     final override val address: InetAddress = randomApipaInetAddr(),
     override val networkPrefixLength: Int = 16,
     val config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
-): VirtualRouter, Closeable {
+): VirtualRouter, Closeable, HasNodeState {
 
     val addressAsInt: Int = address.requireAddressAsInt()
 
@@ -104,6 +108,13 @@ abstract class VirtualNode(
     private val _state = MutableStateFlow(LocalNodeState())
 
     val state: Flow<LocalNodeState> = _state.asStateFlow()
+
+    override val currentNodeState: LocalNodeState
+        get() = _state.value
+
+    protected fun updateNodeState(update: (LocalNodeState) -> LocalNodeState) {
+        _state.update(update)
+    }
 
     abstract val meshrabiyaWifiManager: MeshrabiyaWifiManager
 
@@ -135,12 +146,12 @@ abstract class VirtualNode(
         VNET, REAL
     }
 
-    private val originatingMessageManager = OriginatingMessageManager(
+    protected open val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
         scheduledExecutor = scheduledExecutor,
         nextMmcpMessageId = { nextMmcpMessageId() },
-        getWifiState = { state.value.wifiState },
+        getWifiState = { currentNodeState.wifiState },
         getFitnessScore = { getCurrentFitnessScore() },
         getNodeRole = { getCurrentNodeRole() }
     )
@@ -199,7 +210,7 @@ abstract class VirtualNode(
         }
     }
 
-    fun nextMmcpMessageId(): Int {
+    override fun nextMmcpMessageId(): Int {
         return messageCounter.incrementAndGet()
     }
 
@@ -580,8 +591,10 @@ abstract class VirtualNode(
     }
 
     fun getCurrentState(): LocalNodeState {
-        return state.value
+        return currentNodeState
     }
+
+    fun neighbors() = originatingMessageManager.neighbors()
 
     override fun close() {
         datagramSocket.close(closeSocket = true)
@@ -593,9 +606,3 @@ abstract class VirtualNode(
     }
 
 }
-
-data class LocalNodeState(
-    val wifiState: MeshrabiyaWifiState = MeshrabiyaWifiState(),
-    val bluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState(),
-    val connectUri: String = "",
-)

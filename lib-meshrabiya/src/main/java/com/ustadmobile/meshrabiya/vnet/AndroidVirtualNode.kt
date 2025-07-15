@@ -30,6 +30,10 @@ import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
 import java.util.concurrent.ScheduledExecutorService
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class AndroidVirtualNode(
     private val context: Context,
@@ -39,7 +43,7 @@ class AndroidVirtualNode(
     dataStore: DataStore<Preferences>,
     address: InetAddress = randomApipaInetAddr(),
     config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
-    private val scheduledExecutor: ScheduledExecutorService
+    private val scheduledExecutorService: ScheduledExecutorService
 ) : VirtualNode(
     port = port,
     logger = logger,
@@ -118,12 +122,16 @@ class AndroidVirtualNode(
     // Add MeshRoleManager
     val meshRoleManager: MeshRoleManager = MeshRoleManager(this, context)
 
+    private var currentWifiState: MeshrabiyaWifiState = MeshrabiyaWifiState()
+    private var currentBluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState()
+    private val _nodeState = MutableStateFlow(LocalNodeState())
+
     override val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
-        scheduledExecutor = scheduledExecutor,
+        scheduledExecutor = scheduledExecutorService,
         nextMmcpMessageId = { nextMmcpMessageId() },
-        getWifiState = { state.value.wifiState },
+        getWifiState = { currentWifiState },
         getFitnessScore = { getCurrentFitnessScore() },
         getNodeRole = { getCurrentNodeRole() }
     )
@@ -138,18 +146,35 @@ class AndroidVirtualNode(
         coroutineScope.launch {
             meshrabiyaWifiManager.state.combine(_bluetoothState) { wifiState, bluetoothState ->
                 wifiState to bluetoothState
-            }.collect {
-                _state.update { prev ->
+            }.collect { (wifiState, bluetoothState) ->
+                currentWifiState = wifiState
+                currentBluetoothState = bluetoothState
+                val connectUri = generateConnectLink(
+                    hotspot = wifiState.connectConfig,
+                    bluetoothConfig = bluetoothState
+                ).uri
+                _nodeState.update { prev: LocalNodeState ->
                     prev.copy(
-                        wifiState = it.first,
-                        bluetoothState = it.second,
-                        connectUri = generateConnectLink(
-                            hotspot = it.first.connectConfig,
-                            bluetoothConfig = it.second,
-                        ).uri
+                        wifiState = wifiState,
+                        bluetoothState = bluetoothState,
+                        connectUri = connectUri
                     )
                 }
             }
+        }
+    }
+
+    private fun updateState(
+        wifiState: MeshrabiyaWifiState,
+        bluetoothState: MeshrabiyaBluetoothState,
+        connectUri: String
+    ) {
+        _nodeState.update { prev: LocalNodeState ->
+            prev.copy(
+                wifiState = wifiState,
+                bluetoothState = bluetoothState,
+                connectUri = connectUri
+            )
         }
     }
 
@@ -201,15 +226,15 @@ class AndroidVirtualNode(
     }
 
     override fun getCurrentFitnessScore(): Int {
-        return meshRoleManager.calculateFitnessScore()
+        return meshRoleManager.calculateFitnessScore().signalStrength
     }
 
     override fun getCurrentNodeRole(): Byte {
-        return meshRoleManager.getCurrentRole()
+        return meshRoleManager.currentRole.value.ordinal.toByte()
     }
 
     fun updateWifiState(newState: MeshrabiyaWifiState) {
-        _state.update { prev ->
+        _nodeState.update { prev: LocalNodeState ->
             prev.copy(wifiState = newState)
         }
     }
