@@ -36,6 +36,8 @@ import java.util.concurrent.TimeUnit
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import java.util.concurrent.atomic.AtomicInteger
+import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
+import com.ustadmobile.meshrabiya.vnet.HasNodeState
 
 class OriginatingMessageManager(
     private val localNodeInetAddr: InetAddress,
@@ -104,12 +106,16 @@ class OriginatingMessageManager(
     private val sendOriginatingMessageRunnable = Runnable {
         try {
             val neighborAddrs = originatorMessages.keys.toList()
+            // Calculate centrality score using MeshRoleManager if available
+            val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
+            val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
             val originatingMessage = MmcpOriginatorMessage(
                 messageId = nextMmcpMessageId(),
                 fitnessScore = getFitnessScore(),
                 nodeRole = getNodeRole(),
                 sentTime = System.currentTimeMillis(),
-                neighbors = neighborAddrs
+                neighbors = neighborAddrs,
+                centralityScore = centralityScore
             )
             logBeta(LogLevel.DEBUG, "Sending originating message: $originatingMessage")
 
@@ -257,11 +263,15 @@ class OriginatingMessageManager(
 
 
     private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpOriginatorMessage {
+        // Calculate centrality score using MeshRoleManager if available
+        val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
+        val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
         return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
             fitnessScore = fitnessScore,
             nodeRole = nodeRole,
-            sentTime = System.currentTimeMillis()
+            sentTime = System.currentTimeMillis(),
+            centralityScore = centralityScore
         )
     }
 
@@ -355,14 +365,14 @@ class OriginatingMessageManager(
                     "$logPrefix update originator messages: " +
                             "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}; " +
                             "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}" +
-                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}" +
-                            ", multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}"
+                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}" +
+                            ", multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighbors.size}"
                 }
             )
             _state.value = OriginatingMessageState(
                 pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
-            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((virtualNode as? AndroidVirtualNode)?.meshRoleManager?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighborCount}")
+            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}, neighborCount: ${mmcpMessage.neighbors.size}}")
         }
 
         if(isNewNeighbor) {
@@ -402,7 +412,7 @@ class OriginatingMessageManager(
 
         neighborPingTimes[fromVirtualAddr] = PingTime(
             nodeVirtualAddr = fromVirtualAddr,
-            pingTime = pingTime,
+            pingTime = pingTime.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toShort(),
             timeReceived = timeNow,
         )
 
@@ -538,7 +548,8 @@ class OriginatingMessageManager(
         val originatorMessage = MmcpOriginatorMessage(
             messageId = messageId,
             fitnessScore = getFitnessScore(),
-            nodeRole = getNodeRole()
+            nodeRole = getNodeRole(),
+            sentTime = System.currentTimeMillis()
         )
 
         _state.value = _state.value.copy(
@@ -560,6 +571,9 @@ class OriginatingMessageManager(
     fun getNextMessageId(): Int {
         return messageCounter.incrementAndGet()
     }
+
+    // Expose the current originatorMessages map for state updates
+    fun getOriginatorMessages(): Map<Int, VirtualNode.LastOriginatorMessage> = originatorMessages
 }
 
 data class OriginatingMessageState(

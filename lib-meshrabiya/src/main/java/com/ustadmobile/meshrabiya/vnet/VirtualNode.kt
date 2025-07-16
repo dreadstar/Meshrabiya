@@ -203,7 +203,7 @@ abstract class VirtualNode(
             originatingMessageManager.state.collect {
                 _state.update { prev ->
                     prev.copy(
-                        originatorMessages = it
+                        originatorMessages = originatingMessageManager.getOriginatorMessages()
                     )
                 }
             }
@@ -605,4 +605,7 @@ abstract class VirtualNode(
         scheduledExecutor.shutdown()
     }
 
+    internal fun getOriginatingMessageManager() = originatingMessageManager
+
+    internal open fun getMeshRoleManager(): MeshRoleManager? = null
 }

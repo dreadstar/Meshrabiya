@@ -61,8 +61,8 @@ class MeshRoleManager(
     }
 
     fun calculateFitnessScore(): FitnessScore {
-        val wifiState = (virtualNode as? HasNodeState)?.currentNodeState?.wifiState ?: MeshrabiyaWifiState()
-        val bluetoothState = (virtualNode as? HasNodeState)?.currentNodeState?.bluetoothState ?: MeshrabiyaBluetoothState()
+        val wifiState = (getVirtualNode() as? HasNodeState)?.currentNodeState?.wifiState ?: MeshrabiyaWifiState()
+        val bluetoothState = (getVirtualNode() as? HasNodeState)?.currentNodeState?.bluetoothState ?: MeshrabiyaBluetoothState()
         val isConnected = connectivityMonitor.isConnected.value
 
         val signalStrength = when {
@@ -72,7 +72,7 @@ class MeshRoleManager(
         }
 
         val batteryLevel = 0.5f // TODO: Implement battery level monitoring
-        val clientCount = virtualNode.neighbors().size
+        val clientCount = getVirtualNode().neighbors().size
 
         return FitnessScore(
             signalStrength = signalStrength,
@@ -100,6 +100,8 @@ class MeshRoleManager(
     fun close() {
         connectivityMonitor.stopMonitoring()
     }
+
+    internal fun getVirtualNode() = virtualNode
 }
 
 data class FitnessScore(
@@ -117,8 +119,8 @@ fun MeshRoleManager.updateNeighborSignalStrength(neighborId: String, rssi: Int) 
 }
 
 fun MeshRoleManager.calculateCentralityScore(): Float {
-    val topology = (virtualNode.originatingMessageManager as? com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager)?.getTopologyMap() ?: return 0f
-    val myAddr = virtualNode.addressAsInt
+    val topology = (getVirtualNode().getOriginatingMessageManager() as? com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager)?.getTopologyMap() ?: return 0f
+    val myAddr = getVirtualNode().addressAsInt
     val minChokePointNeighbors = 2 // or make configurable
 
     // Choke point detection

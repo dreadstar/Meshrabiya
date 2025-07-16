@@ -89,8 +89,8 @@ class MmcpOriginatorMessageTest {
         // Test various neighbor counts
         val testCounts = listOf(0, 1, 5, 10, 15, 31)
         for (count in testCounts) {
-            message.neighborCount = count
-            assertEquals(count, message.neighborCount)
+            message.neighbors = List(count) { 0 } // Assuming neighbors are integers for this test
+            assertEquals(count, message.neighbors.size)
         }
     }
 
@@ -147,14 +147,14 @@ class MmcpOriginatorMessageTest {
         val message = MmcpOriginatorMessage()
         
         // Set all fields
-        message.neighborCount = 5
+        message.neighbors = List(5) { 0 }
         message.centrality = 0.75f
         message.signalStrength = -65
         message.batteryLevel = 80
         message.hasInternetConnectivity = true
         
         // Verify all fields
-        assertEquals(5, message.neighborCount)
+        assertEquals(5, message.neighbors.size)
         assertEquals(0.75f, message.centrality, 0.01f)
         assertEquals(-65, message.signalStrength)
         assertEquals(80, message.batteryLevel)
@@ -166,11 +166,11 @@ class MmcpOriginatorMessageTest {
         val message = MmcpOriginatorMessage()
         
         // Test neighbor count boundaries
-        message.neighborCount = 0
-        assertEquals(0, message.neighborCount)
+        message.neighbors = List(0) { 0 }
+        assertEquals(0, message.neighbors.size)
         
-        message.neighborCount = 31
-        assertEquals(31, message.neighborCount)
+        message.neighbors = List(31) { 0 }
+        assertEquals(31, message.neighbors.size)
         
         // Test centrality boundaries
         message.centrality = 0.0f
@@ -199,16 +199,16 @@ class MmcpOriginatorMessageTest {
         val message = MmcpOriginatorMessage()
         
         // Set initial values
-        message.neighborCount = 5
+        message.neighbors = List(5) { 0 }
         message.centrality = 0.5f
         message.signalStrength = -70
         message.batteryLevel = 50
         message.hasInternetConnectivity = true
         
         // Change one field and verify others remain unchanged
-        message.neighborCount = 10
+        message.neighbors = List(10) { 0 }
         
-        assertEquals(10, message.neighborCount)
+        assertEquals(10, message.neighbors.size)
         assertEquals(0.5f, message.centrality, 0.01f)
         assertEquals(-70, message.signalStrength)
         assertEquals(50, message.batteryLevel)

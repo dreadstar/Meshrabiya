@@ -238,4 +238,6 @@ class AndroidVirtualNode(
             prev.copy(wifiState = newState)
         }
     }
+
+    override fun getMeshRoleManager(): MeshRoleManager = meshRoleManager
 }

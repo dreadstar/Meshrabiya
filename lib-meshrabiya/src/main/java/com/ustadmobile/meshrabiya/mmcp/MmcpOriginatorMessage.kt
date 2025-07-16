@@ -26,13 +26,13 @@ class MmcpOriginatorMessage(
     val fitnessScore: Int,
     val nodeRole: Byte,
     val sentTime: Long,
-    val neighbors: List<Int> = emptyList() // new field
+    val neighbors: List<Int> = emptyList(),
+    val centralityScore: Float = 0f // new field
 ) : MmcpMessage(WHAT_ORIGINATOR, messageId) {
 
     override fun toBytes(): ByteArray {
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
-        
         // Write message header
         dos.writeInt(fitnessScore)
         dos.writeByte(nodeRole.toInt())
@@ -40,7 +40,8 @@ class MmcpOriginatorMessage(
         // Write neighbors
         dos.writeInt(neighbors.size)
         neighbors.forEach { dos.writeInt(it) }
-        
+        // Write centralityScore
+        dos.writeFloat(centralityScore)
         return baos.toByteArray()
     }
 
@@ -66,10 +67,14 @@ class MmcpOriginatorMessage(
             val nodeRole = buffer.get()
             val sentTime = buffer.long
             val neighbors = mutableListOf<Int>()
+            var centralityScore = 0f
             if (buffer.remaining() >= 4) {
                 val neighborCount = buffer.int
                 repeat(neighborCount) {
                     if (buffer.remaining() >= 4) neighbors.add(buffer.int)
+                }
+                if (buffer.remaining() >= 4) {
+                    centralityScore = buffer.float
                 }
             }
             return MmcpOriginatorMessage(
@@ -77,7 +82,8 @@ class MmcpOriginatorMessage(
                 fitnessScore = fitnessScore,
                 nodeRole = nodeRole,
                 sentTime = sentTime,
-                neighbors = neighbors
+                neighbors = neighbors,
+                centralityScore = centralityScore
             )
         }
     }

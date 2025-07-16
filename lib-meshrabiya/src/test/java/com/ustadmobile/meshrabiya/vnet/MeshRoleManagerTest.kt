@@ -53,7 +53,7 @@ class MeshRoleManagerTest {
         mockGoodMetrics()
 
         // Process originator message
-        val message = createOriginatorMessage(neighborCount = 5, centrality = 0.8f)
+        val message = createOriginatorMessage(neighbors = List(5) { mockk() })
         roleManager.processOriginatorMessage(message)
 
         // Verify role promotion
@@ -66,7 +66,7 @@ class MeshRoleManagerTest {
         mockGoodMetrics()
 
         // Process originator message
-        val message = createOriginatorMessage(neighborCount = 3, centrality = 0.6f)
+        val message = createOriginatorMessage(neighbors = List(3) { mockk() })
         roleManager.processOriginatorMessage(message)
 
         // Verify role promotion
@@ -79,7 +79,7 @@ class MeshRoleManagerTest {
         mockPoorMetrics()
 
         // Process originator message
-        val message = createOriginatorMessage(neighborCount = 1, centrality = 0.2f)
+        val message = createOriginatorMessage(neighbors = List(1) { mockk() })
         roleManager.processOriginatorMessage(message)
 
         // Verify role remains client
@@ -90,13 +90,13 @@ class MeshRoleManagerTest {
     fun `test role demotion with degrading metrics`() {
         // First promote to hotspot
         mockGoodMetrics()
-        val goodMessage = createOriginatorMessage(neighborCount = 5, centrality = 0.8f)
+        val goodMessage = createOriginatorMessage(neighbors = List(5) { mockk() })
         roleManager.processOriginatorMessage(goodMessage)
         assertEquals(MeshRole.HOTSPOT, roleManager.getCurrentRole())
 
         // Then degrade metrics
         mockPoorMetrics()
-        val poorMessage = createOriginatorMessage(neighborCount = 1, centrality = 0.2f)
+        val poorMessage = createOriginatorMessage(neighbors = List(1) { mockk() })
         roleManager.processOriginatorMessage(poorMessage)
 
         // Verify role demotion
@@ -109,7 +109,7 @@ class MeshRoleManagerTest {
         mockGoodMetrics()
 
         // Process originator message
-        val message = createOriginatorMessage(neighborCount = 5, centrality = 0.8f)
+        val message = createOriginatorMessage(neighbors = List(5) { mockk() })
         roleManager.processOriginatorMessage(message)
 
         // Verify beta logging
@@ -159,12 +159,11 @@ class MeshRoleManagerTest {
     }
 
     private fun createOriginatorMessage(
-        neighborCount: Int,
-        centrality: Float
+        neighbors: List<Any>
     ): MmcpOriginatorMessage {
         return mockk {
-            every { this@mockk.neighborCount } returns neighborCount
-            every { this@mockk.centrality } returns centrality
+            every { this@mockk.neighbors } returns neighbors
+            every { this@mockk.centrality } returns 0.8f // Default value
             every { this@mockk.packedMeshInfo } returns 0L // Default value
         }
     }
