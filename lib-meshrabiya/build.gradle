@@ -53,6 +53,21 @@ dependencies {
     implementation "com.github.seancfoley:ipaddress:5.4.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.2"
 
+    implementation 'junit:junit:4.13.2'
+    testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.22") // Match your Kotlin version
+
+//    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$version_coroutines"
+//    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$version_kotlinx_serialization"
+    implementation "org.mockito.kotlin:mockito-kotlin:4.1.0"
+    implementation "app.cash.turbine:turbine:0.12.1"
+    implementation "com.squareup.okhttp3:mockwebserver:4.10.0"
+    implementation "com.squareup.okhttp3:okhttp:4.10.0"
+
+
+    testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation "io.mockk:mockk:1.13.10" 
+//
+
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.mockito.kotlin:mockito-kotlin:4.1.0"
     testImplementation "app.cash.turbine:turbine:0.12.1"
