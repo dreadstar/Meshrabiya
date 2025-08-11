@@ -40,7 +40,7 @@ class VirtualNodeDatagramSocketTest {
         )
 
         try {
-            val data = Random.nextBytes(ByteArray(1000 + VirtualPacketHeader.HEADER_SIZE))
+            val data = Random.nextBytes(1000)
             val packetToSend = VirtualPacket.fromHeaderAndPayloadData(
                 header = VirtualPacketHeader(
                     toAddr = socket2VirtualNodeAddr,
@@ -56,12 +56,14 @@ class VirtualNodeDatagramSocketTest {
                 payloadOffset = VirtualPacketHeader.HEADER_SIZE,
             )
 
+            // Use the correct send method signature
             socket1.send(
                 nextHopAddress = InetAddress.getLoopbackAddress(),
                 nextHopPort = socket2.localPort,
                 virtualPacket = packetToSend,
             )
 
+            // Verify that the router.route method was called on socket2
             verify(socket2Router, timeout(5000)).route(
                 packet = argWhere {
                     it.header == packetToSend.header
@@ -69,11 +71,10 @@ class VirtualNodeDatagramSocketTest {
                 datagramPacket = any(),
                 virtualNodeDatagramSocket = eq(socket2),
             )
-        }finally {
+        } finally {
             executorService.shutdown()
             socket1.close()
             socket2.close()
         }
     }
-
 }

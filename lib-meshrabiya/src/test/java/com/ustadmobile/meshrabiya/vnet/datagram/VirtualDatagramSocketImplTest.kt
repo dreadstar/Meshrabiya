@@ -1,4 +1,4 @@
-package com.ustadmobile.meshrabiya.datagram
+package com.ustadmobile.meshrabiya.vnet.datagram
 
 import com.ustadmobile.meshrabiya.ext.addressToByteArray
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
@@ -58,8 +58,8 @@ class VirtualDatagramSocketImplTest {
             payloadOffset = VirtualPacketHeader.HEADER_SIZE,
         )
 
+        // Call onIncomingPacket before receive to ensure packet is available
         virtualSocket.onIncomingPacket(incomingPacket)
-
 
         val datagramBuffer = ByteArray(VirtualPacket.VIRTUAL_PACKET_BUF_SIZE)
         val datagramPacket = DatagramPacket(datagramBuffer, datagramBuffer.size)
@@ -73,7 +73,6 @@ class VirtualDatagramSocketImplTest {
             datagramPacket.data, datagramPacket.offset, datagramPacket.length
         )
     }
-
 
     @Test(timeout = 5000)
     fun givenVirtualSocket_whenOutgoingDatagramSent_thenShouldCallRouteWithValidVirtualPacket() {
@@ -164,12 +163,7 @@ class VirtualDatagramSocketImplTest {
         Assert.assertEquals(socket1.boundPort, datagramIn.port)
         Assert.assertEquals(datagramOut.length, datagramIn.length)
         assertByteArrayEquals(
-            expected = datagramOut.data,
-            expectedOffset = datagramOut.offset,
-            actual = datagramIn.data,
-            actualOffset = datagramIn.offset,
-            length = datagramOut.length
+            bufferOut, 0, bufferIn, datagramIn.offset, datagramOut.length
         )
     }
-
 }

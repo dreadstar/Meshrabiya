@@ -21,150 +21,139 @@ import kotlin.test.assertTrue
 @Config(sdk = [28])
 class MeshRoleManagerTest {
     private lateinit var context: Context
-    private lateinit var wifiManager: WifiManager
-    private lateinit var connectivityManager: ConnectivityManager
-    private lateinit var batteryManager: BatteryManager
-    private lateinit var betaLogger: BetaTestLogger
+    private lateinit var virtualNode: VirtualNode
     private lateinit var roleManager: MeshRoleManager
 
-//    @Before
-//    fun setup() {
-//        context = mockk(relaxed = true)
-//        wifiManager = mockk(relaxed = true)
-//        connectivityManager = mockk(relaxed = true)
-//        batteryManager = mockk(relaxed = true)
-//        betaLogger = mockk(relaxed = true)
-//
-//        every { context.getSystemService(Context.WIFI_SERVICE) } returns wifiManager
-//        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns connectivityManager
-//        every { context.getSystemService(Context.BATTERY_SERVICE) } returns batteryManager
-//
-//        roleManager = MeshRoleManager(context, betaLogger)
-//    }
-
-//    @Test
-//    fun `test initial role is client`() {
-//        assertEquals(MeshRole.CLIENT, roleManager.getCurrentRole())
-//    }
-
-//    @Test
-//    fun `test role promotion to hotspot with good metrics`() {
-//        // Mock good metrics
-//        mockGoodMetrics()
-//
-//        // Process originator message
-//        val message = createOriginatorMessage(neighbors = List(5) { mockk() })
-//        roleManager.processOriginatorMessage(message)
-//
-//        // Verify role promotion
-//        assertEquals(MeshRole.HOTSPOT, roleManager.getCurrentRole())
-//    }
-
-//    @Test
-//    fun `test role promotion to relay with good metrics`() {
-//        // Mock good metrics
-//        mockGoodMetrics()
-//
-//        // Process originator message
-//        val message = createOriginatorMessage(neighbors = List(3) { mockk() })
-//        roleManager.processOriginatorMessage(message)
-//
-//        // Verify role promotion
-//        assertEquals(MeshRole.RELAY, roleManager.getCurrentRole())
-//    }
-//
-//    @Test
-//    fun `test role remains client with poor metrics`() {
-//        // Mock poor metrics
-//        mockPoorMetrics()
-//
-//        // Process originator message
-//        val message = createOriginatorMessage(neighbors = List(1) { mockk() })
-//        roleManager.processOriginatorMessage(message)
-//
-//        // Verify role remains client
-//        assertEquals(MeshRole.CLIENT, roleManager.getCurrentRole())
-//    }
-//
-//    @Test
-//    fun `test role demotion with degrading metrics`() {
-//        // First promote to hotspot
-//        mockGoodMetrics()
-//        val goodMessage = createOriginatorMessage(neighbors = List(5) { mockk() })
-//        roleManager.processOriginatorMessage(goodMessage)
-//        assertEquals(MeshRole.HOTSPOT, roleManager.getCurrentRole())
-//
-//        // Then degrade metrics
-//        mockPoorMetrics()
-//        val poorMessage = createOriginatorMessage(neighbors = List(1) { mockk() })
-//        roleManager.processOriginatorMessage(poorMessage)
-//
-//        // Verify role demotion
-//        assertEquals(MeshRole.CLIENT, roleManager.getCurrentRole())
-//    }
-//
-//    @Test
-//    fun `test beta logging integration`() {
-//        // Mock good metrics
-//        mockGoodMetrics()
-//
-//        // Process originator message
-//        val message = createOriginatorMessage(neighbors = List(5) { mockk() })
-//        roleManager.processOriginatorMessage(message)
-//
-//        // Verify beta logging
-//        verify {
-//            betaLogger.log(
-//                match {
-//                    it.level == LogLevel.DETAILED &&
-//                    it.category == "MESH_ROLE" &&
-//                    it.message.contains("Role changed to HOTSPOT")
-//                }
-//            )
-//        }
-//    }
-
-    private fun mockGoodMetrics() {
-        // Mock good internet connectivity
-        every { 
-            connectivityManager.getNetworkCapabilities(any())
-        } returns mockk {
-            every { hasCapability(any()) } returns true
-        }
-
-        // Mock good signal strength
-        every { wifiManager.connectionInfo } returns mockk {
-            every { rssi } returns -50
-        }
-
-        // Mock good battery level
-        every { batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) } returns 80
+    @Before
+    fun setup() {
+        context = mockk(relaxed = true)
+        virtualNode = mockk(relaxed = true)
+        
+        // Mock VirtualNode methods
+        every { virtualNode.addressAsInt } returns 12345
+        every { virtualNode.neighbors() } returns emptyList()
+        every { virtualNode.getOriginatingMessageManager() } returns mockk(relaxed = true)
+        
+        roleManager = MeshRoleManager(virtualNode, context)
     }
 
-    private fun mockPoorMetrics() {
-        // Mock poor internet connectivity
-        every { 
-            connectivityManager.getNetworkCapabilities(any())
-        } returns mockk {
-            every { hasCapability(any()) } returns false
-        }
-
-        // Mock poor signal strength
-        every { wifiManager.connectionInfo } returns mockk {
-            every { rssi } returns -90
-        }
-
-        // Mock poor battery level
-        every { batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) } returns 20
+    @Test
+    fun `test initial role is mesh node`() {
+        assertEquals(NodeRole.MESH_NODE, roleManager.currentRole.value)
     }
 
-//    private fun createOriginatorMessage(
-//        neighbors: List<Any>
-//    ): MmcpOriginatorMessage {
-//        return mockk {
-//            every { this@mockk.neighbors } returns neighbors
-//            every { this@mockk.centrality } returns 0.8f // Default value
-//            every { this@mockk.packedMeshInfo } returns 0L // Default value
-//        }
-//    }
+    @Test
+    fun `test role update with good fitness score`() {
+        // Mock good fitness score
+        every { virtualNode.neighbors() } returns List(5) { mockk() }
+        
+        // Mock topology map for centrality calculation
+        val mockTopology = mapOf(12345 to setOf(1, 2, 3, 4, 5))
+        val mockOriginatingMessageManager = mockk<OriginatingMessageManager>()
+        every { mockOriginatingMessageManager.getTopologyMap() } returns mockTopology
+        every { virtualNode.getOriginatingMessageManager() } returns mockOriginatingMessageManager
+        
+        roleManager.updateRole()
+        
+        // Should remain MESH_NODE with good metrics
+        assertEquals(NodeRole.MESH_NODE, roleManager.currentRole.value)
+    }
+
+    @Test
+    fun `test role update with poor fitness score`() {
+        // Mock poor fitness score
+        every { virtualNode.neighbors() } returns emptyList()
+        
+        // Mock empty topology map
+        val mockOriginatingMessageManager = mockk<OriginatingMessageManager>()
+        every { mockOriginatingMessageManager.getTopologyMap() } returns emptyMap()
+        every { virtualNode.getOriginatingMessageManager() } returns mockOriginatingMessageManager
+        
+        roleManager.updateRole()
+        
+        // Should become CLIENT with poor metrics
+        assertEquals(NodeRole.CLIENT, roleManager.currentRole.value)
+    }
+
+    @Test
+    fun `test role update with bridge fitness score`() {
+        // Mock moderate fitness score
+        every { virtualNode.neighbors() } returns List(3) { mockk() }
+        
+        // Mock moderate topology map
+        val mockTopology = mapOf(12345 to setOf(1, 2, 3))
+        val mockOriginatingMessageManager = mockk<OriginatingMessageManager>()
+        every { mockOriginatingMessageManager.getTopologyMap() } returns mockTopology
+        every { virtualNode.getOriginatingMessageManager() } returns mockOriginatingMessageManager
+        
+        roleManager.updateRole()
+        
+        // Should become BRIDGE with moderate metrics
+        assertEquals(NodeRole.BRIDGE, roleManager.currentRole.value)
+    }
+
+    @Test
+    fun `test role update with user allows tor proxy`() {
+        roleManager.userAllowsTorProxy = true
+        
+        // Mock poor fitness score
+        every { virtualNode.neighbors() } returns emptyList()
+        
+        roleManager.updateRole()
+        
+        // Should remain MESH_NODE when user allows Tor proxy
+        assertEquals(NodeRole.MESH_NODE, roleManager.currentRole.value)
+    }
+
+    @Test
+    fun `test role update with choke point flag`() {
+        // Mock topology that creates choke point
+        val mockTopology = mapOf(
+            12345 to setOf(1, 2), // Only 2 neighbors - choke point
+            1 to setOf(12345),
+            2 to setOf(12345)
+        )
+        val mockOriginatingMessageManager = mockk<OriginatingMessageManager>()
+        every { mockOriginatingMessageManager.getTopologyMap() } returns mockTopology
+        every { virtualNode.getOriginatingMessageManager() } returns mockOriginatingMessageManager
+        
+        roleManager.updateRole()
+        
+        // Should remain MESH_NODE when choke point detected
+        assertEquals(NodeRole.MESH_NODE, roleManager.currentRole.value)
+        assertTrue(roleManager.chokePointFlag)
+    }
+
+    @Test
+    fun `test fitness score calculation`() {
+        val fitnessScore = roleManager.calculateFitnessScore()
+        
+        // Default values should be present
+        assertEquals(0, fitnessScore.signalStrength) // No wifi/bluetooth connection
+        assertEquals(0.5f, fitnessScore.batteryLevel) // Default value
+        assertEquals(0, fitnessScore.clientCount) // No neighbors
+    }
+
+    @Test
+    fun `test centrality score calculation`() {
+        // Mock topology for centrality calculation
+        val mockTopology = mapOf(
+            12345 to setOf(1, 2, 3),
+            1 to setOf(12345, 4),
+            2 to setOf(12345, 5),
+            3 to setOf(12345, 6),
+            4 to setOf(1),
+            5 to setOf(2),
+            6 to setOf(3)
+        )
+        val mockOriginatingMessageManager = mockk<OriginatingMessageManager>()
+        every { mockOriginatingMessageManager.getTopologyMap() } returns mockTopology
+        every { virtualNode.getOriginatingMessageManager() } returns mockOriginatingMessageManager
+        
+        val centralityScore = roleManager.calculateCentralityScore()
+        
+        // Should calculate some centrality score
+        assertTrue(centralityScore > 0f)
+        assertEquals(centralityScore, roleManager.centralityScore)
+    }
 } 
