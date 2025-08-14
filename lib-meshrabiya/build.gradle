@@ -80,6 +80,7 @@ dependencies {
     androidTestImplementation "app.cash.turbine:turbine:0.12.1"
     androidTestImplementation "org.mockito:mockito-android:5.1.1"
     androidTestImplementation "org.mockito.kotlin:mockito-kotlin:4.1.0"
+    androidTestImplementation "io.mockk:mockk-android:1.13.10"
 }
 
 publishing {

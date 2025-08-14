@@ -5,6 +5,13 @@ plugins {
     id "com.jaredsburrows.license" version "0.9.3"
 }
 
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+    maven { url 'https://guardianproject.info/repo' }
+}
+
 android {
     buildFeatures {
         buildConfig = true

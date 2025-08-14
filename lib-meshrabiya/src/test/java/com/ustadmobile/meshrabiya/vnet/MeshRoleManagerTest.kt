@@ -6,7 +6,7 @@ import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
-import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
+
 import io.mockk.*
 import org.junit.Before
 import org.junit.Test

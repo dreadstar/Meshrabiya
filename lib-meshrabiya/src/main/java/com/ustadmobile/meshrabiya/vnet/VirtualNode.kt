@@ -11,7 +11,7 @@ import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotRequest
 import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotResponse
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
-import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
+import com.ustadmobile.meshrabiya.mmcp.MmcpNodeAnnouncement
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
 import com.ustadmobile.meshrabiya.portforward.ForwardBindPoint
@@ -132,7 +132,7 @@ abstract class VirtualNode(
      * @param lastHopAddr the recorded last hop address
      */
     data class LastOriginatorMessage(
-        val originatorMessage: MmcpOriginatorMessage,
+        val originatorMessage: MmcpNodeAnnouncement,
         val timeReceived: Long,
         val lastHopAddr: Int,
         val hopCount: Byte,
@@ -417,7 +417,7 @@ abstract class VirtualNode(
                     }
                 }
 
-                mmcpMessage is MmcpOriginatorMessage -> {
+                mmcpMessage is MmcpNodeAnnouncement -> {
                     shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
                         mmcpMessage = mmcpMessage,
                         datagramPacket = datagramPacket ?: return false,
