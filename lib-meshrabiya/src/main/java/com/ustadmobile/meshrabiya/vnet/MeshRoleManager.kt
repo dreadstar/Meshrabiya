@@ -47,7 +47,7 @@ class MeshRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
 ) {
-    private val logger = try { BetaTestLogger() } catch (e: Exception) { null }
+    private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
     private val connectivityMonitor = try { ConnectivityMonitor(context) } catch (e: Exception) { null }
     private val _currentRole = MutableStateFlow(NodeRole.MESH_NODE)
     val currentRole: StateFlow<NodeRole> = _currentRole

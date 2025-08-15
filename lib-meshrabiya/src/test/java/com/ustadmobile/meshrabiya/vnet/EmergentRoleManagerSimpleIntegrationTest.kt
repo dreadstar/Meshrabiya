@@ -1,11 +1,17 @@
 package com.ustadmobile.meshrabiya.vnet
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.ustadmobile.meshrabiya.mmcp.*
+import com.ustadmobile.meshrabiya.beta.BetaTestLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
 import org.junit.Test
 import org.junit.Before
+import org.junit.After
 import org.mockito.Mockito.*
 import org.mockito.kotlin.whenever
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doNothing
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
@@ -13,7 +19,7 @@ import kotlin.test.assertContains
 
 /**
  * Comprehensive integration tests for EmergentRoleManager covering performance
- * and edge case scenarios
+ * and edge case scenarios with integrated BetaTestLogger consent-based filtering
  */
 class EmergentRoleManagerSimpleIntegrationTest {
 
@@ -21,6 +27,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
     private lateinit var mockContext: Context
     private lateinit var mockMeshRoleManager: MeshRoleManager
     private lateinit var emergentRoleManager: EmergentRoleManager
+    private lateinit var betaTestLogger: BetaTestLogger
 
     @Before
     fun setup() {
@@ -32,14 +39,223 @@ class EmergentRoleManagerSimpleIntegrationTest {
         whenever(mockVirtualNode.neighbors()).thenReturn(emptyList())
         whenever(mockMeshRoleManager.userAllowsTorProxy).thenReturn(true)
         
+        // Mock SharedPreferences for BetaTestLogger
+        val mockSharedPrefs = mock(SharedPreferences::class.java)
+        val mockEditor = mock(SharedPreferences.Editor::class.java)
+        whenever(mockContext.getSharedPreferences(any(), any())).thenReturn(mockSharedPrefs)
+        whenever(mockSharedPrefs.getString(any(), any())).thenReturn("DETAILED")
+        whenever(mockSharedPrefs.edit()).thenReturn(mockEditor)
+        whenever(mockEditor.putString(any(), any())).thenReturn(mockEditor)
+        doNothing().whenever(mockEditor).apply()
+        
+        // Initialize BetaTestLogger with DETAILED level for testing
+        betaTestLogger = BetaTestLogger.getInstance(mockContext)
+        betaTestLogger.setLogLevel(LogLevel.DETAILED)
+        betaTestLogger.clearLogs()
+        
         emergentRoleManager = EmergentRoleManager(mockVirtualNode, mockContext, mockMeshRoleManager)
+    }
+    
+    @After
+    fun cleanup() {
+        // Clear logs after each test
+        betaTestLogger.clearLogs()
+    }
+
+    // ===== BETA LOGGER INTEGRATION TESTS =====
+
+    @Test
+    fun testBetaLoggerConsentLevelDisabled() {
+        // Test DISABLED consent level - should only capture ERROR logs
+        betaTestLogger.setLogLevel(LogLevel.DISABLED)
+        betaTestLogger.clearLogs()
+        
+        // Trigger role determination to generate logs
+        val highCapabilityNode = createHighCapabilityNode()
+        val meshIntelligence = createBalancedMeshIntelligence()
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapabilityNode,
+            meshIntelligence = meshIntelligence,
+            currentRoles = emptySet()
+        )
+        
+        // Also manually log at different levels to test filtering
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug message - should be filtered")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info message - should be filtered") 
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning message - should be filtered")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error message - should be captured")
+        
+        val capturedLogs = betaTestLogger.getLogs()
+        
+        // Verify only ERROR logs are captured
+        assertTrue(capturedLogs.isNotEmpty(), "Should have captured some logs")
+        assertTrue(capturedLogs.all { it.level == LogLevel.ERROR }, 
+            "DISABLED consent should only capture ERROR logs, but found: ${capturedLogs.map { it.level }}")
+    }
+
+    @Test 
+    fun testBetaLoggerConsentLevelBasic() {
+        // Test BASIC consent level - should capture WARN and ERROR logs
+        betaTestLogger.setLogLevel(LogLevel.BASIC)
+        betaTestLogger.clearLogs()
+        
+        // Trigger role determination to generate logs
+        val mediumCapabilityNode = createMediumCapabilityNode()
+        val meshIntelligence = createBalancedMeshIntelligence()
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = mediumCapabilityNode,
+            meshIntelligence = meshIntelligence,
+            currentRoles = emptySet()
+        )
+        
+        // Manually log at different levels
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug message - should be filtered")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info message - should be filtered")
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning message - should be captured")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error message - should be captured")
+        
+        val capturedLogs = betaTestLogger.getLogs()
+        val logLevels = capturedLogs.map { it.level }.toSet()
+        
+        // Verify only WARN and ERROR logs are captured
+        assertTrue(capturedLogs.isNotEmpty(), "Should have captured some logs")
+        assertTrue(logLevels.all { it == LogLevel.WARN || it == LogLevel.ERROR },
+            "BASIC consent should only capture WARN/ERROR logs, but found: $logLevels")
+        assertFalse(logLevels.contains(LogLevel.DEBUG), "Should not contain DEBUG logs")
+        assertFalse(logLevels.contains(LogLevel.INFO), "Should not contain INFO logs")
+    }
+
+    @Test
+    fun testBetaLoggerConsentLevelDetailed() {
+        // Test DETAILED consent level - should capture WARN, ERROR, INFO logs
+        betaTestLogger.setLogLevel(LogLevel.DETAILED)
+        betaTestLogger.clearLogs()
+        
+        // Trigger role determination to generate logs
+        val highCapabilityNode = createHighCapabilityNode()
+        val needyMesh = MeshIntelligence(
+            totalNodes = 10,
+            activeGateways = 1,
+            activeStorageNodes = 1,
+            activeComputeNodes = 1,
+            networkLoad = 0.8f,
+            storageUtilization = 0.9f,
+            computeUtilization = 0.8f
+        )
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapabilityNode,
+            meshIntelligence = needyMesh,
+            currentRoles = emptySet()
+        )
+        
+        // Manually log at different levels
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug message - should be filtered")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info message - should be captured")
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning message - should be captured")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error message - should be captured")
+        
+        val capturedLogs = betaTestLogger.getLogs()
+        val logLevels = capturedLogs.map { it.level }.toSet()
+        
+        // Verify WARN, ERROR, and INFO logs are captured
+        assertTrue(capturedLogs.isNotEmpty(), "Should have captured some logs")
+        assertTrue(logLevels.intersect(setOf(LogLevel.WARN, LogLevel.ERROR, LogLevel.INFO)).isNotEmpty(),
+            "DETAILED consent should capture WARN/ERROR/INFO logs")
+        assertFalse(logLevels.contains(LogLevel.DEBUG), "Should not contain DEBUG logs")
+        
+        // Verify we captured specific EmergentRoleManager logs
+        val emergentLogs = capturedLogs.filter { it.category == "DEFAULT" || !it.category.startsWith("TEST") }
+        assertTrue(emergentLogs.isNotEmpty(), "Should have captured logs from EmergentRoleManager")
+    }
+
+    @Test
+    fun testBetaLoggerConsentLevelFull() {
+        // Test FULL consent level - should capture all logs including DEBUG
+        betaTestLogger.setLogLevel(LogLevel.FULL)
+        betaTestLogger.clearLogs()
+        
+        // Trigger role determination to generate logs
+        val highCapabilityNode = createHighCapabilityNode()
+        val meshIntelligence = createBalancedMeshIntelligence()
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapabilityNode,
+            meshIntelligence = meshIntelligence,
+            currentRoles = emptySet()
+        )
+        
+        // Manually log at all levels
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug message - should be captured")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info message - should be captured")
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning message - should be captured")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error message - should be captured")
+        
+        val capturedLogs = betaTestLogger.getLogs()
+        val logLevels = capturedLogs.map { it.level }.toSet()
+        
+        // Verify all log levels are captured
+        assertTrue(capturedLogs.isNotEmpty(), "Should have captured some logs")
+        assertTrue(logLevels.contains(LogLevel.DEBUG), "FULL consent should capture DEBUG logs")
+        assertTrue(logLevels.contains(LogLevel.INFO), "FULL consent should capture INFO logs")
+        assertTrue(logLevels.contains(LogLevel.WARN), "FULL consent should capture WARN logs")
+        assertTrue(logLevels.contains(LogLevel.ERROR), "FULL consent should capture ERROR logs")
+        
+        // Verify we captured DEBUG logs from EmergentRoleManager
+        val debugLogs = capturedLogs.filter { it.level == LogLevel.DEBUG }
+        assertTrue(debugLogs.isNotEmpty(), "Should have captured DEBUG logs from role determination")
+    }
+
+    @Test
+    fun testLogLevelPersistenceAcrossInstances() {
+        // Test that log level persists when getting new logger instances
+        betaTestLogger.setLogLevel(LogLevel.BASIC)
+        
+        // Get a new instance - should have the same log level
+        val newLoggerInstance = BetaTestLogger.getInstance(mockContext)
+        assertEquals(LogLevel.BASIC, newLoggerInstance.getLogLevel(), 
+            "Log level should persist across logger instances")
+        
+        // Change level in new instance
+        newLoggerInstance.setLogLevel(LogLevel.FULL)
+        
+        // Original instance should also reflect the change
+        assertEquals(LogLevel.FULL, betaTestLogger.getLogLevel(),
+            "Log level changes should be reflected in all instances")
+    }
+
+    @Test
+    fun testLogFiltering() {
+        // Test that logs are filtered immediately at capture time
+        betaTestLogger.setLogLevel(LogLevel.BASIC)
+        betaTestLogger.clearLogs()
+        
+        // Log messages at different levels
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug - should not appear")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info - should not appear")
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning - should appear")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error - should appear")
+        
+        val logs = betaTestLogger.getLogs()
+        
+        // Should only have 2 logs (WARN and ERROR)
+        assertEquals(2, logs.size, "Should only capture WARN and ERROR logs")
+        assertTrue(logs.any { it.level == LogLevel.WARN && it.message.contains("Warning") },
+            "Should contain the WARN log")
+        assertTrue(logs.any { it.level == LogLevel.ERROR && it.message.contains("Error") },
+            "Should contain the ERROR log")
     }
 
     // ===== PERFORMANCE TESTS =====
 
     @Test
     fun testMassiveNetworkScaling() {
-        // Test with a very large mesh network (1000+ nodes)
+        // Test with a very large mesh network (1000+ nodes) and verify logging
+        betaTestLogger.setLogLevel(LogLevel.DETAILED)
+        betaTestLogger.clearLogs()
+        
         val massiveMeshIntelligence = MeshIntelligence(
             totalNodes = 1000,
             activeGateways = 50,
@@ -62,6 +278,61 @@ class EmergentRoleManagerSimpleIntegrationTest {
         // In a massive network with adequate resources, high capability nodes should still get meaningful roles
         assertTrue(plan.addRoles.isNotEmpty(), "High capability node should receive roles in massive network")
         assertTrue(plan.addRoles.contains(MeshRole.MESH_PARTICIPANT), "Should always include participant role")
+        
+        // Verify logging captured the role assignment process
+        val capturedLogs = betaTestLogger.getLogs()
+        assertTrue(capturedLogs.isNotEmpty(), "Should have captured logs during role determination")
+        
+        val infoLogs = capturedLogs.filter { it.level == LogLevel.INFO }
+        assertTrue(infoLogs.any { it.message.contains("Assigned") }, 
+            "Should have logged role assignments")
+    }
+
+    @Test
+    fun testConsentLevelChangesDuringOperation() {
+        // Test that changing consent levels during operation affects subsequent logging
+        
+        // Start with DISABLED - only ERROR logs
+        betaTestLogger.setLogLevel(LogLevel.DISABLED)
+        betaTestLogger.clearLogs()
+        
+        val node = createHighCapabilityNode()
+        val mesh = createBalancedMeshIntelligence()
+        
+        // First role determination
+        emergentRoleManager.determineOptimalRoles(node, mesh, emptySet())
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info during DISABLED")
+        betaTestLogger.log(LogLevel.ERROR, "TEST", "Error during DISABLED")
+        
+        val disabledLogs = betaTestLogger.getLogs()
+        assertTrue(disabledLogs.all { it.level == LogLevel.ERROR }, 
+            "During DISABLED, should only capture ERROR logs")
+        
+        // Change to DETAILED - should capture INFO, WARN, ERROR
+        betaTestLogger.setLogLevel(LogLevel.DETAILED)
+        
+        // Second role determination
+        emergentRoleManager.determineOptimalRoles(node, mesh, emptySet())
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug during DETAILED")
+        betaTestLogger.log(LogLevel.INFO, "TEST", "Info during DETAILED")
+        betaTestLogger.log(LogLevel.WARN, "TEST", "Warning during DETAILED")
+        
+        val detailedLogs = betaTestLogger.getLogs()
+        val detailedLogLevels = detailedLogs.map { it.level }.toSet()
+        
+        assertTrue(detailedLogLevels.contains(LogLevel.INFO), "Should now capture INFO logs")
+        assertTrue(detailedLogLevels.contains(LogLevel.WARN), "Should now capture WARN logs")
+        assertTrue(detailedLogLevels.contains(LogLevel.ERROR), "Should still capture ERROR logs")
+        assertFalse(detailedLogLevels.contains(LogLevel.DEBUG), "Should not capture DEBUG logs")
+        
+        // Change to FULL - should capture all logs
+        betaTestLogger.setLogLevel(LogLevel.FULL)
+        betaTestLogger.log(LogLevel.DEBUG, "TEST", "Debug during FULL")
+        
+        val fullLogs = betaTestLogger.getLogs()
+        val fullLogLevels = fullLogs.map { it.level }.toSet()
+        
+        assertTrue(fullLogLevels.contains(LogLevel.DEBUG), "Should now capture DEBUG logs")
     }
 
     @Test

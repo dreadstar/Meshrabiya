@@ -79,7 +79,7 @@ class EmergentRoleManager(
     private val context: Context,
     private val meshRoleManager: MeshRoleManager
 ) {
-    private val logger = try { BetaTestLogger() } catch (e: Exception) { null }
+    private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
     
     private fun safeLog(level: LogLevel, message: String, throwable: Throwable? = null) {
         try {
