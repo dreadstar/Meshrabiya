@@ -40,7 +40,10 @@ class EmergentRoleManagerSimpleTest {
     @Test
     fun testBasicParticipantRoleAssignment() {
         val basicNode = createBasicNode()
-        val plan = emergentRoleManager.determineOptimalRoles(basicNode)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = basicNode,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         assertTrue(plan.addRoles.contains(MeshRole.MESH_PARTICIPANT), 
             "Every node should be assigned participant role")
@@ -51,7 +54,11 @@ class EmergentRoleManagerSimpleTest {
         val highCapNode = createHighCapabilityNode()
         val needyMesh = createHighDemandMesh()
         
-        val plan = emergentRoleManager.determineOptimalRoles(highCapNode, needyMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapNode, 
+            meshIntelligence = needyMesh,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         assertTrue(plan.addRoles.size > 1, "High capability node should get multiple roles")
         assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT, "Should include participant role")
@@ -60,7 +67,10 @@ class EmergentRoleManagerSimpleTest {
     @Test
     fun testLowCapabilityNodeGetsMinimalRoles() {
         val lowCapNode = createLowCapabilityNode()
-        val plan = emergentRoleManager.determineOptimalRoles(lowCapNode)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = lowCapNode,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         assertEquals(setOf(MeshRole.MESH_PARTICIPANT), plan.addRoles,
             "Low capability node should only get participant role")
@@ -75,7 +85,11 @@ class EmergentRoleManagerSimpleTest {
         val stableNode = createStableHighBandwidthNode()
         val gatewayNeededMesh = createGatewayNeededMesh()
         
-        val plan = emergentRoleManager.determineOptimalRoles(stableNode, gatewayNeededMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = stableNode, 
+            meshIntelligence = gatewayNeededMesh,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         assertTrue(plan.addRoles.contains(MeshRole.TOR_GATEWAY), 
             "Should assign Tor gateway when user allows Tor proxy")
@@ -88,7 +102,11 @@ class EmergentRoleManagerSimpleTest {
         val highBandwidthNode = createHighBandwidthNode()
         val gatewayNeededMesh = createGatewayNeededMesh()
         
-        val plan = emergentRoleManager.determineOptimalRoles(highBandwidthNode, gatewayNeededMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highBandwidthNode, 
+            meshIntelligence = gatewayNeededMesh,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         assertTrue(plan.addRoles.contains(MeshRole.CLEARNET_GATEWAY), 
             "Should assign clearnet gateway for high bandwidth when Tor not allowed")
@@ -363,13 +381,13 @@ class EmergentRoleManagerSimpleTest {
             availableRAM = 800_000_000L,
             availableBandwidth = 15_000_000L, // >10Mbps for clearnet
             storageOffered = 2_000_000L,
-            batteryLevel = 70,
+            batteryLevel = 80, // Increased to >70 for better fitness
             thermalThrottling = false,
             powerState = PowerState.BATTERY_HIGH,
             networkInterfaces = emptySet()
         ),
         batteryInfo = BatteryInfo(
-            level = 70, 
+            level = 80, // Increased to >70 for better fitness
             isCharging = false, 
             estimatedTimeRemaining = null,
             temperatureCelsius = 30,

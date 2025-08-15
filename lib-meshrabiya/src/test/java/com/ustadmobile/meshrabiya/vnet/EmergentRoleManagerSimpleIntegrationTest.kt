@@ -52,9 +52,11 @@ class EmergentRoleManagerSimpleIntegrationTest {
         
         val highCapabilityNode = createHighCapabilityNode()
         
+        // Simulate a new node joining by passing empty current roles
         val plan = emergentRoleManager.determineOptimalRoles(
             nodeCapabilities = highCapabilityNode,
-            meshIntelligence = massiveMeshIntelligence
+            meshIntelligence = massiveMeshIntelligence,
+            currentRoles = emptySet()
         )
         
         // In a massive network with adequate resources, high capability nodes should still get meaningful roles
@@ -70,9 +72,9 @@ class EmergentRoleManagerSimpleIntegrationTest {
         
         val startTime = System.currentTimeMillis()
         
-        // Perform 100 rapid role calculations
+        // Perform 100 rapid role calculations, simulating a new node each time
         repeat(100) {
-            emergentRoleManager.determineOptimalRoles(baseNode, meshIntelligence)
+            emergentRoleManager.determineOptimalRoles(baseNode, meshIntelligence, emptySet())
         }
         
         val endTime = System.currentTimeMillis()
@@ -91,7 +93,8 @@ class EmergentRoleManagerSimpleIntegrationTest {
             val dynamicNode = createDynamicCapabilityNode(iteration)
             val dynamicMesh = createDynamicMeshIntelligence(iteration)
             
-            emergentRoleManager.determineOptimalRoles(dynamicNode, dynamicMesh)
+            // Simulate new nodes joining by passing empty current roles
+            emergentRoleManager.determineOptimalRoles(dynamicNode, dynamicMesh, emptySet())
             
             // Force garbage collection every 100 iterations
             if (iteration % 100 == 0) {
@@ -125,7 +128,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
         )
         
         val node = createHighCapabilityNode()
-        val plan = emergentRoleManager.determineOptimalRoles(node, emptyMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(node, emptyMesh, emptySet())
         
         // Should handle empty network gracefully
         assertTrue(plan.addRoles.isNotEmpty(), "Should assign roles even in empty network")
@@ -160,7 +163,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
             stability = 1.0f
         )
         
-        val plan = emergentRoleManager.determineOptimalRoles(criticalBatteryNode)
+        val plan = emergentRoleManager.determineOptimalRoles(criticalBatteryNode, currentRoles = emptySet())
         
         // Should be very conservative with role assignment
         assertFalse(plan.addRoles.contains(MeshRole.COMPUTE_NODE), "Should not assign compute role with critical battery")
@@ -195,7 +198,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
             stability = 1.0f
         )
         
-        val plan = emergentRoleManager.determineOptimalRoles(overheatingNode)
+        val plan = emergentRoleManager.determineOptimalRoles(overheatingNode, currentRoles = emptySet())
         
         // Should avoid compute and storage roles due to thermal state
         assertFalse(plan.addRoles.contains(MeshRole.COMPUTE_NODE), "Should not assign compute role when overheating")
@@ -229,7 +232,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
             stability = 0.1f // Very unstable
         )
         
-        val plan = emergentRoleManager.determineOptimalRoles(unstableNode)
+        val plan = emergentRoleManager.determineOptimalRoles(unstableNode, currentRoles = emptySet())
         
         // Should not assign gateway roles with poor connectivity
         assertFalse(plan.addRoles.contains(MeshRole.TOR_GATEWAY), "Should not assign gateway role with poor connectivity")
@@ -263,7 +266,7 @@ class EmergentRoleManagerSimpleIntegrationTest {
             stability = 0.3f
         )
         
-        val plan = emergentRoleManager.determineOptimalRoles(constrainedNode)
+        val plan = emergentRoleManager.determineOptimalRoles(constrainedNode, currentRoles = emptySet())
         
         // Should only get basic participant role
         assertEquals(setOf(MeshRole.MESH_PARTICIPANT), plan.addRoles, 
@@ -284,7 +287,11 @@ class EmergentRoleManagerSimpleIntegrationTest {
         )
         
         val perfectNode = createHighCapabilityNode()
-        val plan = emergentRoleManager.determineOptimalRoles(perfectNode, saturatedMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = perfectNode, 
+            meshIntelligence = saturatedMesh,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         // Should be conservative about adding more roles when network is saturated
         // Focus should be on basic roles like participant and router
@@ -357,7 +364,11 @@ class EmergentRoleManagerSimpleIntegrationTest {
             computeUtilization = 0.8f
         )
         
-        val plan = emergentRoleManager.determineOptimalRoles(conflictedNode, needyMesh)
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = conflictedNode, 
+            meshIntelligence = needyMesh,
+            currentRoles = emptySet() // Simulate new node joining
+        )
         
         // Should make reasonable trade-offs based on node capabilities and mesh needs
         assertTrue(plan.addRoles.isNotEmpty(), "Should assign at least some roles")

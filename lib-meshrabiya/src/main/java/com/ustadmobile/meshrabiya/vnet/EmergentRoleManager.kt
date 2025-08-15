@@ -160,7 +160,7 @@ class EmergentRoleManager(
         if (node.storageOffered > 1_000_000L && // At least 1MB offered
             fitness > 0.4 && 
             mesh.needsMoreStorage &&
-            node.thermalState != ThermalState.THROTTLING &&
+            node.thermalState !in setOf(ThermalState.THROTTLING, ThermalState.CRITICAL) &&
             (userPreferences.isEmpty() || MeshRole.STORAGE_NODE in userPreferences)) {
             roles.add(MeshRole.STORAGE_NODE)
             safeLog(LogLevel.INFO, "Assigned storage role")
@@ -168,7 +168,7 @@ class EmergentRoleManager(
         
         // Compute role (additive, but consider thermal state, battery, and preferences)
         if (node.availableCPU > 0.3f && 
-            node.thermalState != ThermalState.THROTTLING && 
+            node.thermalState !in setOf(ThermalState.THROTTLING, ThermalState.CRITICAL) && 
             (node.isCharging || node.batteryLevel > 30) &&
             mesh.needsMoreCompute &&
             (userPreferences.isEmpty() || MeshRole.COMPUTE_NODE in userPreferences)) {
@@ -212,8 +212,9 @@ class EmergentRoleManager(
         
         // Otherwise, use capability-based selection
         return when {
+            !meshRoleManager.userAllowsTorProxy && node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps when Tor not allowed
             meshRoleManager.userAllowsTorProxy -> MeshRole.TOR_GATEWAY
-            node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps
+            node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps fallback
             else -> MeshRole.TOR_GATEWAY // Default to Tor for privacy
         }
     }
