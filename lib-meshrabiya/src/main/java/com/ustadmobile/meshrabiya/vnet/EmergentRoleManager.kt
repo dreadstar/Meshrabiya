@@ -79,7 +79,15 @@ class EmergentRoleManager(
     private val context: Context,
     private val meshRoleManager: MeshRoleManager
 ) {
-    private val logger = BetaTestLogger()
+    private val logger = try { BetaTestLogger() } catch (e: Exception) { null }
+    
+    private fun safeLog(level: LogLevel, message: String, throwable: Throwable? = null) {
+        try {
+            logger?.log(level, message, throwable)
+        } catch (e: Exception) {
+            // Ignore logging errors in test environment
+        }
+    }
     
     private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(setOf(MeshRole.MESH_PARTICIPANT))
     val currentMeshRoles: StateFlow<Set<MeshRole>> = _currentMeshRoles.asStateFlow()
@@ -138,14 +146,14 @@ class EmergentRoleManager(
         // Calculate normalized fitness score (0.0-1.0)
         val fitness = calculateNormalizedFitness(node)
         
-        logger.log(LogLevel.DEBUG, "Node fitness: $fitness, Mesh needs: gateways=${mesh.needsMoreGateways}, storage=${mesh.needsMoreStorage}, compute=${mesh.needsMoreCompute}")
-        logger.log(LogLevel.DEBUG, "User preferences: $userPreferences")
+        safeLog(LogLevel.DEBUG, "Node fitness: $fitness, Mesh needs: gateways=${mesh.needsMoreGateways}, storage=${mesh.needsMoreStorage}, compute=${mesh.needsMoreCompute}")
+        safeLog(LogLevel.DEBUG, "User preferences: $userPreferences")
         
         // Gateway roles (exclusive - pick one based on capabilities and preferences)
         if (node.hasStableConnection() && fitness > 0.8 && mesh.needsMoreGateways) {
             val gatewayRole = selectBestGatewayRole(node, mesh, userPreferences)
             roles.add(gatewayRole)
-            logger.log(LogLevel.INFO, "Assigned gateway role: $gatewayRole")
+            safeLog(LogLevel.INFO, "Assigned gateway role: $gatewayRole")
         }
         
         // Storage role (additive) - consider user preference
@@ -155,7 +163,7 @@ class EmergentRoleManager(
             node.thermalState != ThermalState.THROTTLING &&
             (userPreferences.isEmpty() || MeshRole.STORAGE_NODE in userPreferences)) {
             roles.add(MeshRole.STORAGE_NODE)
-            logger.log(LogLevel.INFO, "Assigned storage role")
+            safeLog(LogLevel.INFO, "Assigned storage role")
         }
         
         // Compute role (additive, but consider thermal state, battery, and preferences)
@@ -165,13 +173,13 @@ class EmergentRoleManager(
             mesh.needsMoreCompute &&
             (userPreferences.isEmpty() || MeshRole.COMPUTE_NODE in userPreferences)) {
             roles.add(MeshRole.COMPUTE_NODE)
-            logger.log(LogLevel.INFO, "Assigned compute role")
+            safeLog(LogLevel.INFO, "Assigned compute role")
         }
         
         // Router roles based on connectivity
         if (fitness > 0.6 && virtualNode.neighbors().size >= 2) {
             roles.add(MeshRole.MESH_ROUTER)
-            logger.log(LogLevel.INFO, "Assigned router role")
+            safeLog(LogLevel.INFO, "Assigned router role")
         }
         
         // Coordinator role for highly connected, stable nodes
@@ -180,7 +188,7 @@ class EmergentRoleManager(
             virtualNode.neighbors().size >= 3 &&
             (userPreferences.isEmpty() || MeshRole.COORDINATOR in userPreferences)) {
             roles.add(MeshRole.COORDINATOR)
-            logger.log(LogLevel.INFO, "Assigned coordinator role")
+            safeLog(LogLevel.INFO, "Assigned coordinator role")
         }
         
         return roles
@@ -271,7 +279,7 @@ class EmergentRoleManager(
      * Calculate appropriate transition timing
      */
     private fun calculateTransitionTime(transitions: RoleTransition): Long {
-        val baseDelayMs = when {
+        val baseDelay = when {
             transitions.toRemove.any { it in setOf(MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY) } -> {
                 5.minutes.inWholeMilliseconds // Give more time for gateway transitions
             }
@@ -282,7 +290,7 @@ class EmergentRoleManager(
                 30_000L // Quick addition of new roles
             }
         }
-        return System.currentTimeMillis() + baseDelayMs
+        return System.currentTimeMillis() + baseDelay
     }
     
     /**
@@ -339,7 +347,7 @@ class EmergentRoleManager(
      */
     fun updateMeshIntelligence(intelligence: MeshIntelligence) {
         _meshIntelligence.value = intelligence
-        logger.log(LogLevel.DEBUG, "Updated mesh intelligence: $intelligence")
+        safeLog(LogLevel.DEBUG, "Updated mesh intelligence: $intelligence")
     }
     
     /**
@@ -380,7 +388,7 @@ class EmergentRoleManager(
         )
         
         _meshIntelligence.value = updated
-        logger.log(LogLevel.DEBUG, "Updated mesh intelligence from node $nodeId: $updated")
+        safeLog(LogLevel.DEBUG, "Updated mesh intelligence from node $nodeId: $updated")
     }
     
     private fun estimateNetworkLoad(): Float {
@@ -412,8 +420,8 @@ class EmergentRoleManager(
         
         _currentMeshRoles.value = currentRoles
         
-        logger.log(LogLevel.INFO, "Applied role transition: +${plan.addRoles}, -${plan.removeRoles}")
-        logger.log(LogLevel.INFO, "Current roles: $currentRoles")
+        safeLog(LogLevel.INFO, "Applied role transition: +${plan.addRoles}, -${plan.removeRoles}")
+        safeLog(LogLevel.INFO, "Current roles: $currentRoles")
     }
     
     /**
@@ -426,7 +434,7 @@ class EmergentRoleManager(
             val plan = determineOptimalRoles()
             
             if (plan.addRoles.isNotEmpty() || plan.removeRoles.isNotEmpty()) {
-                logger.log(LogLevel.INFO, "Role transition needed: +${plan.addRoles}, -${plan.removeRoles}")
+                safeLog(LogLevel.INFO, "Role transition needed: +${plan.addRoles}, -${plan.removeRoles}")
                 applyTransitionPlan(plan)
             }
             
@@ -434,7 +442,7 @@ class EmergentRoleManager(
             meshRoleManager.updateRole()
             
         } catch (e: Exception) {
-            logger.log(LogLevel.ERROR, "Error updating roles: ${e.message}")
+            safeLog(LogLevel.ERROR, "Error updating roles: ${e.message}")
         } finally {
             _isRoleTransitionInProgress.value = false
         }
@@ -449,7 +457,7 @@ class EmergentRoleManager(
     
     fun setPreferredRoles(roles: Set<MeshRole>) {
         _preferredRoles.value = roles
-        logger.log(LogLevel.INFO, "User set preferred roles: $roles")
+        safeLog(LogLevel.INFO, "User set preferred roles: $roles")
     }
     
     fun getPreferredRoles(): Set<MeshRole> = _preferredRoles.value

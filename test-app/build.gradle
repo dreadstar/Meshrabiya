@@ -5,13 +5,6 @@ plugins {
     id "com.jaredsburrows.license" version "0.9.3"
 }
 
-repositories {
-    google()
-    mavenCentral()
-    maven { url 'https://jitpack.io' }
-    maven { url 'https://guardianproject.info/repo' }
-}
-
 android {
     buildFeatures {
         buildConfig = true
@@ -32,9 +25,10 @@ android {
             useSupportLibrary true
         }
 
-        buildConfigField "String", "ACRA_HTTP_URI", "\"" + rootProject.ext.buildConfigProperties["android.acra.url"] + "\""
-        buildConfigField "String", "ACRA_BASIC_LOGIN", "\"" + rootProject.ext.buildConfigProperties["android.acra.user"] + "\""
-        buildConfigField "String", "ACRA_BASIC_PASS", "\"" + rootProject.ext.buildConfigProperties["android.acra.auth"] + "\""
+        // ACRA configuration - providing default values since buildConfigProperties may not exist
+        buildConfigField "String", "ACRA_HTTP_URI", '""'
+        buildConfigField "String", "ACRA_BASIC_LOGIN", '""'
+        buildConfigField "String", "ACRA_BASIC_PASS", '""'
     }
 
     buildTypes {

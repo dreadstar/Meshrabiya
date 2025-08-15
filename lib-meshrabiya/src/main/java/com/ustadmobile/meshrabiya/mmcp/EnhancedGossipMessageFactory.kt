@@ -386,6 +386,22 @@ object EnhancedGossipMessageFactory {
             )
         )
     }
+    
+    /**
+     * Get default device information for testing and basic usage
+     */
+    private fun getCurrentDeviceInfo(): DeviceInfo {
+        return DeviceInfo(
+            androidVersion = "13",
+            apiLevel = 33,
+            totalRAM = 4_000_000_000L,
+            cpuCores = 8,
+            cpuArchitecture = "arm64-v8a",
+            availableStorage = 50_000_000_000L,
+            hasGPS = true,
+            hasCellular = true
+        )
+    }
 }
 
 // Extension function for creating messages with default values
@@ -397,7 +413,16 @@ fun createSimpleNodeAnnouncement(
     return EnhancedGossipMessageFactory.createNodeAnnouncement(
         nodeId = nodeId,
         nodeType = NodeType.SMARTPHONE,
-        deviceInfo = getCurrentDeviceInfo(),
+        deviceInfo = DeviceInfo(
+            androidVersion = "13",
+            apiLevel = 33,
+            totalRAM = 4_000_000_000L,
+            cpuCores = 8,
+            cpuArchitecture = "arm64-v8a",
+            availableStorage = 50_000_000_000L,
+            hasGPS = true,
+            hasCellular = true
+        ),
         meshRoles = setOf(MeshRole.MESH_PARTICIPANT),
         fitnessScore = fitnessScore,
         centralityScore = centralityScore,

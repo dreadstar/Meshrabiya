@@ -58,6 +58,7 @@ dependencies {
 
     implementation("com.github.seancfoley:ipaddress:5.4.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.2")
 
     implementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.22")
