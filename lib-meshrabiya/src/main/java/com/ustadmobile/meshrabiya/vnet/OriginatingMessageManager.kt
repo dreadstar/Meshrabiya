@@ -262,10 +262,16 @@ class OriginatingMessageManager(
         // Calculate centrality score using MeshRoleManager if available
         val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
         val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
+        
+        // Get current mesh roles from EmergentRoleManager if available
+        val meshRoles = (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.currentMeshRoles?.value 
+            ?: setOf(com.ustadmobile.meshrabiya.mmcp.MeshRole.MESH_PARTICIPANT)
+        
         return MmcpMessageFactory.createNodeAnnouncement(
             messageId = nextMmcpMessageId(),
             nodeId = localNodeAddress.toString(),
-            centralityScore = centralityScore
+            centralityScore = centralityScore,
+            meshRoles = meshRoles
         )
     }
 
@@ -335,6 +341,13 @@ class OriginatingMessageManager(
             )
             // Store neighbor fitness and role info
             neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair((mmcpMessage.fitnessScore * 100).toInt(), 0) // Convert fitness score back to 0-100 scale, default role
+            
+            // Update EmergentRoleManager with mesh intelligence if available
+            (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.processNodeAnnouncement(
+                nodeId = mmcpMessage.nodeId,
+                meshRoles = mmcpMessage.meshRoles
+            )
+            
             // Also update MeshRoleManager if available
             // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
             //     neighborId = virtualPacket.header.fromAddr.toString(),

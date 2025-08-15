@@ -22,8 +22,9 @@ class VirtualNodeDatagramSocketTest {
         val socket2VirtualNodeAddr = 43
 
         val socket1Router: VirtualRouter = mock { }
+        val loopback = InetAddress.getByName("127.0.0.1")
         val socket1 = VirtualNodeDatagramSocket(
-            socket = DatagramSocket(0),
+            socket = DatagramSocket(0, loopback),
             localNodeVirtualAddress = socket1VirtualNodeAddr,
             ioExecutorService = executorService,
             router = socket1Router,
@@ -32,7 +33,7 @@ class VirtualNodeDatagramSocketTest {
 
         val socket2Router: VirtualRouter = mock { }
         val socket2 = VirtualNodeDatagramSocket(
-            socket = DatagramSocket(0),
+            socket = DatagramSocket(0, loopback),
             localNodeVirtualAddress = socket2VirtualNodeAddr,
             ioExecutorService = executorService,
             router = socket2Router,

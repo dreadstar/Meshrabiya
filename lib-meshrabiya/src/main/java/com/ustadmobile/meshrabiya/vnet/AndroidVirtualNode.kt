@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ScheduledFuture
 
 class AndroidVirtualNode(
     private val context: Context,
@@ -121,6 +122,9 @@ class AndroidVirtualNode(
 
     // Add MeshRoleManager
     val meshRoleManager: MeshRoleManager = MeshRoleManager(this, context)
+    
+    // Add EmergentRoleManager for advanced role assignment
+    val emergentRoleManager: EmergentRoleManager = EmergentRoleManager(this, context, meshRoleManager)
 
     private var currentWifiState: MeshrabiyaWifiState = MeshrabiyaWifiState()
     private var currentBluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState()
@@ -134,6 +138,20 @@ class AndroidVirtualNode(
         getWifiState = { currentWifiState },
         getFitnessScore = { getCurrentFitnessScore() },
         getNodeRole = { getCurrentNodeRole() }
+    )
+    
+    // Schedule periodic role assessment
+    private val roleUpdateFuture = scheduledExecutorService.scheduleAtFixedRate(
+        {
+            try {
+                emergentRoleManager.updateRoles()
+            } catch (e: Exception) {
+                logger(Log.WARN, "Failed to update roles", e)
+            }
+        },
+        30_000L, // Initial delay: 30 seconds
+        60_000L, // Period: 60 seconds
+        java.util.concurrent.TimeUnit.MILLISECONDS
     )
 
     init {
@@ -180,6 +198,9 @@ class AndroidVirtualNode(
 
     override fun close() {
         super.close()
+
+        // Cancel role update timer
+        roleUpdateFuture.cancel(false)
 
         if(receiverRegistered.getAndSet(false)) {
             context.unregisterReceiver(bluetoothStateBroadcastReceiver)
