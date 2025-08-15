@@ -69,7 +69,14 @@ class MeshRoleManager(
         val bluetoothState = (getVirtualNode() as? HasNodeState)?.currentNodeState?.bluetoothState ?: MeshrabiyaBluetoothState()
         val isConnected = connectivityMonitor?.isConnected?.value ?: true
 
-        val signalStrength = when {
+        // Use the virtual node's fitness score if available, otherwise calculate based on connection state
+        val virtualNodeFitness = try {
+            getVirtualNode().getCurrentFitnessScore()
+        } catch (e: Exception) {
+            null
+        }
+
+        val signalStrength = virtualNodeFitness ?: when {
             wifiState.connectConfig != null -> 100
             bluetoothState.deviceName != null -> 50
             else -> 0
@@ -91,8 +98,8 @@ class MeshRoleManager(
         val combinedScore = score.signalStrength * 0.5f + centrality * 0.5f
         val newRole = when {
             userAllowsTorProxy || chokePointFlag -> NodeRole.MESH_NODE
-            combinedScore > 80 -> NodeRole.MESH_NODE
-            combinedScore > 50 -> NodeRole.BRIDGE
+            combinedScore > 40 -> NodeRole.MESH_NODE
+            combinedScore > 25 -> NodeRole.BRIDGE
             else -> NodeRole.CLIENT
         }
         if (newRole != currentRole.value) {

@@ -41,7 +41,7 @@ class VirtualNodeDatagramSocketTest {
         )
 
         try {
-            val data = Random.nextBytes(1000)
+            val data = Random.nextBytes(1000 + VirtualPacketHeader.HEADER_SIZE)
             val packetToSend = VirtualPacket.fromHeaderAndPayloadData(
                 header = VirtualPacketHeader(
                     toAddr = socket2VirtualNodeAddr,
