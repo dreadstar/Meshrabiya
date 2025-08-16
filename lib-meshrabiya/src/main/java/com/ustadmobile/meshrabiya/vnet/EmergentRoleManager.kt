@@ -77,7 +77,8 @@ data class RoleTransitionPlan(
 class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
-    private val meshRoleManager: MeshRoleManager
+    private val meshRoleManager: MeshRoleManager,
+    private val meshTrafficRouter: Any? = null // Accept any traffic router for integration
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
     
@@ -467,12 +468,42 @@ class EmergentRoleManager(
      */
     private fun activateGatewayRouting(mode: GatewayMode) {
         try {
-            // This would integrate with MeshTrafficRouter when available
-            // For now, we'll use the AndroidVirtualNode's gateway handling
+            // Use reflection to call methods on the traffic router to avoid compile-time dependencies
+            meshTrafficRouter?.let { router ->
+                try {
+                    when (mode) {
+                        GatewayMode.TOR_GATEWAY -> {
+                            val enableMethod = router.javaClass.getMethod("enableGatewayRouting", Any::class.java)
+                            val routingModeClass = Class.forName("com.ustadmobile.orbotmeshrabiyaintegration.MeshTrafficRouter\$RoutingMode")
+                            val torOnlyMode = routingModeClass.enumConstants?.find { it.toString() == "TOR_ONLY" }
+                            enableMethod.invoke(router, torOnlyMode)
+                            safeLog(LogLevel.INFO, "Tor gateway routing activated via MeshTrafficRouter")
+                        }
+                        GatewayMode.CLEARNET_GATEWAY -> {
+                            val enableMethod = router.javaClass.getMethod("enableGatewayRouting", Any::class.java)
+                            val routingModeClass = Class.forName("com.ustadmobile.orbotmeshrabiyaintegration.MeshTrafficRouter\$RoutingMode")
+                            val clearnetMode = routingModeClass.enumConstants?.find { it.toString() == "CLEARNET_DIRECT" }
+                            enableMethod.invoke(router, clearnetMode)
+                            safeLog(LogLevel.INFO, "Clearnet gateway routing activated via MeshTrafficRouter")
+                        }
+                        GatewayMode.NONE -> {
+                            // No action needed
+                        }
+                    }
+                } catch (reflectionException: Exception) {
+                    safeLog(LogLevel.WARN, "Failed to activate gateway routing via reflection: ${reflectionException.message}")
+                    // Fall back to basic logging
+                    safeLog(LogLevel.INFO, "Gateway routing requested: $mode (MeshTrafficRouter not available)")
+                }
+            } ?: run {
+                safeLog(LogLevel.INFO, "Gateway routing requested: $mode (no traffic router provided)")
+            }
+            
+            // Also enable gateway handling in AndroidVirtualNode if available
             if (virtualNode is AndroidVirtualNode) {
                 val androidNode = virtualNode as AndroidVirtualNode
-                // androidNode.enableGatewayRouting(mode) // Would be called when MeshTrafficRouter is integrated
-                safeLog(LogLevel.INFO, "Gateway routing activated: $mode")
+                // The AndroidVirtualNode should work with MeshTrafficRouter automatically
+                safeLog(LogLevel.DEBUG, "AndroidVirtualNode gateway integration active")
             }
         } catch (e: Exception) {
             safeLog(LogLevel.ERROR, "Failed to activate gateway routing: ${e.message}")
@@ -484,10 +515,23 @@ class EmergentRoleManager(
      */
     private fun deactivateGatewayRouting() {
         try {
+            meshTrafficRouter?.let { router ->
+                try {
+                    val disableMethod = router.javaClass.getMethod("disableGatewayRouting")
+                    disableMethod.invoke(router)
+                    safeLog(LogLevel.INFO, "Gateway routing deactivated via MeshTrafficRouter")
+                } catch (reflectionException: Exception) {
+                    safeLog(LogLevel.WARN, "Failed to deactivate gateway routing via reflection: ${reflectionException.message}")
+                    // Fall back to basic logging
+                    safeLog(LogLevel.INFO, "Gateway routing deactivation requested (MeshTrafficRouter not available)")
+                }
+            } ?: run {
+                safeLog(LogLevel.INFO, "Gateway routing deactivation requested (no traffic router provided)")
+            }
+            
             if (virtualNode is AndroidVirtualNode) {
                 val androidNode = virtualNode as AndroidVirtualNode
-                // androidNode.disableGatewayRouting() // Would be called when MeshTrafficRouter is integrated
-                safeLog(LogLevel.INFO, "Gateway routing deactivated")
+                safeLog(LogLevel.DEBUG, "AndroidVirtualNode gateway integration deactivated")
             }
         } catch (e: Exception) {
             safeLog(LogLevel.ERROR, "Failed to deactivate gateway routing: ${e.message}")
