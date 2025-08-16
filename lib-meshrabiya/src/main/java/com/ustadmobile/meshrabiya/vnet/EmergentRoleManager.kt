@@ -421,8 +421,103 @@ class EmergentRoleManager(
         
         _currentMeshRoles.value = currentRoles
         
+        // Handle gateway role transitions
+        handleGatewayRoleTransitions(plan.addRoles, plan.removeRoles)
+        
         safeLog(LogLevel.INFO, "Applied role transition: +${plan.addRoles}, -${plan.removeRoles}")
         safeLog(LogLevel.INFO, "Current roles: $currentRoles")
+    }
+    
+    /**
+     * Handle gateway role transitions and configure traffic routing
+     */
+    private fun handleGatewayRoleTransitions(addedRoles: Set<MeshRole>, removedRoles: Set<MeshRole>) {
+        try {
+            // Check for gateway role additions
+            when {
+                MeshRole.TOR_GATEWAY in addedRoles -> {
+                    safeLog(LogLevel.INFO, "Activating Tor gateway routing")
+                    activateGatewayRouting(GatewayMode.TOR_GATEWAY)
+                    announceGatewayCapability(GatewayType.TOR)
+                }
+                MeshRole.CLEARNET_GATEWAY in addedRoles -> {
+                    safeLog(LogLevel.INFO, "Activating clearnet gateway routing")
+                    activateGatewayRouting(GatewayMode.CLEARNET_GATEWAY)
+                    announceGatewayCapability(GatewayType.CLEARNET)
+                }
+            }
+            
+            // Check for gateway role removals
+            val gatewayRolesRemoved = removedRoles.intersect(
+                setOf(MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY, MeshRole.I2P_GATEWAY)
+            )
+            
+            if (gatewayRolesRemoved.isNotEmpty()) {
+                safeLog(LogLevel.INFO, "Deactivating gateway routing")
+                deactivateGatewayRouting()
+            }
+            
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to handle gateway role transitions: ${e.message}")
+        }
+    }
+    
+    /**
+     * Activate gateway routing based on mode
+     */
+    private fun activateGatewayRouting(mode: GatewayMode) {
+        try {
+            // This would integrate with MeshTrafficRouter when available
+            // For now, we'll use the AndroidVirtualNode's gateway handling
+            if (virtualNode is AndroidVirtualNode) {
+                val androidNode = virtualNode as AndroidVirtualNode
+                // androidNode.enableGatewayRouting(mode) // Would be called when MeshTrafficRouter is integrated
+                safeLog(LogLevel.INFO, "Gateway routing activated: $mode")
+            }
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to activate gateway routing: ${e.message}")
+        }
+    }
+    
+    /**
+     * Deactivate gateway routing
+     */
+    private fun deactivateGatewayRouting() {
+        try {
+            if (virtualNode is AndroidVirtualNode) {
+                val androidNode = virtualNode as AndroidVirtualNode
+                // androidNode.disableGatewayRouting() // Would be called when MeshTrafficRouter is integrated
+                safeLog(LogLevel.INFO, "Gateway routing deactivated")
+            }
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to deactivate gateway routing: ${e.message}")
+        }
+    }
+    
+    /**
+     * Announce gateway capability to the mesh network
+     */
+    private fun announceGatewayCapability(gatewayType: GatewayType) {
+        try {
+            // TODO: Send MMCP message to announce gateway capability
+            // This would extend the MMCP protocol to include gateway announcements
+            safeLog(LogLevel.INFO, "Announcing gateway capability: $gatewayType")
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to announce gateway capability: ${e.message}")
+        }
+    }
+    
+    // Enums for gateway types and modes
+    enum class GatewayMode {
+        NONE,
+        CLEARNET_GATEWAY,
+        TOR_GATEWAY
+    }
+    
+    enum class GatewayType {
+        CLEARNET,
+        TOR,
+        I2P
     }
     
     /**

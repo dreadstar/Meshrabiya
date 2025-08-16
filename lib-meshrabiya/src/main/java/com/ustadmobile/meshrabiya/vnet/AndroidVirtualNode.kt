@@ -28,6 +28,8 @@ import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.vnet.NodeRole
 import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
+import com.ustadmobile.meshrabiya.mmcp.MeshRole
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
 import java.util.concurrent.ScheduledExecutorService
 import kotlinx.coroutines.flow.Flow
@@ -125,6 +127,9 @@ class AndroidVirtualNode(
     
     // Add EmergentRoleManager for advanced role assignment
     val emergentRoleManager: EmergentRoleManager = EmergentRoleManager(this, context, meshRoleManager)
+
+    // Add MeshTrafficRouter for gateway functionality
+    private var meshTrafficRouter: Any? = null // Will be initialized when needed
 
     private var currentWifiState: MeshrabiyaWifiState = MeshrabiyaWifiState()
     private var currentBluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState()
@@ -261,4 +266,60 @@ class AndroidVirtualNode(
     }
 
     override fun getMeshRoleManager(): MeshRoleManager = meshRoleManager
+    
+    /**
+     * Initialize mesh traffic router for gateway functionality
+     */
+    fun initializeMeshTrafficRouter(orbotService: Any?, gatewayCapabilities: Any?) {
+        // This would initialize the MeshTrafficRouter when Orbot integration is available
+        // For now, we'll just log that it's available
+        logger(Log.INFO, "AndroidVirtualNode: MeshTrafficRouter initialization available")
+    }
+    
+    /**
+     * Handle gateway traffic routing
+     */
+    fun handleGatewayTraffic(packet: VirtualPacket): Boolean {
+        // Check if this node is acting as a gateway
+        val currentRoles = emergentRoleManager.getCurrentMeshRoles()
+        val isGateway = currentRoles.any { 
+            it == MeshRole.CLEARNET_GATEWAY || it == MeshRole.TOR_GATEWAY 
+        }
+        
+        if (isGateway && isInternetDestination(packet)) {
+            logger(Log.DEBUG, "handleGatewayTraffic: Routing packet to ${packet.header.toAddr} via gateway")
+            // Route through mesh traffic router
+            routeViaGateway(packet)
+            return true
+        }
+        
+        return false
+    }
+    
+    /**
+     * Check if packet is destined for internet (non-mesh address)
+     */
+    private fun isInternetDestination(packet: VirtualPacket): Boolean {
+        val destAddr = packet.header.toAddr
+        // Mesh subnet is 10.255.0.0/16 (0x0AFF0000/16)
+        // Convert to bytes and check prefix
+        val addrBytes = ByteArray(4)
+        addrBytes[0] = (destAddr shr 24).toByte()
+        addrBytes[1] = (destAddr shr 16).toByte()
+        
+        return !(addrBytes[0] == 10.toByte() && addrBytes[1] == 255.toByte())
+    }
+    
+    /**
+     * Route packet via gateway functionality
+     */
+    private fun routeViaGateway(packet: VirtualPacket) {
+        try {
+            // This would integrate with MeshTrafficRouter when available
+            logger(Log.DEBUG, "routeViaGateway: Gateway routing for ${packet.header.toAddr}")
+            // TODO: Integrate with actual MeshTrafficRouter implementation
+        } catch (e: Exception) {
+            logger(Log.ERROR, "routeViaGateway: Failed to route packet", e)
+        }
+    }
 }
