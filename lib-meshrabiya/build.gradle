@@ -3,6 +3,7 @@ plugins {
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization'
     id 'maven-publish'
+    id 'jacoco'
 }
 
 android {
@@ -18,6 +19,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            testCoverageEnabled true
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -33,11 +37,63 @@ android {
         jvmTarget = JavaVersion.VERSION_17
     }
 
+    packagingOptions {
+        pickFirst "**/LICENSE.md"
+        pickFirst "**/LICENSE.txt"
+        pickFirst "**/LICENSE"
+        pickFirst "**/LICENSE-notice.md"
+        pickFirst "**/NOTICE.txt"
+        pickFirst "**/NOTICE"
+        pickFirst "**/NOTICE.md"
+        pickFirst "META-INF/LICENSE.md"
+        pickFirst "META-INF/LICENSE.txt"
+        pickFirst "META-INF/LICENSE"
+        pickFirst "META-INF/LICENSE-notice.md"
+        pickFirst "META-INF/NOTICE.txt"
+        pickFirst "META-INF/NOTICE"
+        pickFirst "META-INF/NOTICE.md"
+    }
+
     publishing {
         singleVariant("release") {
             // Optional: further configuration
         }
     }
+}
+
+// JaCoCo configuration for comprehensive test coverage
+jacoco {
+    toolVersion = "0.8.10"
+}
+
+tasks.register('jacocoTestReport', JacocoReport) {
+    dependsOn 'testDebugUnitTest'
+    
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+    
+    def fileFilter = [
+        '**/R.class',
+        '**/R$*.class',
+        '**/BuildConfig.*',
+        '**/Manifest*.*',
+        '**/*Test*.*',
+        'android/**/*.*',
+        '**/beta/**/*.*' // Exclude beta logging from coverage (opt-in feature)
+    ]
+    
+    def debugTree = fileTree(dir: "${buildDir}/tmp/kotlin-classes/debug", excludes: fileFilter)
+    def mainSrc = "${project.projectDir}/src/main/java"
+    def kotlinSrc = "${project.projectDir}/src/main/kotlin"
+    
+    sourceDirectories.setFrom(files([mainSrc, kotlinSrc]))
+    classDirectories.setFrom(files([debugTree]))
+    executionData.setFrom(fileTree(dir: buildDir, includes: [
+        'outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec'
+    ]))
 }
 
 dependencies {

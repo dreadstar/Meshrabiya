@@ -35,6 +35,18 @@ data class NodeCapabilitySnapshot(
 }
 
 /**
+ * Device capabilities for role assignment calculation
+ */
+data class DeviceCapabilities(
+    val storageAvailable: Long,
+    val processingPower: Float, // 0.0-1.0
+    val batteryInfo: BatteryInfo,
+    val thermalState: ThermalState,
+    val networkQuality: Float, // 0.0-1.0
+    val stability: Float // 0.0-1.0
+)
+
+/**
  * Global mesh intelligence for informed role decisions
  */
 data class MeshIntelligence(
@@ -78,7 +90,8 @@ class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
     private val meshRoleManager: MeshRoleManager,
-    private val meshTrafficRouter: Any? = null // Accept any traffic router for integration
+    private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
+    private val distributedStorageManager: Any? = null // Accept storage manager for integration
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
     
@@ -308,17 +321,20 @@ class EmergentRoleManager(
     }
     
     /**
-     * Get current node capabilities
+     * Get current node capabilities including dynamic storage information
      */
     private fun getCurrentCapabilities(): NodeCapabilitySnapshot {
         val fitnessScore = meshRoleManager.calculateFitnessScore()
+        
+        // Calculate dynamic storage offered based on user participation settings
+        val storageOffered = calculateAvailableStorage()
         
         // Convert existing fitness to ResourceCapabilities
         val resources = ResourceCapabilities(
             availableCPU = 0.5f, // TODO: Get from system
             availableRAM = Runtime.getRuntime().freeMemory(),
             availableBandwidth = 10_000_000L, // TODO: Estimate from network
-            storageOffered = 100_000_000L, // TODO: Calculate available storage
+            storageOffered = storageOffered, // Dynamic storage calculation
             batteryLevel = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
             thermalThrottling = false, // TODO: Get from thermal API
             powerState = if (fitnessScore.batteryLevel > 0.7f) PowerState.BATTERY_HIGH else PowerState.BATTERY_MEDIUM,
@@ -340,6 +356,41 @@ class EmergentRoleManager(
             batteryInfo = batteryInfo,
             thermalState = ThermalState.COOL, // TODO: Get from thermal API
             networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
+            stability = 0.8f // TODO: Calculate from uptime/connectivity history
+        )
+    }
+    
+    /**
+     * Calculate available storage based on user participation settings
+     */
+    private fun calculateAvailableStorage(): Long {
+        return try {
+            // Try to get storage capabilities from DistributedStorageManager if available
+            distributedStorageManager?.let { storageManager ->
+                val getStorageCapabilitiesMethod = storageManager.javaClass.getMethod("getStorageCapabilities")
+                val capabilities = getStorageCapabilitiesMethod.invoke(storageManager)
+                
+                // Get totalOffered field using reflection
+                val totalOfferedField = capabilities.javaClass.getDeclaredField("totalOffered")
+                totalOfferedField.isAccessible = true
+                totalOfferedField.getLong(capabilities)
+            } ?: 100_000_000L // Default 100MB if no storage manager
+        } catch (e: Exception) {
+            safeLog(LogLevel.DEBUG, "Could not access DistributedStorageManager, using default storage value")
+            100_000_000L // Fallback value
+        }
+    }
+    
+    /**
+     * Create device capabilities with dynamic storage calculation
+     */
+    private fun createDeviceCapabilities(batteryInfo: BatteryInfo, fitnessScore: FitnessScore): DeviceCapabilities {
+        return DeviceCapabilities(
+            storageAvailable = calculateAvailableStorage(),
+            processingPower = (fitnessScore.batteryLevel / 100.0f).coerceAtMost(1.0f),
+            batteryInfo = batteryInfo,
+            thermalState = ThermalState.COOL, // TODO: Get from thermal API
+            networkQuality = (fitnessScore.signalStrength.toFloat() / 100.0f).coerceIn(0.0f, 1.0f),
             stability = 0.8f // TODO: Calculate from uptime/connectivity history
         )
     }
