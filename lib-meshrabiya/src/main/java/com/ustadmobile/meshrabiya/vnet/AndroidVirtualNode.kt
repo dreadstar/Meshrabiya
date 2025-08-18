@@ -11,6 +11,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
@@ -289,8 +290,7 @@ class AndroidVirtualNode(
         if (isGateway && isInternetDestination(packet)) {
             logger(Log.DEBUG, "handleGatewayTraffic: Routing packet to ${packet.header.toAddr} via gateway")
             // Route through mesh traffic router
-            routeViaGateway(packet)
-            return true
+            return routeViaGateway(packet)
         }
         
         return false
@@ -300,26 +300,280 @@ class AndroidVirtualNode(
      * Check if packet is destined for internet (non-mesh address)
      */
     private fun isInternetDestination(packet: VirtualPacket): Boolean {
-        val destAddr = packet.header.toAddr
-        // Mesh subnet is 10.255.0.0/16 (0x0AFF0000/16)
-        // Convert to bytes and check prefix
-        val addrBytes = ByteArray(4)
-        addrBytes[0] = (destAddr shr 24).toByte()
-        addrBytes[1] = (destAddr shr 16).toByte()
-        
-        return !(addrBytes[0] == 10.toByte() && addrBytes[1] == 255.toByte())
+        return isInternetDestination(packet.header.toAddr)
     }
     
     /**
-     * Route packet via gateway functionality
+     * Route packet via gateway functionality with comprehensive performance tracking
+     * Implements enterprise-grade logging consistent with project standards
      */
-    private fun routeViaGateway(packet: VirtualPacket) {
+    private fun routeViaGateway(packet: VirtualPacket): Boolean {
+        val startTime = System.currentTimeMillis()
+        val packetSize = packet.data.size
+        
         try {
-            // This would integrate with MeshTrafficRouter when available
-            logger(Log.DEBUG, "routeViaGateway: Gateway routing for ${packet.header.toAddr}")
-            // TODO: Integrate with actual MeshTrafficRouter implementation
+            safeLog(LogLevel.DETAILED, "AndroidVNode", 
+                "Starting gateway routing",
+                mapOf(
+                    "destination" to packet.header.toAddr.toString(),
+                    "packetSize" to packetSize.toString(),
+                    "isInternetDestination" to isInternetDestination(packet).toString()
+                )
+            )
+            
+            // Check if this is an internet destination
+            if (!isInternetDestination(packet)) {
+                safeLog(LogLevel.DETAILED, "AndroidVNode", 
+                    "Destination is not internet-bound, skipping gateway routing")
+                return false
+            }
+            
+            // Performance tracking for router acquisition
+            val routerStartTime = System.currentTimeMillis()
+            val meshTrafficRouter = getMeshTrafficRouter()
+            val routerAcquisitionTime = System.currentTimeMillis() - routerStartTime
+            
+            if (meshTrafficRouter != null) {
+                safeLog(LogLevel.DETAILED, "AndroidVNode",
+                    "MeshTrafficRouter acquired",
+                    mapOf(
+                        "acquisitionTimeMs" to routerAcquisitionTime.toString(),
+                        "routerClass" to meshTrafficRouter.javaClass.simpleName
+                    )
+                )
+                
+                // Performance tracking for routing operation
+                val routingStartTime = System.currentTimeMillis()
+                
+                // Use reflection to call routePacket method
+                val routeMethod = meshTrafficRouter.javaClass.getMethod("routePacket", VirtualPacket::class.java)
+                routeMethod.invoke(meshTrafficRouter, packet)
+                
+                val routingTime = System.currentTimeMillis() - routingStartTime
+                
+                val totalTime = System.currentTimeMillis() - startTime
+                
+                safeLog(LogLevel.INFO, "AndroidVNode", 
+                    "Successfully routed packet via gateway",
+                    mapOf(
+                        "destination" to packet.header.toAddr.toString(),
+                        "packetSize" to packetSize.toString(),
+                        "routingTimeMs" to routingTime.toString(),
+                        "totalTimeMs" to totalTime.toString(),
+                        "throughputBps" to (packetSize * 1000 / maxOf(totalTime, 1)).toString()
+                    )
+                )
+                return true
+            } else {
+                val totalTime = System.currentTimeMillis() - startTime
+                
+                safeLog(LogLevel.DETAILED, "AndroidVNode", 
+                    "MeshTrafficRouter not available, using fallback routing",
+                    mapOf(
+                        "destination" to packet.header.toAddr.toString(),
+                        "packetSize" to packetSize.toString(),
+                        "routerAcquisitionTimeMs" to routerAcquisitionTime.toString(),
+                        "totalTimeMs" to totalTime.toString(),
+                        "fallbackReason" to "RouterNotAvailable"
+                    )
+                )
+                
+                // Fallback to standard mesh routing
+                return false
+            }
+            
         } catch (e: Exception) {
-            logger(Log.ERROR, "routeViaGateway: Failed to route packet", e)
+            val totalTime = System.currentTimeMillis() - startTime
+            
+            safeLog(LogLevel.ERROR, "AndroidVNode", 
+                "Gateway routing failed with exception: ${e.message}",
+                mapOf(
+                    "destination" to packet.header.toAddr.toString(),
+                    "packetSize" to packetSize.toString(),
+                    "totalTimeMs" to totalTime.toString(),
+                    "errorType" to e.javaClass.simpleName,
+                    "errorMessage" to (e.message ?: "Unknown error")
+                ),
+                e
+            )
+            
+            // Return false to indicate fallback routing should be used
+            return false
         }
+    }
+    
+    /**
+     * Get MeshTrafficRouter instance using reflection with comprehensive error handling
+     */
+    private fun getMeshTrafficRouter(): Any? {
+        val startTime = System.currentTimeMillis()
+        
+        return try {
+            // Try multiple possible class locations for MeshTrafficRouter
+            val possibleClasses = listOf(
+                "org.torproject.android.service.mesh.MeshTrafficRouter",
+                "com.ustadmobile.orbotmeshrabiyaintegration.interfaces.MeshTrafficRouter",
+                "com.ustadmobile.meshrabiya.routing.MeshTrafficRouter"
+            )
+            
+            for (className in possibleClasses) {
+                val routerClass = try {
+                    Class.forName(className)
+                } catch (e: ClassNotFoundException) {
+                    continue
+                }
+                
+                try {
+                    // Try to get singleton instance
+                    val instanceMethod = routerClass.getMethod("getInstance")
+                    val instance = instanceMethod.invoke(null)
+                    
+                    if (instance != null) {
+                        val endTime = System.currentTimeMillis()
+                        
+                        safeLog(LogLevel.DETAILED, "AndroidVNode",
+                            "MeshTrafficRouter acquired via reflection",
+                            mapOf(
+                                "className" to className,
+                                "acquisitionTimeMs" to (endTime - startTime).toString(),
+                                "method" to "getInstance"
+                            )
+                        )
+                        
+                        return instance
+                    }
+                    
+                } catch (e: NoSuchMethodException) {
+                    // Try static field access
+                    try {
+                        val instanceField = routerClass.getDeclaredField("INSTANCE")
+                        instanceField.isAccessible = true
+                        val instance = instanceField.get(null)
+                        
+                        if (instance != null) {
+                            val endTime = System.currentTimeMillis()
+                            
+                            safeLog(LogLevel.DETAILED, "AndroidVNode",
+                                "MeshTrafficRouter acquired via field access",
+                                mapOf(
+                                    "className" to className,
+                                    "acquisitionTimeMs" to (endTime - startTime).toString(),
+                                    "method" to "fieldAccess"
+                                )
+                            )
+                            
+                            return instance
+                        }
+                        
+                    } catch (fieldException: Exception) {
+                        safeLog(LogLevel.DETAILED, "AndroidVNode",
+                            "Field access failed for $className: ${fieldException.message}")
+                    }
+                }
+            }
+            
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.DETAILED, "AndroidVNode",
+                "MeshTrafficRouter not found in any expected location",
+                mapOf(
+                    "searchTimeMs" to (endTime - startTime).toString(),
+                    "classesSearched" to possibleClasses.size.toString(),
+                    "searchedClasses" to possibleClasses.joinToString(",")
+                )
+            )
+            
+            null
+            
+        } catch (e: Exception) {
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.WARN, "AndroidVNode",
+                "Failed to acquire MeshTrafficRouter via reflection: ${e.message}",
+                mapOf(
+                    "searchTimeMs" to (endTime - startTime).toString(),
+                    "errorType" to e.javaClass.simpleName
+                ),
+                e
+            )
+            
+            null
+        }
+    }
+    
+    /**
+     * Check if address is an internet destination with validation
+     */
+    private fun isInternetDestination(address: InetAddress): Boolean {
+        return try {
+            val isInternet = when {
+                address.isLoopbackAddress -> {
+                    safeLog(LogLevel.DETAILED, "AndroidVNode", "Address is loopback, not internet destination")
+                    false
+                }
+                address.isLinkLocalAddress -> {
+                    safeLog(LogLevel.DETAILED, "AndroidVNode", "Address is link-local, not internet destination")
+                    false
+                }
+                address.isSiteLocalAddress -> {
+                    safeLog(LogLevel.DETAILED, "AndroidVNode", "Address is site-local, not internet destination")
+                    false
+                }
+                address.isMulticastAddress -> {
+                    safeLog(LogLevel.DETAILED, "AndroidVNode", "Address is multicast, not internet destination")
+                    false
+                }
+                else -> {
+                    // Check for mesh network addresses (10.255.x.x range)
+                    val addrBytes = address.address
+                    val isMeshAddress = addrBytes[0] == 10.toByte() && addrBytes[1] == 255.toByte()
+                    
+                    if (isMeshAddress) {
+                        safeLog(LogLevel.DETAILED, "AndroidVNode", "Address is mesh network, not internet destination")
+                        false
+                    } else {
+                        safeLog(LogLevel.DETAILED, "AndroidVNode", "Address appears to be internet destination")
+                        true
+                    }
+                }
+            }
+            
+            safeLog(LogLevel.DETAILED, "AndroidVNode",
+                "Internet destination check completed",
+                mapOf(
+                    "address" to address.hostAddress,
+                    "isInternet" to isInternet.toString(),
+                    "isLoopback" to address.isLoopbackAddress.toString(),
+                    "isLinkLocal" to address.isLinkLocalAddress.toString(),
+                    "isSiteLocal" to address.isSiteLocalAddress.toString(),
+                    "isMulticast" to address.isMulticastAddress.toString()
+                )
+            )
+            
+            isInternet
+            
+        } catch (e: Exception) {
+            safeLog(LogLevel.WARN, "AndroidVNode",
+                "Failed to check internet destination: ${e.message}",
+                mapOf("address" to address.hostAddress),
+                e
+            )
+            
+            // Default to false for safety
+            false
+        }
+    }
+    
+    /**
+     * Check if packet destination is an internet destination 
+     */
+    private fun isInternetDestination(addr: Int): Boolean {
+        // Mesh subnet is 10.255.0.0/16 (0x0AFF0000/16)
+        // Convert to bytes and check prefix
+        val addrBytes = ByteArray(4)
+        addrBytes[0] = (addr shr 24).toByte()
+        addrBytes[1] = (addr shr 16).toByte()
+        
+        return !(addrBytes[0] == 10.toByte() && addrBytes[1] == 255.toByte())
     }
 }

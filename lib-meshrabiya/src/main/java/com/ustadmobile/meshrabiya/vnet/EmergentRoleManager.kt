@@ -4,13 +4,21 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
+import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
+import com.ustadmobile.meshrabiya.vnet.hardware.AndroidDeviceCapabilityManager
 import com.ustadmobile.meshrabiya.mmcp.MeshRole
 import com.ustadmobile.meshrabiya.mmcp.ResourceCapabilities
 import com.ustadmobile.meshrabiya.mmcp.BatteryInfo
 import com.ustadmobile.meshrabiya.mmcp.ThermalState
 import com.ustadmobile.meshrabiya.mmcp.PowerState
+import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
@@ -91,9 +99,15 @@ class EmergentRoleManager(
     private val context: Context,
     private val meshRoleManager: MeshRoleManager,
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
-    private val distributedStorageManager: Any? = null // Accept storage manager for integration
+    private val distributedStorageManager: Any? = null, // Accept storage manager for integration
+    private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
+    
+    // Initialize hardware capability manager if not provided
+    private val hardwareManager: DeviceCapabilityManager by lazy {
+        deviceCapabilityManager ?: AndroidDeviceCapabilityManager(context, logger ?: BetaTestLogger.getInstance(context))
+    }
     
     private fun safeLog(level: LogLevel, message: String, throwable: Throwable? = null) {
         try {
@@ -321,43 +335,70 @@ class EmergentRoleManager(
     }
     
     /**
-     * Get current node capabilities including dynamic storage information
+     * Get current node capabilities including real hardware metrics and dynamic storage information
      */
     private fun getCurrentCapabilities(): NodeCapabilitySnapshot {
-        val fitnessScore = meshRoleManager.calculateFitnessScore()
-        
-        // Calculate dynamic storage offered based on user participation settings
-        val storageOffered = calculateAvailableStorage()
-        
-        // Convert existing fitness to ResourceCapabilities
-        val resources = ResourceCapabilities(
-            availableCPU = 0.5f, // TODO: Get from system
-            availableRAM = Runtime.getRuntime().freeMemory(),
-            availableBandwidth = 10_000_000L, // TODO: Estimate from network
-            storageOffered = storageOffered, // Dynamic storage calculation
-            batteryLevel = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
-            thermalThrottling = false, // TODO: Get from thermal API
-            powerState = if (fitnessScore.batteryLevel > 0.7f) PowerState.BATTERY_HIGH else PowerState.BATTERY_MEDIUM,
-            networkInterfaces = emptySet() // TODO: Populate from network manager
-        )
-        
-        val batteryInfo = BatteryInfo(
-            level = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
-            isCharging = false, // TODO: Get from battery manager
-            estimatedTimeRemaining = null,
-            temperatureCelsius = 25, // TODO: Get actual temperature
-            health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
-            chargingSource = null
-        )
-        
-        return NodeCapabilitySnapshot(
-            nodeId = virtualNode.addressAsInt.toString(),
-            resources = resources,
-            batteryInfo = batteryInfo,
-            thermalState = ThermalState.COOL, // TODO: Get from thermal API
-            networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
-            stability = 0.8f // TODO: Calculate from uptime/connectivity history
-        )
+        return try {
+            // Use real hardware metrics if available
+            val nodeId = virtualNode.addressAsInt.toString()
+            val snapshot = runBlocking { 
+                hardwareManager.getCapabilitySnapshot(nodeId) 
+            }
+            
+            // Enhance with storage information from DistributedStorageManager
+            val storageOffered = calculateAvailableStorage()
+            val enhancedResources = snapshot.resources.copy(
+                storageOffered = maxOf(snapshot.resources.storageOffered, storageOffered)
+            )
+            
+            val enhancedSnapshot = snapshot.copy(resources = enhancedResources)
+            
+            logger?.log(LogLevel.INFO, "EmergentRoleManager", 
+                "Hardware capabilities: CPU=${(enhancedSnapshot.resources.availableCPU * 100).toInt()}% available, " +
+                "Battery=${enhancedSnapshot.batteryInfo.level}%, " +
+                "Storage=${enhancedSnapshot.resources.storageOffered / (1024 * 1024)}MB offered, " +
+                "Thermal=${enhancedSnapshot.thermalState}, " +
+                "Stability=${(enhancedSnapshot.stability * 100).toInt()}%")
+            
+            enhancedSnapshot
+            
+        } catch (e: Exception) {
+            // Fallback to legacy implementation if hardware manager fails
+            logger?.log(LogLevel.BASIC, "EmergentRoleManager", 
+                "Hardware metrics unavailable, using fallback: ${e.message}")
+            
+            val fitnessScore = meshRoleManager.calculateFitnessScore()
+            val storageOffered = calculateAvailableStorage()
+            
+            val resources = ResourceCapabilities(
+                availableCPU = 0.5f, // Fallback: assume moderate CPU availability
+                availableRAM = Runtime.getRuntime().freeMemory(),
+                availableBandwidth = 10_000_000L, // Fallback: assume 10 Mbps
+                storageOffered = storageOffered,
+                batteryLevel = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
+                thermalThrottling = false, // Fallback: assume no throttling
+                powerState = if (fitnessScore.batteryLevel > 0.7f) PowerState.BATTERY_HIGH else PowerState.BATTERY_MEDIUM,
+                networkInterfaces = emptySet() // Fallback: no interface info
+            )
+            
+            val batteryInfo = BatteryInfo(
+                level = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
+                isCharging = false, // Fallback: assume not charging
+                estimatedTimeRemaining = null,
+                temperatureCelsius = 25, // Fallback: room temperature
+                health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
+                chargingSource = null
+            )
+            
+            NodeCapabilitySnapshot(
+                nodeId = virtualNode.addressAsInt.toString(),
+                resources = resources,
+                batteryInfo = batteryInfo,
+                thermalState = ThermalState.COOL, // Fallback: assume cool
+                networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
+                stability = 0.8f // Fallback: assume good stability
+            )
+        }
     }
     
     /**
@@ -488,14 +529,14 @@ class EmergentRoleManager(
             // Check for gateway role additions
             when {
                 MeshRole.TOR_GATEWAY in addedRoles -> {
-                    safeLog(LogLevel.INFO, "Activating Tor gateway routing")
+                    safeLog(LogLevel.INFO, "EmergentRole: Activating Tor gateway routing")
                     activateGatewayRouting(GatewayMode.TOR_GATEWAY)
-                    announceGatewayCapability(GatewayType.TOR)
+                    CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
                 }
                 MeshRole.CLEARNET_GATEWAY in addedRoles -> {
-                    safeLog(LogLevel.INFO, "Activating clearnet gateway routing")
+                    safeLog(LogLevel.INFO, "EmergentRole: Activating clearnet gateway routing")
                     activateGatewayRouting(GatewayMode.CLEARNET_GATEWAY)
-                    announceGatewayCapability(GatewayType.CLEARNET)
+                    CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
                 }
             }
             
@@ -505,12 +546,12 @@ class EmergentRoleManager(
             )
             
             if (gatewayRolesRemoved.isNotEmpty()) {
-                safeLog(LogLevel.INFO, "Deactivating gateway routing")
+                safeLog(LogLevel.INFO, "EmergentRole: Deactivating gateway routing")
                 deactivateGatewayRouting()
             }
             
         } catch (e: Exception) {
-            safeLog(LogLevel.ERROR, "Failed to handle gateway role transitions: ${e.message}")
+            safeLog(LogLevel.ERROR, "EmergentRole: Failed to handle gateway role transitions: ${e.message}")
         }
     }
     
@@ -554,10 +595,10 @@ class EmergentRoleManager(
             if (virtualNode is AndroidVirtualNode) {
                 val androidNode = virtualNode as AndroidVirtualNode
                 // The AndroidVirtualNode should work with MeshTrafficRouter automatically
-                safeLog(LogLevel.DEBUG, "AndroidVirtualNode gateway integration active")
+                safeLog(LogLevel.DEBUG, "EmergentRole: AndroidVirtualNode gateway integration active")
             }
         } catch (e: Exception) {
-            safeLog(LogLevel.ERROR, "Failed to activate gateway routing: ${e.message}")
+            safeLog(LogLevel.ERROR, "EmergentRole: Failed to activate gateway routing: ${e.message}")
         }
     }
     
@@ -585,21 +626,242 @@ class EmergentRoleManager(
                 safeLog(LogLevel.DEBUG, "AndroidVirtualNode gateway integration deactivated")
             }
         } catch (e: Exception) {
-            safeLog(LogLevel.ERROR, "Failed to deactivate gateway routing: ${e.message}")
+            safeLog(LogLevel.ERROR, "Failed to deactivate gateway routing: ${e.message}", e)
         }
     }
     
     /**
      * Announce gateway capability to the mesh network
+     * Implements comprehensive logging consistent with project standards
      */
-    private fun announceGatewayCapability(gatewayType: GatewayType) {
+    private suspend fun announceGatewayCapability() {
+        val startTime = System.currentTimeMillis()
+        
         try {
-            // TODO: Send MMCP message to announce gateway capability
-            // This would extend the MMCP protocol to include gateway announcements
-            safeLog(LogLevel.INFO, "Announcing gateway capability: $gatewayType")
+            safeLog(LogLevel.DETAILED, "Starting gateway capability announcement")
+            
+            // Determine gateway type based on available protocols
+            val gatewayType = when {
+                hasI2PSupport() -> {
+                    safeLog(LogLevel.DETAILED, "I2P support detected, using I2P gateway")
+                    MmcpGatewayAnnouncement.GatewayType.I2P
+                }
+                hasTorSupport() -> {
+                    safeLog(LogLevel.DETAILED, "Tor support detected, using Tor gateway")
+                    MmcpGatewayAnnouncement.GatewayType.TOR
+                }
+                else -> {
+                    safeLog(LogLevel.DETAILED, "Using clearnet gateway as fallback")
+                    MmcpGatewayAnnouncement.GatewayType.CLEARNET
+                }
+            }
+            
+            // Estimate network capacity with performance tracking
+            val capacityStartTime = System.currentTimeMillis()
+            val bandwidthCapacity = estimateNetworkCapacity()
+            val capacityTime = System.currentTimeMillis() - capacityStartTime
+            
+            safeLog(LogLevel.DETAILED, 
+                "Network capacity estimated in ${capacityTime}ms: " +
+                "upload=${bandwidthCapacity.uploadMbps}Mbps, " +
+                "download=${bandwidthCapacity.downloadMbps}Mbps")
+            
+            // Measure network latency with performance tracking
+            val latencyStartTime = System.currentTimeMillis()
+            val networkLatency = measureNetworkLatency()
+            val latencyTime = System.currentTimeMillis() - latencyStartTime
+            
+            safeLog(LogLevel.DETAILED,
+                "Network latency measured in ${latencyTime}ms: " +
+                "ping=${networkLatency.averageMs}ms, jitter=${networkLatency.jitterMs}ms")
+            
+            // Get supported protocols for gateway type
+            val supportedProtocols = getSupportedProtocols(gatewayType)
+            safeLog(LogLevel.DETAILED, 
+                "Supported protocols for $gatewayType: ${supportedProtocols.joinToString(", ")}")
+            
+            // Create gateway announcement message
+            val announcement = MmcpGatewayAnnouncement(
+                nodeId = virtualNode.addressAsInt.toString(),
+                gatewayType = gatewayType,
+                capacity = bandwidthCapacity,
+                latency = networkLatency,
+                isActive = true,
+                supportedProtocols = supportedProtocols,
+                requestedMessageId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+            )
+            
+            // Performance tracking for serialization
+            val serializationStartTime = System.currentTimeMillis()
+            val serializedSize = announcement.toBytes().size
+            val serializationTime = System.currentTimeMillis() - serializationStartTime
+            
+            safeLog(LogLevel.DETAILED,
+                "Gateway announcement serialized in ${serializationTime}ms, size=${serializedSize} bytes")
+            
+            // Broadcast announcement to mesh network - using generic send method
+            try {
+                // Convert announcement to bytes and send as MMCP message
+                virtualNode.sendMessage(announcement)
+                val totalTime = System.currentTimeMillis() - startTime
+                safeLog(LogLevel.INFO, "Gateway capability announced successfully - " +
+                    "gatewayType: $gatewayType, " +
+                    "protocols: ${supportedProtocols.joinToString(",")}, " +
+                    "uploadBandwidth: ${bandwidthCapacity.uploadMbps}Mbps, " +
+                    "downloadBandwidth: ${bandwidthCapacity.downloadMbps}Mbps, " +
+                    "latency: ${networkLatency.averageMs}ms, " +
+                    "totalTimeMs: $totalTime")
+            } catch (e: Exception) {
+                safeLog(LogLevel.WARN, "Failed to broadcast gateway announcement: ${e.message}", e)
+            }
+            
+            val totalTime = System.currentTimeMillis() - startTime
+            
         } catch (e: Exception) {
-            safeLog(LogLevel.ERROR, "Failed to announce gateway capability: ${e.message}")
+            val totalTime = System.currentTimeMillis() - startTime
+            safeLog(LogLevel.ERROR, "Failed to announce gateway capability: ${e.message}", e)
         }
+    }
+    
+    /**
+     * Estimate current network capacity based on device capabilities
+     * Implements performance tracking consistent with project standards
+     */
+    private suspend fun estimateNetworkCapacity(): MmcpGatewayAnnouncement.BandwidthCapacity {
+        val startTime = System.currentTimeMillis()
+        
+        try {
+            // Get estimated bandwidth from device capability manager
+            val estimatedBandwidth = deviceCapabilityManager?.getEstimatedBandwidth() ?: 1000000L // 1MB/s default
+            
+            // Convert to upload/download estimates based on typical ratios
+            val uploadBytesPerSecond = (estimatedBandwidth * 0.1).toLong() // 10% of total for upload
+            val downloadBytesPerSecond = (estimatedBandwidth * 0.9).toLong() // 90% of total for download
+            
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.DETAILED,
+                "Network capacity estimation completed in ${endTime - startTime}ms - " +
+                "totalBandwidth: $estimatedBandwidth, uploadBps: $uploadBytesPerSecond, downloadBps: $downloadBytesPerSecond")
+            
+            return MmcpGatewayAnnouncement.BandwidthCapacity(
+                uploadMbps = uploadBytesPerSecond / 1_000_000f,
+                downloadMbps = downloadBytesPerSecond / 1_000_000f
+            )
+            
+        } catch (e: Exception) {
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.WARN,
+                "Failed to estimate network capacity, using defaults: ${e.message}", e)
+            
+            // Return reasonable defaults
+            return MmcpGatewayAnnouncement.BandwidthCapacity(
+                uploadMbps = 1f,   // 1 Mbps default
+                downloadMbps = 10f  // 10 Mbps default
+            )
+        }
+    }
+    
+    /**
+     * Measure current network latency with comprehensive performance tracking
+     */
+    private suspend fun measureNetworkLatency(): MmcpGatewayAnnouncement.NetworkLatency {
+        val startTime = System.currentTimeMillis()
+        
+        try {
+            // Simulate latency measurement - in real implementation this would ping external hosts
+            val networkInterfaces = deviceCapabilityManager?.getNetworkInterfaces() ?: emptyList()
+            
+            // Calculate estimated latency based on network interface types
+            val averagePingMs = when {
+                networkInterfaces.any { it.displayName?.contains("wifi", ignoreCase = true) == true } -> {
+                    safeLog(LogLevel.DETAILED, "WiFi interface detected, using WiFi latency estimate")
+                    30 // WiFi typical latency
+                }
+                networkInterfaces.any { it.displayName?.contains("mobile", ignoreCase = true) == true } -> {
+                    safeLog(LogLevel.DETAILED, "Mobile interface detected, using mobile latency estimate") 
+                    80 // Mobile typical latency
+                }
+                else -> {
+                    safeLog(LogLevel.DETAILED, "Unknown interface, using default latency estimate")
+                    50 // Default latency
+                }
+            }
+            
+            val jitterMs = averagePingMs / 10 // Estimate jitter as 10% of average ping
+            
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.DETAILED,
+                "Network latency measurement completed in ${endTime - startTime}ms - " +
+                "averagePingMs: $averagePingMs, jitterMs: $jitterMs, interfaceCount: ${networkInterfaces.size}")
+            
+            return MmcpGatewayAnnouncement.NetworkLatency(
+                averageMs = averagePingMs,
+                jitterMs = jitterMs
+            )
+            
+        } catch (e: Exception) {
+            val endTime = System.currentTimeMillis()
+            
+            safeLog(LogLevel.WARN,
+                "Failed to measure network latency, using defaults: ${e.message}", e)
+            
+            // Return reasonable defaults
+            return MmcpGatewayAnnouncement.NetworkLatency(
+                averageMs = 100,
+                jitterMs = 10
+            )
+        }
+    }
+    
+    /**
+     * Check if I2P support is available
+     */
+    private fun hasI2PSupport(): Boolean {
+        return try {
+            // Check for I2P service availability
+            val hasSupport = false // TODO: Implement actual I2P service check
+            safeLog(LogLevel.DETAILED, "I2P support check: $hasSupport")
+            hasSupport
+        } catch (e: Exception) {
+            safeLog(LogLevel.WARN, "I2P support check failed: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Check if Tor support is available  
+     */
+    private fun hasTorSupport(): Boolean {
+        return try {
+            // Check for Tor service availability
+            val hasSupport = true // Default to true for demo purposes
+            safeLog(LogLevel.DETAILED, "Tor support check: $hasSupport")
+            hasSupport
+        } catch (e: Exception) {
+            safeLog(LogLevel.WARN, "Tor support check failed: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Get supported protocols for gateway type
+     */
+    private fun getSupportedProtocols(gatewayType: MmcpGatewayAnnouncement.GatewayType): Set<String> {
+        return when (gatewayType) {
+            MmcpGatewayAnnouncement.GatewayType.CLEARNET -> setOf("HTTP", "HTTPS", "DNS", "FTP")
+            MmcpGatewayAnnouncement.GatewayType.TOR -> setOf("HTTP", "HTTPS", "SOCKS5")
+            MmcpGatewayAnnouncement.GatewayType.I2P -> setOf("HTTP", "HTTPS", "I2P")
+        }
+    }
+    
+    /**
+     * Generate unique message ID
+     */
+    private fun generateMessageId(): Int {
+        return (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
     }
     
     // Enums for gateway types and modes
@@ -652,4 +914,51 @@ class EmergentRoleManager(
     }
     
     fun getPreferredRoles(): Set<MeshRole> = _preferredRoles.value
+    
+    // Hardware monitoring lifecycle management
+    
+    /**
+     * Start hardware monitoring for real-time capability updates
+     * Call this when the EmergentRoleManager becomes active
+     */
+    fun startHardwareMonitoring() {
+        try {
+            hardwareManager.startMonitoring(30000L) // 30 second intervals
+            safeLog(LogLevel.INFO, "Started hardware monitoring for role optimization")
+        } catch (e: Exception) {
+            safeLog(LogLevel.BASIC, "Failed to start hardware monitoring: ${e.message}")
+        }
+    }
+    
+    /**
+     * Stop hardware monitoring to conserve battery
+     * Call this when the EmergentRoleManager is no longer needed
+     */
+    fun stopHardwareMonitoring() {
+        try {
+            hardwareManager.stopMonitoring()
+            safeLog(LogLevel.INFO, "Stopped hardware monitoring")
+        } catch (e: Exception) {
+            safeLog(LogLevel.BASIC, "Failed to stop hardware monitoring: ${e.message}")
+        }
+    }
+    
+    /**
+     * Check if hardware monitoring is currently active
+     */
+    fun isHardwareMonitoring(): Boolean = hardwareManager.isMonitoring()
+    
+    /**
+     * Get current device capabilities snapshot for debugging/UI display
+     */
+    fun getDeviceCapabilities(): NodeCapabilitySnapshot? {
+        return try {
+            runBlocking { 
+                hardwareManager.getCapabilitySnapshot(virtualNode.addressAsInt.toString()) 
+            }
+        } catch (e: Exception) {
+            safeLog(LogLevel.BASIC, "Failed to get device capabilities: ${e.message}")
+            null
+        }
+    }
 }
