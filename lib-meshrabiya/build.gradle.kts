@@ -5,13 +5,6 @@ plugins {
     id("maven-publish")
 }
 
-repositories {
-    google()
-    mavenCentral()
-    maven("https://jitpack.io")
-    maven("https://guardianproject.info/repo")
-}
-
 android {
     namespace = "com.ustadmobile.meshrabiya"
     compileSdk = 33
