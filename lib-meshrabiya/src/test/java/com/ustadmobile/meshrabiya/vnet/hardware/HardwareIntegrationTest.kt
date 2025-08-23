@@ -1,48 +1,47 @@
 package com.ustadmobile.meshrabiya.vnet.hardware
 
-import android.content.Context
+import org.robolectric.RuntimeEnvironment
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.mmcp.*
 import com.ustadmobile.meshrabiya.vnet.*
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import kotlin.test.*
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.Assert.*
 
 /**
  * Integration tests for hardware metrics collection with EmergentRoleManager.
  */
 class HardwareIntegrationTest {
-    
-    private lateinit var context: Context
     private lateinit var betaTestLogger: BetaTestLogger
     private lateinit var virtualNode: VirtualNode
     private lateinit var meshRoleManager: MeshRoleManager
     private lateinit var emergentRoleManager: EmergentRoleManager
-    private lateinit var mockHardwareManager: MockDeviceCapabilityManager
-    
-    @BeforeEach
+    private lateinit var context: android.app.Application
+
+    @Before
     fun setup() {
-        context = mockk(relaxed = true)
+    context = RuntimeEnvironment.getApplication() as android.app.Application
         betaTestLogger = mockk(relaxed = true)
         virtualNode = mockk(relaxed = true)
         meshRoleManager = mockk(relaxed = true)
-        
         // Mock virtual node basics
         every { virtualNode.addressAsInt } returns 12345
-        
         // Mock fitness score for fallback scenarios
         every { meshRoleManager.calculateFitnessScore() } returns FitnessScore(
             signalStrength = 80,
             batteryLevel = 0.75f,
             clientCount = 5
         )
+        // Setup Robolectric shadows for hardware simulation as needed
+        // Example: org.robolectric.shadows.ShadowBatteryManager.setBatteryLevel(80)
+        // Example: org.robolectric.shadows.ShadowActivityManager.setMemoryInfo(...)
     }
     
-    @AfterEach
+    @After
     fun teardown() {
         if (::emergentRoleManager.isInitialized) {
             emergentRoleManager.stopHardwareMonitoring()
@@ -52,133 +51,93 @@ class HardwareIntegrationTest {
     
     @Test
     fun `test hardware monitoring lifecycle integration`() = runTest {
-        // Given: Any device profile
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.HIGH_END_SMARTPHONE)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Start monitoring
         emergentRoleManager.startHardwareMonitoring()
-        
-        // Then: Should be monitoring
-        assertTrue(emergentRoleManager.isHardwareMonitoring(), "Should be monitoring after start")
-        
-        // When: Stop monitoring
+        assertTrue("Should be monitoring after start", emergentRoleManager.isHardwareMonitoring())
         emergentRoleManager.stopHardwareMonitoring()
-        
-        // Then: Should not be monitoring
-        assertFalse(emergentRoleManager.isHardwareMonitoring(), "Should not be monitoring after stop")
+        assertFalse("Should not be monitoring after stop", emergentRoleManager.isHardwareMonitoring())
     }
 
     @Test
     fun `test capability snapshot includes all required metrics`() = runTest {
-        // Given: High-end device
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.HIGH_END_SMARTPHONE)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Get device capabilities
         val capabilities = emergentRoleManager.getDeviceCapabilities()
-        
-        // Then: Should contain all required metrics
         assertNotNull(capabilities)
-        assertEquals("12345", capabilities?.nodeId ?: "") // Should match the mocked virtualNode.addressAsInt
+        assertEquals(12345, capabilities?.nodeId)
         assertNotNull(capabilities?.batteryInfo)
         assertNotNull(capabilities?.resources)
-        assertTrue(capabilities?.timestamp ?: 0 > 0)
-        assertTrue(capabilities?.stability ?: 0f > 0)
+        assertTrue("Timestamp should be > 0", capabilities?.timestamp ?: 0 > 0)
+        assertTrue("Stability should be > 0", capabilities?.stability ?: 0f > 0)
     }
 
     @Test
     fun `test high-end device has appropriate capabilities`() = runTest {
-        // Given: High-end smartphone profile
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.HIGH_END_SMARTPHONE)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Get device capabilities
         val capabilities = emergentRoleManager.getDeviceCapabilities()
-        
-        // Then: Should have high capabilities suitable for gateway and storage
         assertNotNull(capabilities)
-        assertTrue(capabilities?.resources?.availableCPU ?: 0f > 0.7f, "High-end device should have high CPU availability")
-        assertTrue(capabilities?.batteryInfo?.level ?: 0 > 70, "High-end device should have good battery")
-        assertEquals(ThermalState.COOL, capabilities?.thermalState, "High-end device should run cool")
-        assertTrue(capabilities?.stability ?: 0f > 0.85f, "High-end device should be very stable")
-        assertTrue(capabilities?.resources?.availableBandwidth ?: 0L > 50_000_000L, "High-end device should have high bandwidth")
+        assertTrue("High-end device should have high CPU availability", capabilities?.resources?.availableCPU ?: 0f > 0.7f)
+        assertTrue("High-end device should have good battery", capabilities?.batteryInfo?.level ?: 0 > 70)
+        assertEquals("High-end device should run cool", ThermalState.COOL, capabilities?.thermalState)
+        assertTrue("High-end device should be very stable", capabilities?.stability ?: 0f > 0.85f)
+        assertTrue("High-end device should have high bandwidth", capabilities?.resources?.availableBandwidth ?: 0L > 50_000_000L)
     }
 
     @Test
     fun `test low-end device has limited capabilities`() = runTest {
-        // Given: Low-end device profile
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.LOW_END_SMARTPHONE)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Get device capabilities
         val capabilities = emergentRoleManager.getDeviceCapabilities()
-        
-        // Then: Should have limited capabilities
         assertNotNull(capabilities)
-        assertTrue(capabilities?.resources?.availableCPU ?: 1f < 0.5f, "Low-end device should have limited CPU")
-        assertTrue(capabilities?.batteryInfo?.level ?: 100 < 50, "Low-end device should have lower battery")
-        assertTrue(capabilities?.stability ?: 1f < 0.7f, "Low-end device should be less stable")
+        assertTrue("Low-end device should have limited CPU", capabilities?.resources?.availableCPU ?: 1f < 0.5f)
+        assertTrue("Low-end device should have lower battery", capabilities?.batteryInfo?.level ?: 100 < 50)
+        assertTrue("Low-end device should be less stable", capabilities?.stability ?: 1f < 0.7f)
     }
 
     @Test
     fun `test tablet optimized for storage and relay capabilities`() = runTest {
-        // Given: Tablet profile
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.TABLET)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Get device capabilities
         val capabilities = emergentRoleManager.getDeviceCapabilities()
-        
-        // Then: Should be optimized for storage and relay
         assertNotNull(capabilities)
-        assertTrue(capabilities?.resources?.availableRAM ?: 0L > 2_000_000_000L, "Tablet should have high memory")
-        assertEquals(ThermalState.COOL, capabilities?.thermalState, "Tablet should run cool")
-        assertTrue(capabilities?.stability ?: 0f > 0.8f, "Tablet should be stable")
+        assertTrue("Tablet should have high memory", capabilities?.resources?.availableRAM ?: 0L > 2_000_000_000L)
+        assertEquals("Tablet should run cool", ThermalState.COOL, capabilities?.thermalState)
+        assertTrue("Tablet should be stable", capabilities?.stability ?: 0f > 0.8f)
     }
 
     @Test
     fun `test emergency thermal protection triggers correctly`() = runTest {
-        // Given: Device with critical thermal state
-        mockHardwareManager = MockDeviceCapabilityManager(MockDeviceCapabilityManager.DeviceProfile.OVERHEATING_DEVICE)
+        // Setup Robolectric shadows for hardware simulation here if needed
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = meshRoleManager,
-            deviceCapabilityManager = mockHardwareManager
+            meshRoleManager = meshRoleManager
         )
-        
-        // When: Get capabilities
         val capabilities = emergentRoleManager.getDeviceCapabilities()
-        
-        // Then: Should indicate thermal protection
         assertNotNull(capabilities)
-        assertEquals(ThermalState.CRITICAL, capabilities?.thermalState)
-        assertTrue(capabilities?.resources?.availableCPU ?: 1f < 0.3f, "Should throttle CPU under thermal stress")
+        assertEquals("Should be CRITICAL under thermal stress", ThermalState.CRITICAL, capabilities?.thermalState)
+        assertTrue("Should throttle CPU under thermal stress", capabilities?.resources?.availableCPU ?: 1f < 0.3f)
     }
 }

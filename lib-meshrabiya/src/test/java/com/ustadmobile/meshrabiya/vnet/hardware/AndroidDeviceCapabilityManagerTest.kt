@@ -3,10 +3,10 @@ package com.ustadmobile.meshrabiya.vnet.hardware
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions.*
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.Assert.*
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -33,7 +33,7 @@ class AndroidDeviceCapabilityManagerTest {
     private lateinit var betaTestLogger: BetaTestLogger
     private lateinit var capabilityManager: AndroidDeviceCapabilityManager
 
-    @BeforeEach
+    @Before
     fun setup() {
         clearAllMocks()
         
@@ -54,7 +54,7 @@ class AndroidDeviceCapabilityManagerTest {
         capabilityManager = AndroidDeviceCapabilityManager(context, betaTestLogger)
     }
 
-    @AfterEach
+    @After
     fun tearDown() {
         unmockkAll()
     }
