@@ -37,6 +37,88 @@ public class HardwareIntegrationTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
 
+    // Test doubles for hardware metrics
+    fun mockDeviceCapabilityManager(
+        batteryLevel: Int,
+        isCharging: Boolean,
+        availableCPU: Float,
+        availableRAM: Long,
+        availableBandwidth: Long,
+        thermalState: ThermalState,
+        stability: Float = 0.9f
+    ): DeviceCapabilityManager {
+        val mock = mockk<DeviceCapabilityManager>()
+        val batteryInfo = BatteryInfo(
+            level = batteryLevel,
+            isCharging = isCharging,
+            estimatedTimeRemaining = null,
+            temperatureCelsius = 25,
+            health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
+            chargingSource = null
+        )
+        val resources = ResourceCapabilities(
+            availableCPU = availableCPU,
+            availableRAM = availableRAM,
+            availableBandwidth = availableBandwidth,
+            storageOffered = 100_000_000L,
+            batteryLevel = batteryLevel,
+            thermalThrottling = (thermalState == ThermalState.THROTTLING),
+            powerState = if (batteryLevel > 70) PowerState.BATTERY_HIGH else PowerState.BATTERY_MEDIUM,
+            networkInterfaces = emptySet<SerializableNetworkInterfaceInfo>()
+        )
+        val snapshot = NodeCapabilitySnapshot(
+            nodeId = "12345",
+            resources = resources,
+            batteryInfo = batteryInfo,
+            thermalState = thermalState,
+            networkQuality = 0.8f,
+            stability = stability,
+            timestamp = System.currentTimeMillis()
+        )
+        var monitoring = false
+        every { mock.isMonitoring() } answers { monitoring }
+        every { mock.startMonitoring(any()) } answers { monitoring = true }
+        every { mock.stopMonitoring() } answers { monitoring = false }
+        coEvery { mock.getCapabilitySnapshot(any()) } returns snapshot
+        coEvery { mock.getEstimatedBandwidth() } returns availableBandwidth
+        coEvery { mock.getNetworkInterfaces() } returns emptySet<SerializableNetworkInterfaceInfo>()
+        return mock
+    }
+
+    // Templates for device types
+    fun highEndDeviceManager() = mockDeviceCapabilityManager(
+        batteryLevel = 95,
+        isCharging = true,
+        availableCPU = 0.85f,
+        availableRAM = 8_000_000_000L,
+        availableBandwidth = 150_000_000L,
+        thermalState = ThermalState.COOL,
+        stability = 0.95f
+    )
+
+    fun averageDeviceManager() = mockDeviceCapabilityManager(
+        batteryLevel = 60,
+        isCharging = false,
+        availableCPU = 0.5f,
+        availableRAM = 3_000_000_000L,
+        availableBandwidth = 30_000_000L,
+        thermalState = ThermalState.WARM,
+        stability = 0.8f
+    )
+
+    fun lowEndDeviceManager() = mockDeviceCapabilityManager(
+        batteryLevel = 25,
+        isCharging = false,
+        availableCPU = 0.2f,
+        availableRAM = 1_000_000_000L,
+        availableBandwidth = 5_000_000L,
+        thermalState = ThermalState.THROTTLING,
+        stability = 0.5f
+    )
+
+    // Templates for hardware simulation
+    // Removed unsupported Robolectric shadow classes and simulation methods
+
     @Before
     fun setup() {
         kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
@@ -52,9 +134,7 @@ public class HardwareIntegrationTest {
             batteryLevel = 0.75f,
             clientCount = 5
         )
-        // Setup Robolectric shadows for hardware simulation as needed
-        // Example: org.robolectric.shadows.ShadowBatteryManager.setBatteryLevel(80)
-        // Example: org.robolectric.shadows.ShadowActivityManager.setMemoryInfo(...)
+    // Default to average device for general setup
     }
     
     @After
@@ -72,7 +152,8 @@ public class HardwareIntegrationTest {
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = averageDeviceManager()
             )
             emergentRoleManager.startHardwareMonitoring()
             assertTrue("Should be monitoring after start", emergentRoleManager.isHardwareMonitoring())
@@ -87,11 +168,12 @@ public class HardwareIntegrationTest {
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = averageDeviceManager()
             )
             val capabilities = emergentRoleManager.getDeviceCapabilities()
             assertNotNull(capabilities)
-            assertEquals(12345, capabilities?.nodeId)
+            assertEquals("12345", capabilities?.nodeId)
             assertNotNull(capabilities?.batteryInfo)
             assertNotNull(capabilities?.resources)
             assertTrue("Timestamp should be > 0", capabilities?.timestamp ?: 0 > 0)
@@ -105,7 +187,8 @@ public class HardwareIntegrationTest {
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = highEndDeviceManager()
             )
             val capabilities = emergentRoleManager.getDeviceCapabilities()
             assertNotNull(capabilities)
@@ -123,7 +206,8 @@ public class HardwareIntegrationTest {
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = lowEndDeviceManager()
             )
             val capabilities = emergentRoleManager.getDeviceCapabilities()
             assertNotNull(capabilities)
@@ -139,7 +223,8 @@ public class HardwareIntegrationTest {
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = highEndDeviceManager()
             )
             val capabilities = emergentRoleManager.getDeviceCapabilities()
             assertNotNull(capabilities)
@@ -152,10 +237,19 @@ public class HardwareIntegrationTest {
     @Test
     fun testEmergencyThermalProtectionTriggersCorrectly() {
         runTest {
+            val criticalDeviceManager = mockDeviceCapabilityManager(
+                batteryLevel = 20,
+                isCharging = false,
+                availableCPU = 0.1f,
+                availableRAM = 1_000_000_000L,
+                availableBandwidth = 2_000_000L,
+                thermalState = ThermalState.CRITICAL
+            )
             emergentRoleManager = EmergentRoleManager(
                 virtualNode = virtualNode,
                 context = context,
-                meshRoleManager = meshRoleManager
+                meshRoleManager = meshRoleManager,
+                deviceCapabilityManager = criticalDeviceManager
             )
             val capabilities = emergentRoleManager.getDeviceCapabilities()
             assertNotNull(capabilities)
