@@ -1,3 +1,11 @@
+tasks.withType<Test> {
+    val testFilter = project.findProperty("testFilter") as String?
+    if (testFilter != null) {
+        filter {
+            includeTestsMatching(testFilter)
+        }
+    }
+}
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
@@ -6,6 +14,11 @@ plugins {
 }
 
 android {
+    testOptions {
+        unitTests.all {
+            // No test filtering here; handled by Test task above
+        }
+    }
     namespace = "com.ustadmobile.meshrabiya"
     compileSdk = 33
 
@@ -69,6 +82,7 @@ dependencies {
     testImplementation("app.cash.turbine:turbine:0.12.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.10.0")
     testImplementation("com.squareup.okhttp3:okhttp:4.10.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:rules:1.5.0")
