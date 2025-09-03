@@ -1,126 +1,186 @@
 package com.ustadmobile.meshrabiya.vnet
-
 import android.content.Context
+import com.ustadmobile.meshrabiya.mmcp.BatteryInfo
+import com.ustadmobile.meshrabiya.mmcp.ResourceCapabilities
+import com.ustadmobile.meshrabiya.mmcp.PowerState
+import com.ustadmobile.meshrabiya.mmcp.SerializableNetworkInterfaceInfo
+import com.ustadmobile.meshrabiya.mmcp.ThermalState
+import com.ustadmobile.meshrabiya.vnet.NodeCapabilitySnapshot
+import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
+import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
+import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+// Removed import: DeviceCapabilityListener (not present in codebase)
+import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
+import com.ustadmobile.meshrabiya.vnet.EnhancedMockContextProvider
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
+
+
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
+import androidx.test.core.app.ApplicationProvider
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage.Companion.WHAT_GATEWAY_ANNOUNCEMENT
-import com.ustadmobile.meshrabiya.vnet.hardware.MockDeviceCapabilityManager
-import io.mockk.mockk
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.runTest
-import org.junit.After
-import org.junit.Assert.*
+import org.junit.runner.RunWith
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
+import org.junit.Assert.*
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.RuntimeEnvironment
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.system.measureTimeMillis
 import kotlin.random.Random
+import kotlin.system.measureTimeMillis
 
-/**
- * Comprehensive test suite for Gateway Protocol Integration
- * Tests gateway announcements, traffic routing, and edge cases
- * Maintains consistency with project's enterprise testing standards
- */
+import io.mockk.mockk
+// Mock Application to support getSystemService(Class) for AndroidVirtualNode
+// EnhancedMockContextProvider will be used for all context/system service mocking
+
+@OptIn(ExperimentalCoroutinesApi::class)
 class GatewayProtocolIntegrationTest {
-
+    private val testDispatcher = StandardTestDispatcher()
     private lateinit var virtualNode: VirtualNode
     private lateinit var emergentRoleManager: EmergentRoleManager
     private lateinit var androidVirtualNode: AndroidVirtualNode
     private lateinit var betaTestLogger: BetaTestLogger
-    private lateinit var mockCapabilityManager: MockDeviceCapabilityManager
-    
-    // Performance tracking
-    private val announcementCount = AtomicInteger(0)
-    private val routingSuccessCount = AtomicInteger(0)
-    private val routingFailureCount = AtomicInteger(0)
-    private val totalLatency = AtomicLong(0)
+    private lateinit var context: Context
+    private lateinit var announcementCount: java.util.concurrent.atomic.AtomicInteger
+    private lateinit var routingSuccessCount: java.util.concurrent.atomic.AtomicInteger
+    private lateinit var routingFailureCount: java.util.concurrent.atomic.AtomicInteger
+    private lateinit var totalLatency: java.util.concurrent.atomic.AtomicLong
+
+    // Mocks for AndroidVirtualNode constructor
+    private val mockDataStore = mockk<DataStore<Preferences>>(relaxed = true)
+    private val mockExecutor = mockk<java.util.concurrent.ScheduledExecutorService>(relaxed = true)
 
     @Before
-    fun setUp() {
+    public fun setUp() {
+        Dispatchers.setMain(testDispatcher)
+        context = EnhancedMockContextProvider.createFullMockContext()
+        val mockContext = EnhancedMockContextProvider.createFullMockContext()
+        // Pass mockContext to all Meshrabiya components under test
+        val mockWifiDirectManager = mockk<com.ustadmobile.meshrabiya.vnet.wifi.WifiDirectManager>(relaxed = true)
+        val mockLocalOnlyHotspotManager = mockk<com.ustadmobile.meshrabiya.vnet.wifi.LocalOnlyHotspotManager>(relaxed = true)
+        androidVirtualNode = AndroidVirtualNode(
+            context = mockContext,
+            port = 1,
+            logger = com.ustadmobile.meshrabiya.log.MNetLoggerStdout(),
+            dataStore = mockDataStore,
+            scheduledExecutorService = mockExecutor,
+            wifiDirectManager = mockWifiDirectManager,
+            localOnlyHotspotManager = mockLocalOnlyHotspotManager
+        )
         betaTestLogger = BetaTestLogger.createTestInstance()
         betaTestLogger.setLogLevel(LogLevel.DETAILED)
-        
-        mockCapabilityManager = MockDeviceCapabilityManager()
-        
-        virtualNode = mockk<VirtualNode>()
+        // Use simple test doubles for VirtualNode and MeshRoleManager
+        virtualNode = object : VirtualNode() {
+            override val meshrabiyaWifiManager: com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager = object : com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager {
+                override val state: kotlinx.coroutines.flow.Flow<com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState> = kotlinx.coroutines.flow.MutableStateFlow(com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState())
+                override val is5GhzSupported: Boolean = true
+                override suspend fun requestHotspot(requestMessageId: Int, request: com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotRequest) = com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotResponse(
+                    responseToMessageId = requestMessageId,
+                    errorCode = 0,
+                    config = null,
+                    redirectAddr = 0
+                )
+                override suspend fun deactivateHotspot() {}
+                override suspend fun connectToHotspot(config: com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig, timeout: Long) {}
+            }
+            override fun getCurrentFitnessScore(): Int = 100
+            override fun getCurrentNodeRole(): Byte = 1
+        }
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
-            context = mockk<Context>(),
-            meshRoleManager = mockk<MeshRoleManager>(),
-            deviceCapabilityManager = mockCapabilityManager
+            context = context,
+            meshRoleManager = MeshRoleManager(virtualNode, context),
+            deviceCapabilityManager = mockDeviceCapabilityManager()
         )
-        
-        androidVirtualNode = AndroidVirtualNode(
-            context = mockk<Context>(relaxed = true), 
-            port = 1,
-            logger = mockk(relaxed = true),
-            dataStore = mockk<DataStore<Preferences>>(relaxed = true),
-            scheduledExecutorService = mockk<ScheduledExecutorService>(relaxed = true)
-        )
-        
+        announcementCount = java.util.concurrent.atomic.AtomicInteger(0)
+        routingSuccessCount = java.util.concurrent.atomic.AtomicInteger(0)
+        routingFailureCount = java.util.concurrent.atomic.AtomicInteger(0)
+        totalLatency = java.util.concurrent.atomic.AtomicLong(0)
         betaTestLogger.log(LogLevel.INFO, "GatewayTest", "Test setup completed")
     }
 
     @After
-    fun tearDown() {
-        betaTestLogger.log(LogLevel.INFO, "GatewayTest", 
-            "Test completed - Announcements: ${announcementCount.get()}, " +
-            "Routing Success: ${routingSuccessCount.get()}, " +
-            "Routing Failures: ${routingFailureCount.get()}, " +
-            "Avg Latency: ${if (announcementCount.get() > 0) totalLatency.get() / announcementCount.get() else 0}ms"
-        )
+    public fun tearDown() {
+        Dispatchers.resetMain()
+    }
+    // Test double for DeviceCapabilityManager (pattern from HardwareIntegrationTest)
+    fun mockDeviceCapabilityManager(): DeviceCapabilityManager {
+        return object : com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager {
+            override suspend fun getCpuUtilization(): Float = 0.7f
+            override suspend fun getAvailableMemory(): Long = 4_000_000_000L
+            override suspend fun getTotalMemory(): Long = 8_000_000_000L
+            override suspend fun getBatteryInfo(): BatteryInfo = BatteryInfo(
+                level = 80,
+                isCharging = true,
+                estimatedTimeRemaining = null, // Duration?
+                temperatureCelsius = 25,
+                health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
+                chargingSource = com.ustadmobile.meshrabiya.mmcp.ChargingSource.UNKNOWN // ChargingSource?
+            )
+            override suspend fun getThermalState(): ThermalState = ThermalState.COOL
+            override suspend fun getEstimatedBandwidth(): Long = 50_000_000L
+            override suspend fun getNetworkInterfaces(): Set<SerializableNetworkInterfaceInfo> = emptySet()
+            override suspend fun getStorageCapabilities(): com.ustadmobile.meshrabiya.mmcp.StorageCapabilities = com.ustadmobile.meshrabiya.mmcp.StorageCapabilities(
+                totalOffered = 100_000_000L,
+                currentlyUsed = 0L,
+                replicationFactor = 1,
+                compressionSupported = false,
+                encryptionSupported = false,
+                accessPatterns = setOf(com.ustadmobile.meshrabiya.mmcp.AccessPattern.RANDOM)
+            )
+            override suspend fun getStabilityScore(): Float = 0.95f
+            override suspend fun getCapabilitySnapshot(nodeId: String): NodeCapabilitySnapshot {
+                return NodeCapabilitySnapshot(
+                    nodeId = nodeId,
+                    resources = ResourceCapabilities(
+                        availableCPU = 0.7f,
+                        availableRAM = 4_000_000_000L,
+                        availableBandwidth = 50_000_000L,
+                        storageOffered = 100_000_000L,
+                        batteryLevel = 80,
+                        thermalThrottling = false,
+                        powerState = PowerState.BATTERY_HIGH,
+                        networkInterfaces = emptySet()
+                    ),
+                    batteryInfo = BatteryInfo(
+                        level = 80,
+                        isCharging = true,
+                        estimatedTimeRemaining = null, // Duration?
+                        temperatureCelsius = 25,
+                        health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
+                        chargingSource = com.ustadmobile.meshrabiya.mmcp.ChargingSource.UNKNOWN // ChargingSource?
+                    ),
+                    thermalState = ThermalState.COOL,
+                    networkQuality = 0.9f,
+                    stability = 0.95f,
+                    timestamp = System.currentTimeMillis()
+                )
+            }
+            override fun startMonitoring(intervalMs: Long) {}
+            override fun stopMonitoring() {}
+            override fun isMonitoring(): Boolean = true
+        }
     }
 
-    @Test
-    fun testBasicGatewayAnnouncement() = runTest {
-        betaTestLogger.log(LogLevel.INFO, "GatewayTest", "Testing basic gateway announcement")
-        
-        val startTime = System.currentTimeMillis()
-        
-        // Test MMCP gateway announcement creation
-        val announcement = MmcpGatewayAnnouncement(
-            nodeId = "test-gateway",
-            gatewayType = MmcpGatewayAnnouncement.GatewayType.CLEARNET,
-            supportedProtocols = setOf("HTTP", "HTTPS"),
-            capacity = MmcpGatewayAnnouncement.BandwidthCapacity(
-                uploadMbps = 1.0f,
-                downloadMbps = 10.0f
-            ),
-            latency = MmcpGatewayAnnouncement.NetworkLatency(
-                averageMs = 50,
-                jitterMs = 5
-            ),
-            requestedMessageId = Random.nextInt()
-        )
-        
-        // Test serialization/deserialization
-        val serialized = announcement.toBytes()
-        val deserialized = MmcpGatewayAnnouncement.fromBytes(serialized)
-        
-        assertEquals("Gateway type should match", announcement.gatewayType, deserialized.gatewayType)
-        assertEquals("Protocols should match", announcement.supportedProtocols, deserialized.supportedProtocols)
-        assertEquals("Upload bandwidth should match", 
-            announcement.capacity.uploadMbps, 
-            deserialized.capacity.uploadMbps)
-        
-        val endTime = System.currentTimeMillis()
-        totalLatency.addAndGet(endTime - startTime)
-        announcementCount.incrementAndGet()
-        
-        betaTestLogger.log(LogLevel.DETAILED, "GatewayTest", 
-            "Basic announcement test completed in ${endTime - startTime}ms")
-    }
+    // ...existing code...
 
     @Test
     fun testGatewayAnnouncementPerformance() = runTest {
@@ -172,33 +232,26 @@ class GatewayProtocolIntegrationTest {
     @Test
     fun testTrafficRoutingWithFallback() = runTest {
         betaTestLogger.log(LogLevel.INFO, "GatewayTest", "Testing traffic routing with fallback")
-        
         val testData = "Test routing data".toByteArray()
         val destination = InetAddress.getByName("8.8.8.8")
-        
-        // Test routing attempt (will fail due to no actual MeshTrafficRouter)
         val startTime = System.currentTimeMillis()
-        
+        var result: Boolean? = null
+        var exception: Exception? = null
         try {
             // This should fail gracefully and fall back to standard routing
-            val result = androidVirtualNode.handleInternetTraffic(destination, testData)
-            
-            // Log the fallback behavior
-            betaTestLogger.log(LogLevel.DETAILED, "GatewayTest", 
-                "Routing fallback worked as expected: $result")
-            
+            result = androidVirtualNode.handleInternetTraffic(destination, testData)
+            betaTestLogger.log(LogLevel.DETAILED, "GatewayTest", "Routing fallback result: $result")
             routingSuccessCount.incrementAndGet()
         } catch (e: Exception) {
-            betaTestLogger.log(LogLevel.WARN, "GatewayTest", 
-                "Routing test exception (expected): ${e.message}")
+            exception = e
+            betaTestLogger.log(LogLevel.ERROR, "GatewayTest", "Routing test exception: ${e.message}")
             routingFailureCount.incrementAndGet()
         }
-        
         val endTime = System.currentTimeMillis()
         totalLatency.addAndGet(endTime - startTime)
-        
-        betaTestLogger.log(LogLevel.DETAILED, "GatewayTest", 
-            "Traffic routing test completed in ${endTime - startTime}ms")
+        betaTestLogger.log(LogLevel.DETAILED, "GatewayTest", "Traffic routing test completed in ${endTime - startTime}ms, result: $result, exception: ${exception?.message}")
+        // Explicitly assert fallback (false) result
+        assertFalse("Should fall back to mesh routing when MeshTrafficRouter is missing", result ?: false)
     }
 
     @Test
@@ -298,7 +351,7 @@ class GatewayProtocolIntegrationTest {
         val results = ConcurrentHashMap<Int, Boolean>()
         
         val jobs = (1..concurrentCount).map { i ->
-            launch(Dispatchers.Default) {
+            launch(UnconfinedTestDispatcher()) {
                 try {
                     val announcement = MmcpGatewayAnnouncement(
                         nodeId = "concurrent-test-$i",

@@ -20,16 +20,21 @@ android {
         }
     }
     namespace = "com.ustadmobile.meshrabiya"
-    compileSdk = 33
+    compileSdk = 36
 
     defaultConfig {
-        minSdk = 26
-        targetSdk = 33
+        minSdk = 24
+        targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
 
+    // ...existing code...
+
     buildTypes {
+        getByName("debug") {
+            isMinifyEnabled = false
+        }
         getByName("release") {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -37,60 +42,65 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = "21"
     }
 
     publishing {
         singleVariant("release") {
             // Optional: further configuration
         }
+        singleVariant("debug") {
+            // Optional: further configuration
+        }
     }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.10.1")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.fragment:fragment-ktx:1.6.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("com.athaydes.rawhttp:rawhttp-core:2.5.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
-    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.lifecycle.common)
+    implementation(libs.rawhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.datastore)
 
-    implementation("org.bouncycastle:bcprov-jdk18on:1.75")
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.75")
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.datastore)
 
-    implementation("com.github.seancfoley:ipaddress:5.4.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.2")
+    implementation(libs.bouncycastle)
 
-    implementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.22")
+    implementation(libs.ipaddress)
+    implementation(libs.kotlinx.coroutines.core)
 
-    implementation("org.mockito.kotlin:mockito-kotlin:4.1.0")
-    implementation("app.cash.turbine:turbine:0.12.1")
-    implementation("com.squareup.okhttp3:mockwebserver:4.10.0")
-    implementation("com.squareup.okhttp3:okhttp:4.10.0")
+    implementation(libs.junit.jupiter)
+    testImplementation(libs.kotlin.test)
 
-    testImplementation("org.robolectric:robolectric:4.11.1")
-    testImplementation("io.mockk:mockk:1.13.10")
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:4.1.0")
-    testImplementation("app.cash.turbine:turbine:0.12.1")
-    testImplementation("com.squareup.okhttp3:mockwebserver:4.10.0")
-    testImplementation("com.squareup.okhttp3:okhttp:4.10.0")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    implementation(libs.mockito.kotlin)
+    implementation(libs.turbine)
+    implementation(libs.mockwebserver)
+    implementation(libs.okhttp)
 
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test:rules:1.5.0")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("app.cash.turbine:turbine:0.12.1")
-    androidTestImplementation("org.mockito:mockito-android:5.1.1")
-    androidTestImplementation("org.mockito.kotlin:mockito-kotlin:4.1.0")
-    androidTestImplementation("io.mockk:mockk-android:1.13.10")
+    testImplementation(libs.robolectric)
+    testImplementation(libs.mockk)
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.mockito.kotlin)
+    testImplementation(libs.turbine)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.okhttp)
+    testImplementation(libs.kotlinx.coroutines.core)
+
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.rules)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.turbine)
+    androidTestImplementation(libs.mockito.android)
+    androidTestImplementation(libs.mockito.kotlin)
+    androidTestImplementation(libs.mockk)
 }
 
 publishing {
