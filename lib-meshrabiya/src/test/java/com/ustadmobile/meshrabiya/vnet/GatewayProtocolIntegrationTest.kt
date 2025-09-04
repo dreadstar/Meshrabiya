@@ -74,16 +74,12 @@ class GatewayProtocolIntegrationTest {
         context = EnhancedMockContextProvider.createFullMockContext()
         val mockContext = EnhancedMockContextProvider.createFullMockContext()
         // Pass mockContext to all Meshrabiya components under test
-        val mockWifiDirectManager = mockk<com.ustadmobile.meshrabiya.vnet.wifi.WifiDirectManager>(relaxed = true)
-        val mockLocalOnlyHotspotManager = mockk<com.ustadmobile.meshrabiya.vnet.wifi.LocalOnlyHotspotManager>(relaxed = true)
         androidVirtualNode = AndroidVirtualNode(
             context = mockContext,
             port = 1,
             logger = com.ustadmobile.meshrabiya.log.MNetLoggerStdout(),
             dataStore = mockDataStore,
-            scheduledExecutorService = mockExecutor,
-            wifiDirectManager = mockWifiDirectManager,
-            localOnlyHotspotManager = mockLocalOnlyHotspotManager
+            scheduledExecutorService = mockExecutor
         )
         betaTestLogger = BetaTestLogger.createTestInstance()
         betaTestLogger.setLogLevel(LogLevel.DETAILED)

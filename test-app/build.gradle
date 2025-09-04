@@ -10,15 +10,15 @@ android {
         buildConfig = true
     }
 
-    namespace 'com.ustadmobile.meshrabiya.testapp'
-    compileSdk 34
+    namespace = 'com.ustadmobile.meshrabiya.testapp'
+    compileSdk = 34
 
     defaultConfig {
-        applicationId "com.ustadmobile.meshrabiya.testapp"
-        minSdk 26
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        applicationId = "com.ustadmobile.meshrabiya.testapp"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -33,7 +33,7 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
+            minifyEnabled = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
