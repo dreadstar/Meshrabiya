@@ -52,6 +52,8 @@ import io.mockk.mockk
 // EnhancedMockContextProvider will be used for all context/system service mocking
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [28], manifest = Config.NONE)
 class GatewayProtocolIntegrationTest {
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var virtualNode: VirtualNode
@@ -71,11 +73,13 @@ class GatewayProtocolIntegrationTest {
     @Before
     public fun setUp() {
         Dispatchers.setMain(testDispatcher)
-        context = EnhancedMockContextProvider.createFullMockContext()
-        val mockContext = EnhancedMockContextProvider.createFullMockContext()
-        // Pass mockContext to all Meshrabiya components under test
+        
+        // Use Robolectric's Application context which properly mocks Android framework
+        context = ApplicationProvider.getApplicationContext()
+        
+        // Create AndroidVirtualNode with proper Robolectric context
         androidVirtualNode = AndroidVirtualNode(
-            context = mockContext,
+            context = context,
             port = 1,
             logger = com.ustadmobile.meshrabiya.log.MNetLoggerStdout(),
             dataStore = mockDataStore,
