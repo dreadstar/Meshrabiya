@@ -202,13 +202,25 @@ abstract class VirtualNode(
             )
         }
 
+        // Launch coroutine after ensuring originatingMessageManager is properly initialized
         coroutineScope.launch {
-            originatingMessageManager.state.collect {
-                _state.update { prev ->
-                    prev.copy(
-                        originatorMessages = originatingMessageManager.getOriginatorMessages()
-                    )
+            try {
+                // Use the property directly rather than the getter to avoid inheritance issues
+                originatingMessageManager.state.collect { state ->
+                    _state.update { prev ->
+                        prev.copy(
+                            originatorMessages = originatingMessageManager.getOriginatorMessages()
+                        )
+                    }
                 }
+            } catch (e: Exception) {
+                safeLog(
+                    LogLevel.ERROR,
+                    "VirtualNode",
+                    "Error in originatingMessageManager state collection",
+                    mapOf("address" to address.hostAddress),
+                    e
+                )
             }
         }
     }

@@ -50,6 +50,9 @@ class AndroidDeviceCapabilityManagerTest {
         every { context.getSystemService(Context.BATTERY_SERVICE) } returns batteryManager
         every { context.getSystemService(Context.ACTIVITY_SERVICE) } returns activityManager
         every { context.getSystemService(Context.WIFI_SERVICE) } returns wifiManager
+        
+        // Mock applicationContext for WiFi manager access
+        every { context.applicationContext } returns context
 
         capabilityManager = AndroidDeviceCapabilityManager(context, betaTestLogger)
     }
