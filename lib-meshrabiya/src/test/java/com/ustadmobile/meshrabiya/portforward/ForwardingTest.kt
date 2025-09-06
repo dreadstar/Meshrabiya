@@ -38,17 +38,23 @@ class ForwardingTest {
         val executor = Executors.newCachedThreadPool()
         val echoServer = EchoDatagramServer(0, executor)
 
-        val forwardRuleDatagramSocket = DatagramSocket()
+        // Create a bound socket for the forwarding rule
+        val boundSocket = DatagramSocket(0)
         val forwardingRule = UdpForwardRule(
-            DatagramSocket(), executor,
-            InetAddress.getLoopbackAddress(), echoServer.listeningPort,
+            boundSocket = boundSocket,
+            ioExecutor = executor,
+            destAddress = InetAddress.getLoopbackAddress(),
+            destPort = echoServer.listeningPort,
             logger = MNetLoggerStdout()
         )
+
+        // Start the forwarding rule
+        executor.submit(forwardingRule)
 
         val client = DatagramSocket()
         val helloBytes = "Hello".toByteArray()
         val helloPacket = DatagramPacket(helloBytes, helloBytes.size,
-            forwardRuleDatagramSocket.localAddress, forwardingRule.localPort)
+            InetAddress.getLoopbackAddress(), boundSocket.localPort)
         client.send(helloPacket)
 
         val receiveBuffer = ByteArray(100)
@@ -57,8 +63,12 @@ class ForwardingTest {
 
         val decoded = String(receivePacket.data, receivePacket.offset, receivePacket.length)
         Assert.assertEquals("Hello", decoded)
+        
+        // Cleanup
         executor.shutdown()
         echoServer.close()
+        forwardingRule.close()
+        boundSocket.close()
+        client.close()
     }
-
 }

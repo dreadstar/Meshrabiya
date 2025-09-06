@@ -7,13 +7,16 @@ import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.prefixMatches
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.beta.BetaTestLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotRequest
 import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotResponse
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
-import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
+import com.ustadmobile.meshrabiya.mmcp.MmcpNodeAnnouncement
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
+import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
 import com.ustadmobile.meshrabiya.portforward.ForwardBindPoint
 import com.ustadmobile.meshrabiya.portforward.UdpForwardRule
 import com.ustadmobile.meshrabiya.util.findFreePort
@@ -132,7 +135,7 @@ abstract class VirtualNode(
      * @param lastHopAddr the recorded last hop address
      */
     data class LastOriginatorMessage(
-        val originatorMessage: MmcpOriginatorMessage,
+        val originatorMessage: MmcpNodeAnnouncement,
         val timeReceived: Long,
         val lastHopAddr: Int,
         val hopCount: Byte,
@@ -417,13 +420,19 @@ abstract class VirtualNode(
                     }
                 }
 
-                mmcpMessage is MmcpOriginatorMessage -> {
+                mmcpMessage is MmcpNodeAnnouncement -> {
                     shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
                         mmcpMessage = mmcpMessage,
                         datagramPacket = datagramPacket ?: return false,
                         datagramSocket = datagramSocket ?: return false,
                         virtualPacket = virtualPacket,
                     )
+                }
+
+                mmcpMessage is MmcpGatewayAnnouncement -> {
+                    logger(Log.INFO, "$logPrefix received gateway announcement from ${from.addressToDotNotation()}: ${mmcpMessage.gatewayType}", null)
+                    onGatewayAnnouncementReceived(mmcpMessage, from)
+                    shouldRoute = true // Continue routing gateway announcements to other nodes
                 }
 
                 else -> {
@@ -590,6 +599,25 @@ abstract class VirtualNode(
         originatingMessageManager.sendMessage(message)
     }
 
+    /**
+     * Handle incoming gateway announcements from other nodes
+     */
+    protected open fun onGatewayAnnouncementReceived(announcement: MmcpGatewayAnnouncement, fromNodeAddr: Int) {
+        logger(Log.INFO, "$logPrefix Gateway ${announcement.gatewayType} available from ${fromNodeAddr.addressToDotNotation()}")
+        
+        // Store gateway information for routing decisions
+        // Subclasses can override this to implement gateway discovery/selection logic
+        try {
+            // Basic validation
+            if (announcement.isActive && announcement.capacity.downloadMbps > 0) {
+                logger(Log.DEBUG, "$logPrefix Valid gateway: capacity=${announcement.capacity.downloadMbps}Mbps, latency=${announcement.latency.averageMs}ms")
+                // TODO: Store in gateway registry for routing decisions
+            }
+        } catch (e: Exception) {
+            logger(Log.WARN, "$logPrefix Error processing gateway announcement: ${e.message}")
+        }
+    }
+
     fun getCurrentState(): LocalNodeState {
         return currentNodeState
     }
@@ -608,4 +636,45 @@ abstract class VirtualNode(
     internal fun getOriginatingMessageManager() = originatingMessageManager
 
     internal open fun getMeshRoleManager(): MeshRoleManager? = null
+    
+    /**
+     * Safe logging method with comprehensive metadata support
+     * Maintains consistency with enterprise logging standards across the project
+     */
+    protected fun safeLog(
+        level: LogLevel,
+        category: String,
+        message: String,
+        metadata: Map<String, String> = emptyMap(),
+        throwable: Throwable? = null
+    ) {
+        try {
+            // Try to use BetaTestLogger if available
+            val betaLogger = (logger as? BetaTestLogger)
+            if (betaLogger != null) {
+                betaLogger.log(level, category, message, metadata, throwable)
+            } else {
+                // Fallback to standard logger with formatted message
+                val formattedMessage = if (metadata.isNotEmpty()) {
+                    "$message [${metadata.map { "${it.key}=${it.value}" }.joinToString(", ")}]"
+                } else {
+                    message
+                }
+                
+                when (level) {
+                    LogLevel.ERROR -> logger(Log.ERROR, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.WARN -> logger(Log.WARN, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.INFO -> logger(Log.INFO, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.DEBUG -> logger(Log.DEBUG, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.DETAILED -> logger(Log.DEBUG, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.FULL -> logger(Log.VERBOSE, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.BASIC -> logger(Log.INFO, "[$category] $formattedMessage", throwable as? Exception)
+                    LogLevel.DISABLED -> { /* No logging */ }
+                }
+            }
+        } catch (e: Exception) {
+            // Fallback to basic Android logging if all else fails
+            Log.e("VirtualNode", "Logging failed: ${e.message}, original message: $message", e)
+        }
+    }
 }

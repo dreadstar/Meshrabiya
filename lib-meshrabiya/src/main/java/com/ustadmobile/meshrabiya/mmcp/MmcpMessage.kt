@@ -4,8 +4,8 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
 
 /**
- * Meshrabiya Mesh Control Protocol message (MMCP) is like ICMP for the mesh network. Used to send
- * routing info, pings, etc.
+ * Enhanced Meshrabiya Mesh Control Protocol message (MMCP) using the new gossip protocol.
+ * Replaces the old message structure with comprehensive support for all mesh network features.
  */
 sealed class MmcpMessage(
     val what: Byte,
@@ -60,27 +60,32 @@ sealed class MmcpMessage(
         return result
     }
 
-
     companion object {
-
+        // Enhanced message type constants
         const val WHAT_PING = 1.toByte()
-
         const val WHAT_PONG = 2.toByte()
-
         const val WHAT_ACK = 4.toByte()
-
         const val WHAT_HOTSPOT_REQUEST = 5.toByte()
-
         const val WHAT_HOTSPOT_RESPONSE = 6.toByte()
-
         const val WHAT_ORIGINATOR = 7.toByte()
+        
+        // New enhanced message types
+        const val WHAT_NODE_ANNOUNCEMENT = 8.toByte()
+        const val WHAT_SERVICE_ADVERTISEMENT = 9.toByte()
+        const val WHAT_COMPUTE_TASK_REQUEST = 10.toByte()
+        const val WHAT_I2P_ROUTER_ADVERTISEMENT = 11.toByte()
+        const val WHAT_STORAGE_ADVERTISEMENT = 12.toByte()
+        const val WHAT_QUORUM_PROPOSAL = 13.toByte()
+        const val WHAT_HEARTBEAT = 14.toByte()
+        const val WHAT_EMERGENCY_BROADCAST = 15.toByte()
+        const val WHAT_NETWORK_METRICS = 16.toByte()
+        const val WHAT_GATEWAY_ANNOUNCEMENT = 17.toByte()
 
         const val MMCP_HEADER_LEN = 5 //1 byte what, 4 bytes message id
 
         fun fromVirtualPacket(
             packet: VirtualPacket
         ): MmcpMessage {
-
             return fromBytes(
                 byteArray = packet.data,
                 offset = packet.payloadOffset,
@@ -99,12 +104,20 @@ sealed class MmcpMessage(
                 WHAT_ACK -> MmcpAck.fromBytes(byteArray, offset, len)
                 WHAT_HOTSPOT_REQUEST -> MmcpHotspotRequest.fromBytes(byteArray, offset, len)
                 WHAT_HOTSPOT_RESPONSE -> MmcpHotspotResponse.fromBytes(byteArray, offset, len)
-                WHAT_ORIGINATOR -> MmcpOriginatorMessage.fromBytes(byteArray, offset, len)
+                // WHAT_ORIGINATOR is deprecated, use WHAT_NODE_ANNOUNCEMENT instead
+                WHAT_NODE_ANNOUNCEMENT -> MmcpNodeAnnouncement.fromBytes(byteArray, offset, len)
+                WHAT_SERVICE_ADVERTISEMENT -> MmcpServiceAdvertisement.fromBytes(byteArray, offset, len)
+                WHAT_COMPUTE_TASK_REQUEST -> MmcpComputeTaskRequest.fromBytes(byteArray, offset, len)
+                WHAT_I2P_ROUTER_ADVERTISEMENT -> MmcpI2PRouterAdvertisement.fromBytes(byteArray, offset, len)
+                WHAT_STORAGE_ADVERTISEMENT -> MmcpStorageAdvertisement.fromBytes(byteArray, offset, len)
+                WHAT_QUORUM_PROPOSAL -> MmcpQuorumProposal.fromBytes(byteArray, offset, len)
+                WHAT_HEARTBEAT -> MmcpHeartbeat.fromBytes(byteArray, offset, len)
+                WHAT_EMERGENCY_BROADCAST -> MmcpEmergencyBroadcast.fromBytes(byteArray, offset, len)
+                WHAT_NETWORK_METRICS -> MmcpNetworkMetrics.fromBytes(byteArray, offset, len)
+                WHAT_GATEWAY_ANNOUNCEMENT -> MmcpGatewayAnnouncement.fromBytes(byteArray, offset, len)
                 else -> throw IllegalArgumentException("Mmcp: Invalid what: $what")
             }
         }
-
-
 
         fun mmcpHeaderAndPayloadFromBytes(
             byteArray: ByteArray,
@@ -125,10 +138,7 @@ sealed class MmcpMessage(
             System.arraycopy(payload, 0, byteArray, MMCP_HEADER_LEN, payload.size)
             return byteArray
         }
-
-
     }
-
 }
 
 
