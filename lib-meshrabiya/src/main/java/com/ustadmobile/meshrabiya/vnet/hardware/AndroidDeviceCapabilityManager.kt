@@ -488,10 +488,10 @@ class AndroidDeviceCapabilityManager(
             return
         }
         
+        isMonitoringActive = true
+        betaTestLogger.log(LogLevel.INFO, TAG, "Started hardware monitoring with ${intervalMs}ms interval")
+        
         monitoringJob = CoroutineScope(Dispatchers.IO).launch {
-            isMonitoringActive = true
-            betaTestLogger.log(LogLevel.INFO, TAG, "Started hardware monitoring with ${intervalMs}ms interval")
-            
             while (isActive && isMonitoringActive) {
                 try {
                     // Update connectivity history
