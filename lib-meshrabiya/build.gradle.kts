@@ -21,10 +21,31 @@ android {
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
+            isTestCoverageEnabled = true
         }
         getByName("release") {
             isMinifyEnabled = false
+            isTestCoverageEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            
+            // Configure test options for release builds
+            testProguardFiles("test-proguard-rules.pro")
+        }
+    }
+    
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+            
+            all {
+                it.jvmArgs("-XX:+EnableDynamicAgentLoading")
+                it.systemProperty("mockito.verbose", "true")
+                it.testLogging {
+                    events("passed", "skipped", "failed")
+                    exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+                }
+            }
         }
     }
 
@@ -40,7 +61,20 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
-        testImplementation("junit:junit:4.13.2")
+    
+    // Test dependencies - needed for both debug and release tests
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.5.0")
+    testImplementation("org.mockito:mockito-inline:5.2.0")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.1.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("androidx.test:core:1.5.0")
+    testImplementation("androidx.test.ext:junit:1.1.5")
+    testImplementation("org.robolectric:robolectric:4.10.3")
+    
+    // Ensure ByteBuddy is available for Mockito
+    testImplementation("net.bytebuddy:byte-buddy:1.14.15")
+    testImplementation("net.bytebuddy:byte-buddy-agent:1.14.15")
 }
 
 // Configure JaCoCo test coverage for Meshrabiya module
