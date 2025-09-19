@@ -1,0 +1,80 @@
+package com.ustadmobile.meshrabiya.service
+
+import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
+import kotlinx.serialization.Serializable
+import java.net.InetAddress
+
+/**
+ * Enhanced originator message that includes service announcements
+ * Extends existing BATMAN protocol with service discovery capability
+ */
+@Serializable
+data class ServiceOriginatorMessage(
+    val originalMessage: ByteArray, // Existing originator message
+    val serviceAnnouncements: List<ServiceAnnouncement> = emptyList(),
+    val deviceCapabilities: DeviceCapabilities,
+    val timestamp: Long = System.currentTimeMillis()
+) : MmcpMessage {
+    
+    override fun toString(): String {
+        return "ServiceOriginatorMessage(services=${serviceAnnouncements.size}, capabilities=$deviceCapabilities)"
+    }
+}
+
+@Serializable
+data class ServiceAnnouncement(
+    val serviceId: String,
+    val serviceType: ServiceType,
+    val version: String,
+    val sizeKB: Int,
+    val capabilities: List<String>,
+    val resourceRequirements: ResourceRequirements,
+    val executionProfile: ExecutionProfile
+) {
+    enum class ServiceType {
+        PYTHON, JAVA, ML_KIT_NATIVE, ML_KIT_CUSTOM, LITERT, STORAGE, WORKFLOW
+    }
+}
+
+@Serializable
+data class DeviceCapabilities(
+    val memoryMB: Int,
+    val storageMB: Int,
+    val batteryLevel: Float,
+    val isCharging: Boolean,
+    val cpuCores: Int,
+    val meshHops: Int,
+    val deviceClass: DeviceClass,
+    
+    // ML capabilities (three-tier)
+    val mlKitFeatures: List<String> = emptyList(),
+    val mlKitCustomSupport: Boolean = false,
+    val hasLiteRT: Boolean = false,
+    val hasGPUAcceleration: Boolean = false,
+    val hasNNAPI: Boolean = false
+) {
+    enum class DeviceClass {
+        CONSUMER,      // Uses services only
+        ML_BASIC,      // Basic ML Kit + small LiteRT models
+        ML_CAPABLE,    // ML Kit + custom models + medium LiteRT
+        ML_POWERHOUSE  // All ML tiers + large models
+    }
+}
+
+@Serializable
+data class ResourceRequirements(
+    val minMemoryMB: Int,
+    val minStorageMB: Int,
+    val gpuAcceleration: String = "none", // none, preferred, required
+    val networkAccess: Boolean = false,
+    val batteryIntensive: Boolean = false
+)
+
+@Serializable
+data class ExecutionProfile(
+    val averageExecutionTimeMs: Int,
+    val maxExecutionTimeMs: Int = 30000,
+    val deterministic: Boolean = true,
+    val concurrent: Boolean = true,
+    val idempotent: Boolean = true
+)

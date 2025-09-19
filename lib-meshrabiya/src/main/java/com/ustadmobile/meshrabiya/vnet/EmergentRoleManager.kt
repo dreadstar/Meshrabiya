@@ -100,7 +100,8 @@ class EmergentRoleManager(
     private val meshRoleManager: MeshRoleManager,
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
-    private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
+    private val deviceCapabilityManager: DeviceCapabilityManager? = null, // Hardware metrics collector
+    private val adaptivePowerManager: com.ustadmobile.meshrabiya.service.power.AdaptivePowerManager? = null // Power management integration
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
     
@@ -108,6 +109,21 @@ class EmergentRoleManager(
     private val hardwareManager: DeviceCapabilityManager by lazy {
         deviceCapabilityManager ?: AndroidDeviceCapabilityManager(context, logger ?: BetaTestLogger.getInstance(context))
     }
+    
+    // Power constraints tracking
+    private val _powerConstraints = MutableStateFlow(PowerConstraints())
+    val powerConstraints: StateFlow<PowerConstraints> = _powerConstraints.asStateFlow()
+    
+    @Serializable
+    data class PowerConstraints(
+        val canProvideMLInference: Boolean = true,
+        val canProvideStorage: Boolean = true,
+        val canRelayTraffic: Boolean = true,
+        val thermalState: String = "COOL",
+        val batteryLevel: Int = 100,
+        val powerSavingMode: String = "BALANCED",
+        val lastUpdated: Long = System.currentTimeMillis()
+    )
     
     private fun safeLog(level: LogLevel, message: String, throwable: Throwable? = null) {
         try {
@@ -147,7 +163,10 @@ class EmergentRoleManager(
         currentRoles: Set<MeshRole> = currentMeshRoles.value
     ): RoleTransitionPlan {
         
-        val targetRoles = calculateTargetRoles(nodeCapabilities, meshIntelligence)
+        // Apply power constraints to capabilities
+        val constrainedCapabilities = applyPowerConstraints(nodeCapabilities)
+        
+        val targetRoles = calculateTargetRoles(constrainedCapabilities, meshIntelligence)
         val transitions = planGracefulTransitions(currentRoles, targetRoles)
         
         return RoleTransitionPlan(
@@ -927,6 +946,139 @@ class EmergentRoleManager(
             safeLog(LogLevel.INFO, "Started hardware monitoring for role optimization")
         } catch (e: Exception) {
             safeLog(LogLevel.BASIC, "Failed to start hardware monitoring: ${e.message}")
+        }
+    }
+    
+    /**
+     * POWER MANAGEMENT INTEGRATION
+     * 
+     * Updates power constraints that affect role capabilities
+     */
+    suspend fun updatePowerConstraints(
+        canProvideMLInference: Boolean,
+        canProvideStorage: Boolean,
+        canRelayTraffic: Boolean,
+        thermalState: String,
+        batteryLevel: Int,
+        powerSavingMode: String
+    ) {
+        val newConstraints = PowerConstraints(
+            canProvideMLInference = canProvideMLInference,
+            canProvideStorage = canProvideStorage,
+            canRelayTraffic = canRelayTraffic,
+            thermalState = thermalState,
+            batteryLevel = batteryLevel,
+            powerSavingMode = powerSavingMode,
+            lastUpdated = System.currentTimeMillis()
+        )
+        
+        val oldConstraints = _powerConstraints.value
+        _powerConstraints.value = newConstraints
+        
+        safeLog(LogLevel.DEBUG, "Power constraints updated: ML=$canProvideMLInference, Storage=$canProvideStorage, Relay=$canRelayTraffic, Thermal=$thermalState, Battery=$batteryLevel%, Mode=$powerSavingMode")
+        
+        // If constraints have significantly changed, re-evaluate roles
+        if (shouldReEvaluateRoles(oldConstraints, newConstraints)) {
+            safeLog(LogLevel.INFO, "Power constraints changed significantly, re-evaluating roles")
+            // Trigger role re-evaluation
+            val currentCapabilities = getCurrentCapabilities()
+            val constrainedCapabilities = applyPowerConstraints(currentCapabilities)
+            val newPlan = determineOptimalRoles(constrainedCapabilities)
+            
+            // Apply the new plan if it's beneficial
+            if (newPlan.priority >= RoleTransitionPriority.MODERATE) {
+                executeRoleTransition(newPlan)
+            }
+        }
+    }
+    
+    /**
+     * Apply power constraints to node capabilities
+     */
+    private fun applyPowerConstraints(capabilities: NodeCapabilitySnapshot): NodeCapabilitySnapshot {
+        val constraints = _powerConstraints.value
+        
+        return capabilities.copy(
+            // Disable ML capabilities if power constraints don't allow
+            hasMLCapabilities = capabilities.hasMLCapabilities && constraints.canProvideMLInference,
+            
+            // Reduce storage allocation if power constraints limit storage
+            storageSpaceAvailableGB = if (constraints.canProvideStorage) {
+                capabilities.storageSpaceAvailableGB
+            } else {
+                0.0f // No storage offered if power doesn't allow
+            },
+            
+            // Reduce network capabilities if relay is disabled
+            networkBandwidthMbps = if (constraints.canRelayTraffic) {
+                capabilities.networkBandwidthMbps
+            } else {
+                capabilities.networkBandwidthMbps * 0.5f // Reduce bandwidth for local traffic only
+            },
+            
+            // Adjust performance based on thermal state
+            cpuPerformanceRatio = capabilities.cpuPerformanceRatio * getThermalPerformanceMultiplier(constraints.thermalState),
+            
+            // Adjust based on battery level
+            batteryLevel = constraints.batteryLevel.toFloat(),
+            
+            // Mark as power constrained
+            additionalMetadata = capabilities.additionalMetadata + mapOf(
+                "powerConstrained" to (constraints.powerSavingMode != "FULL_PERFORMANCE"),
+                "thermalState" to constraints.thermalState,
+                "powerSavingMode" to constraints.powerSavingMode
+            )
+        )
+    }
+    
+    /**
+     * Determine if role re-evaluation is needed based on power constraint changes
+     */
+    private fun shouldReEvaluateRoles(oldConstraints: PowerConstraints, newConstraints: PowerConstraints): Boolean {
+        return oldConstraints.canProvideMLInference != newConstraints.canProvideMLInference ||
+               oldConstraints.canProvideStorage != newConstraints.canProvideStorage ||
+               oldConstraints.canRelayTraffic != newConstraints.canRelayTraffic ||
+               getThermalSeverity(oldConstraints.thermalState) != getThermalSeverity(newConstraints.thermalState) ||
+               getBatteryCategory(oldConstraints.batteryLevel) != getBatteryCategory(newConstraints.batteryLevel)
+    }
+    
+    /**
+     * Get thermal performance multiplier based on thermal state
+     */
+    private fun getThermalPerformanceMultiplier(thermalState: String): Float {
+        return when (thermalState.uppercase()) {
+            "COOL" -> 1.0f           // Full performance
+            "WARM" -> 0.9f           // 10% reduction
+            "HOT" -> 0.7f            // 30% reduction
+            "OVERHEATING" -> 0.5f    // 50% reduction
+            "CRITICAL" -> 0.2f       // 80% reduction
+            else -> 0.8f             // Default conservative
+        }
+    }
+    
+    /**
+     * Get thermal severity level for comparison
+     */
+    private fun getThermalSeverity(thermalState: String): Int {
+        return when (thermalState.uppercase()) {
+            "COOL" -> 0
+            "WARM" -> 1
+            "HOT" -> 2
+            "OVERHEATING" -> 3
+            "CRITICAL" -> 4
+            else -> 2 // Default to moderate
+        }
+    }
+    
+    /**
+     * Get battery category for comparison
+     */
+    private fun getBatteryCategory(batteryLevel: Int): Int {
+        return when {
+            batteryLevel >= 80 -> 3  // High
+            batteryLevel >= 50 -> 2  // Medium
+            batteryLevel >= 20 -> 1  // Low
+            else -> 0                // Critical
         }
     }
     
