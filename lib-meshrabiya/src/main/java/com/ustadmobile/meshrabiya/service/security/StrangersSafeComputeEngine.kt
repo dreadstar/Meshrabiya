@@ -9,6 +9,8 @@ import kotlinx.serialization.Serializable
 import java.io.File
 import java.security.SecureRandom
 
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+
 /**
  * STRANGERS-SAFE COMPUTE CLOUD
  * 
@@ -24,8 +26,12 @@ class StrangersSafeComputeEngine(private val context: Context) {
     companion object {
         private const val TAG = "StrangersSafeCompute"
         private const val COMPUTE_PROCESS_TIMEOUT = 30_000L // 30 seconds max
-        private const val MAX_MEMORY_MB = 64 // 64MB RAM limit
+    private const val MAX_MEMORY_MB = 64L // 64MB RAM limit
         private const val MAX_CPU_PERCENT = 25 // 25% CPU max
+
+        // Library-level helper to provide current device onion address for nested classes
+        // App module may override or call different APIs if needed.
+        fun getCurrentDeviceOnion(): String = "device.onion"
     }
     
     /**
@@ -139,6 +145,8 @@ class StrangersSafeComputeEngine(private val context: Context) {
             return true // Placeholder
         }
     }
+
+    // (getCurrentDeviceOnion is provided by the companion object above)
     
     /**
      * ECONOMIC INCENTIVE LAYER
@@ -186,7 +194,7 @@ class StrangersSafeComputeEngine(private val context: Context) {
          */
         fun updateReputation(
             executorOnion: String,
-            executionProof: ExecutionProof,
+            executionProof: StrangersTrustEngine.ExecutionProof,
             verificationResult: Boolean
         ): Double {
             
@@ -332,7 +340,7 @@ class StrangersSafeComputeEngine(private val context: Context) {
         return ExecutionResult(output = ByteArray(0))
     }
     
-    private suspend fun monitorContainerExecution(container: MicroContainer): ExecutionTrace {
+    private suspend fun monitorContainerExecution(container: MicroContainer): StrangersTrustEngine.ExecutionTrace {
         // Monitor resource usage in real-time
         // Kill if limits exceeded
         
@@ -374,7 +382,6 @@ class StrangersSafeComputeEngine(private val context: Context) {
     private fun cleanupContainer(container: MicroContainer) {}
     private fun generateContainerId(): String = "container_${System.currentTimeMillis()}"
     private fun calculateHash(data: ByteArray): String = "hash_placeholder"
-    private fun getCurrentDeviceOnion(): String = "device.onion"
 }
 
 /**
@@ -416,6 +423,7 @@ class DistributedServiceLibrary {
         val serviceBundleHash: String,      // SHA-256 of service bundle
         val signature: String,              // Ed25519 signature of above fields
         val categories: List<String>,       // ML, Crypto, Image Processing, etc.
+        @kotlinx.serialization.Contextual
         val resourceRequirements: ResourceRequirements,
         val auditReports: List<AuditReport> // Third-party security audits
     )
@@ -456,8 +464,10 @@ class DistributedServiceLibrary {
             val allServices = mutableListOf<ServiceLibraryEntry>()
             
             // Query multiple I2P registries in parallel
-            val registryResults = knownRegistries.map { registry ->
-                async { queryI2PRegistry(registry, categories) }
+            val registryResults = kotlinx.coroutines.coroutineScope {
+                knownRegistries.map { registry ->
+                    async { queryI2PRegistry(registry, categories) }
+                }
             }
             
             // Collect results from all registries

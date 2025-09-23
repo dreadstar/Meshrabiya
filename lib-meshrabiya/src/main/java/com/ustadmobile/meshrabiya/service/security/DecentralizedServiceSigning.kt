@@ -8,7 +8,15 @@ import java.security.Signature
 import java.security.SecureRandom
 import java.util.Base64
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Contextual
 import kotlinx.serialization.json.Json
+import android.content.Context
+
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
+import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 
 /**
  * DECENTRALIZED SERVICE SIGNING using Ed25519 keys
@@ -56,8 +64,25 @@ class DecentralizedServiceSigning {
         val signature: SignatureInfo,
         val serviceType: String,
         val capabilities: List<String>,
-        val resourceRequirements: ResourceRequirements,
-        val files: List<FileHash> // Hash of each file for integrity
+        @Contextual val resourceRequirements: ResourceRequirements,
+        val files: List<FileHash>, // Hash of each file for integrity
+        val builtin: Boolean = false, // True for built-in functions, disables signature/author/files
+        val inputs: List<InputDef> = emptyList(),
+        val outputs: List<OutputDef> = emptyList()
+    )
+    
+    @Serializable
+    data class InputDef(
+        val name: String,
+        val type: String,
+        val description: String? = null
+    )
+    
+    @Serializable
+    data class OutputDef(
+        val name: String,
+        val type: String,
+        val description: String? = null
     )
     
     @Serializable
@@ -266,7 +291,28 @@ class DecentralizedServiceSigning {
     private fun extractZipBundle(bundleBytes: ByteArray): Pair<Map<String, ByteArray>, ServiceManifest> {
         // Extract ZIP and parse manifest.json
         // Implementation would use Java's ZipInputStream
-        return Pair(emptyMap(), ServiceManifest("", "", "", AuthorInfo("", ""), SignatureInfo("", "", 0L), "", emptyList(), ResourceRequirements(0, 0), emptyList()))
+            return Pair(
+                emptyMap(),
+                ServiceManifest(
+                    serviceId = "",
+                    name = "",
+                    version = "",
+                    author = AuthorInfo(onionAddress = "", publicKeyBase64 = ""),
+                    signature = SignatureInfo(
+                        algorithm = "Ed25519",
+                        signatureBase64 = "",
+                        signedHash = "",
+                        timestamp = 0L
+                    ),
+                    serviceType = "",
+                    capabilities = emptyList(),
+                    resourceRequirements = ResourceRequirements(minMemoryMB = 0, minStorageMB = 0),
+                    files = emptyList(),
+                    builtin = false,
+                    inputs = emptyList(),
+                    outputs = emptyList()
+                )
+            )
     }
     
     private fun getAuthorReputation(onionAddress: String): Float {
@@ -349,17 +395,23 @@ class MeshServiceDistribution(
      * 4. Automatic replication to nearby nodes
      */
     
-    fun announceService(signedBundle: ByteArray, manifest: ServiceManifest) {
+    fun announceService(signedBundle: ByteArray, manifest: DecentralizedServiceSigning.ServiceManifest) {
         // Add service announcement to originator message
-        val serviceAnnouncement = ServiceAnnouncement(
-            serviceId = manifest.serviceId,
-            serviceType = ServiceAnnouncement.ServiceType.valueOf(manifest.serviceType.uppercase()),
-            version = manifest.version,
-            sizeKB = signedBundle.size / 1024,
-            capabilities = manifest.capabilities,
-            resourceRequirements = manifest.resourceRequirements,
-            executionProfile = ExecutionProfile(2000) // Default execution time
-        )
+            val serviceAnnouncement = ServiceAnnouncement(
+                serviceId = manifest.serviceId,
+                serviceType = ServiceAnnouncement.ServiceType.valueOf(manifest.serviceType.uppercase()),
+                version = manifest.version,
+                sizeKB = signedBundle.size / 1024,
+                capabilities = manifest.capabilities,
+                resourceRequirements = manifest.resourceRequirements,
+                executionProfile = ExecutionProfile(
+                    profileName = "mesh-distributed-service",
+                    cpuCores = 1,
+                    gpuEnabled = false,
+                    memoryMB = 0,
+                    storageMB = signedBundle.size / 1024
+                )
+            )
         
         // This would integrate with existing service announcement system
         meshNode.announceService(serviceAnnouncement, signedBundle)

@@ -657,14 +657,22 @@ abstract class VirtualNode(
         level: LogLevel,
         category: String,
         message: String,
-        metadata: Map<String, String> = emptyMap(),
+        metadata: Map<String, String?> = emptyMap(),
         throwable: Throwable? = null
     ) {
         try {
             // Try to use BetaTestLogger if available
             val betaLogger = (logger as? BetaTestLogger)
             if (betaLogger != null) {
-                betaLogger.log(level, category, message, metadata, throwable)
+                // BetaTestLogger expects non-null metadata values (Map<String, String>).
+                // Convert nullable values to empty string to avoid type mismatch.
+                val nonNullMetadata: Map<String, String> = if (metadata.isEmpty()) {
+                    emptyMap()
+                } else {
+                    metadata.mapValues { it.value ?: "" }
+                }
+
+                betaLogger.log(level, category, message, nonNullMetadata, throwable)
             } else {
                 // Fallback to standard logger with formatted message
                 val formattedMessage = if (metadata.isNotEmpty()) {

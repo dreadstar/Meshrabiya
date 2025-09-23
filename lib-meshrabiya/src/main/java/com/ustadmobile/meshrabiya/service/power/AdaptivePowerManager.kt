@@ -1,10 +1,11 @@
+
 package com.ustadmobile.meshrabiya.service.power
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
+import android.os.BatteryManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
@@ -258,7 +259,19 @@ class AdaptivePowerManager(
         try {
             val batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).toFloat()
             val isCharging = batteryManager.isCharging
-            val batteryTemp = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_TEMPERATURE) / 10.0f // Convert from 1/10 degree C
+            val batteryTempProp = try {
+                BatteryManager::class.java.getField("BATTERY_PROPERTY_TEMPERATURE").getInt(null)
+            } catch (e: Exception) {
+                // Fallback to common constant value index (may not be present on older APIs)
+                -1
+            }
+
+            val batteryTemp = if (batteryTempProp >= 0) {
+                batteryManager.getIntProperty(batteryTempProp) / 10.0f
+            } else {
+                // If property not available, estimate or default
+                25.0f
+            }
             
             val currentState = _powerState.value
             val newState = currentState.copy(

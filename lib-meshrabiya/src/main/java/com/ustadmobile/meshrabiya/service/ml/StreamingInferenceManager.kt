@@ -1,7 +1,12 @@
+
 package com.ustadmobile.meshrabiya.service.ml
 
+import kotlinx.coroutines.withTimeout
+import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import android.util.Log
-import com.ustadmobile.meshrabiya.service.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -226,7 +231,3 @@ interface StreamingCapableNode {
     fun sendToNode(nodeAddress: Int, data: ByteArray)
 }
 
-// Placeholder timeout function
-suspend fun <T> withTimeout(timeoutMs: Long, block: suspend () -> T): T {
-    return kotlinx.coroutines.withTimeout(timeoutMs, block)
-}

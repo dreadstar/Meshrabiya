@@ -1,8 +1,8 @@
 package com.ustadmobile.meshrabiya.service
 
-import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import kotlinx.serialization.Serializable
-import java.net.InetAddress
 
 /**
  * Enhanced originator message that includes service announcements
@@ -14,8 +14,7 @@ data class ServiceOriginatorMessage(
     val serviceAnnouncements: List<ServiceAnnouncement> = emptyList(),
     val deviceCapabilities: DeviceCapabilities,
     val timestamp: Long = System.currentTimeMillis()
-) : MmcpMessage {
-    
+) {
     override fun toString(): String {
         return "ServiceOriginatorMessage(services=${serviceAnnouncements.size}, capabilities=$deviceCapabilities)"
     }

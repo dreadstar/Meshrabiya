@@ -609,8 +609,10 @@ class SandboxWithStorageAccess(
         
         try {
             // Start storage request handler
-            val storageHandler = async {
-                handleStorageRequests(sandbox, taskId)
+            val storageHandler = kotlinx.coroutines.coroutineScope {
+                async {
+                    handleStorageRequests(sandbox, taskId)
+                }
             }
             
             // Execute main task

@@ -1,17 +1,19 @@
 package com.ustadmobile.meshrabiya.service.ml
-
-import android.content.Context
 import android.util.Log
+import android.content.Context
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.ai.edge.litert.CompiledModel
+import com.google.ai.edge.litert.Accelerator
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.util.concurrent.ConcurrentHashMap
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
 
 /**
  * Unified ML service manager supporting all three ML tiers:
@@ -29,7 +31,7 @@ class UnifiedMLServiceManager(
     }
     
     // Tier 1: ML Kit Native Services (always available)
-    private val mlKitNativeServices = ConcurrentHashMap<String, MLKitNativeWrapper>()
+    private val mlKitNativeServices = ConcurrentHashMap<String, MLServiceWrapper>()
     
     // Tier 2: ML Kit Custom Models (Firebase or bundled)
     private val mlKitCustomServices = ConcurrentHashMap<String, MLKitCustomWrapper>()
@@ -104,8 +106,8 @@ class UnifiedMLServiceManager(
     private fun initializeMLKitNativeServices() {
         // Tier 1: Always available ML Kit services
         
-        // Text Recognition (always available)
-        mlKitNativeServices["text-recognition"] = TextRecognitionWrapper()
+    // Text Recognition (always available)
+    mlKitNativeServices["text-recognition"] = TextRecognitionWrapper()
         
         // Face Detection (if sufficient memory)
         if (deviceCapabilities.memoryMB > 2000) {
@@ -128,13 +130,13 @@ class UnifiedMLServiceManager(
         if (deviceCapabilities.memoryMB > 3000) {
             // Custom image labeling
             mlKitCustomServices["custom-image-classifier"] = 
-                CustomImageLabelingWrapper("models/custom_classifier.tflite")
+                MLKitCustomWrapper("custom-image-classifier", "models/custom_classifier.tflite")
         }
-        
+
         if (deviceCapabilities.memoryMB > 4000) {
-            // Custom object detection  
+            // Custom object detection
             mlKitCustomServices["custom-object-detector"] =
-                CustomObjectDetectionWrapper("models/custom_detector.tflite")
+                MLKitCustomWrapper("custom-object-detector", "models/custom_detector.tflite")
         }
         
         Log.i(TAG, "Initialized ${mlKitCustomServices.size} ML Kit custom services")
@@ -147,40 +149,32 @@ class UnifiedMLServiceManager(
         // Lightweight models for all LiteRT-capable devices
         if (deviceCapabilities.memoryMB > 1000) {
             literTServices["sentiment-analyzer"] = 
-                LiteRTWrapper("models/sentiment_analysis.tflite", createInterpreterOptions())
+                LiteRTWrapper(context, "models/sentiment_analysis.tflite", createCompiledModelOptions())
         }
         
         // Medium models for capable devices
         if (deviceCapabilities.memoryMB > 3000) {
             literTServices["named-entity-recognizer"] =
-                LiteRTWrapper("models/ner_model.tflite", createInterpreterOptions())
+                LiteRTWrapper(context, "models/ner_model.tflite", createCompiledModelOptions())
         }
         
         // Large models for powerhouse devices
         if (deviceCapabilities.memoryMB > 6000) {
             literTServices["document-summarizer"] =
-                LiteRTWrapper("models/summarization_large.tflite", createInterpreterOptions())
+                LiteRTWrapper(context, "models/summarization_large.tflite", createCompiledModelOptions())
         }
         
         Log.i(TAG, "Initialized ${literTServices.size} LiteRT services")
     }
     
-    private fun createInterpreterOptions(): Interpreter.Options {
-        val options = Interpreter.Options()
-        
-        // Hardware acceleration if available
-        if (deviceCapabilities.hasGPUAcceleration) {
-            options.addDelegate(GpuDelegate())
+    private fun createCompiledModelOptions(): CompiledModel.Options {
+        // Choose accelerator based on device capabilities
+        val accelerator = when {
+            deviceCapabilities.hasGPUAcceleration -> Accelerator.GPU
+            else -> Accelerator.CPU
         }
-        
-        if (deviceCapabilities.hasNNAPI) {
-            options.addDelegate(NnApiDelegate())
-        }
-        
-        // Set threads based on CPU cores
-        options.setNumThreads(minOf(4, deviceCapabilities.cpuCores))
-        
-        return options
+
+        return CompiledModel.Options(accelerator)
     }
     
     private suspend fun processMLKitNative(serviceId: String, input: MLServiceInput): MLServiceResult {
@@ -212,22 +206,21 @@ class UnifiedMLServiceManager(
 }
 
 // Base interface for ML service wrappers
-interface MLServiceWrapper {
-    suspend fun process(input: MLServiceInput): MLServiceResult
-    fun getServiceAnnouncement(): ServiceAnnouncement
-}
+// ...existing code...
 
 // Tier 1: ML Kit Native Implementation
 class TextRecognitionWrapper : MLServiceWrapper {
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    
+    companion object { private const val TAG = "TextRecognitionWrapper" }
+
     override suspend fun process(input: MLServiceInput): MLServiceResult {
         return try {
-            val image = InputImage.fromBitmap(input.bitmap, 0)
+            val bitmap = input.bitmap ?: return MLServiceResult.error("No bitmap provided")
+            val image = InputImage.fromBitmap(bitmap, 0)
             val result = recognizer.process(image).await()
-            
-            MLServiceResult.success(mapOf(
-                "text" to result.text,
+
+            MLServiceResult.success(mapOf<String, Any>(
+                "text" to (result.text ?: ""),
                 "confidence" to 0.95f // ML Kit doesn't provide confidence, use default
             ))
         } catch (e: Exception) {
@@ -247,8 +240,11 @@ class TextRecognitionWrapper : MLServiceWrapper {
                 minStorageMB = 0
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 150,
-                maxExecutionTimeMs = 5000
+                profileName = "native-model",
+                cpuCores = 1,
+                gpuEnabled = false,
+                memoryMB = 150,
+                storageMB = 0
             )
         )
     }
@@ -273,8 +269,11 @@ class FaceDetectionWrapper : MLServiceWrapper {
                 minStorageMB = 0
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 500,
-                maxExecutionTimeMs = 10000
+                profileName = "face-detection",
+                cpuCores = 1,
+                gpuEnabled = false,
+                memoryMB = 500,
+                storageMB = 0
             )
         )
     }
@@ -297,8 +296,11 @@ class ObjectDetectionWrapper : MLServiceWrapper {
                 minStorageMB = 0
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 800,
-                maxExecutionTimeMs = 15000
+                profileName = "object-detection",
+                cpuCores = 2,
+                gpuEnabled = false,
+                memoryMB = 800,
+                storageMB = 0
             )
         )
     }
@@ -306,7 +308,7 @@ class ObjectDetectionWrapper : MLServiceWrapper {
 
 class TranslationWrapper : MLServiceWrapper {
     override suspend fun process(input: MLServiceInput): MLServiceResult {
-        return MLServiceResult.success(mapOf("translated_text" to input.text))
+        return MLServiceResult.success(mapOf<String, Any>("translated_text" to (input.text ?: "")))
     }
     
     override fun getServiceAnnouncement(): ServiceAnnouncement {
@@ -321,8 +323,11 @@ class TranslationWrapper : MLServiceWrapper {
                 minStorageMB = 0
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 1200,
-                maxExecutionTimeMs = 20000
+                profileName = "translation",
+                cpuCores = 2,
+                gpuEnabled = false,
+                memoryMB = 1200,
+                storageMB = 0
             )
         )
     }
@@ -347,8 +352,11 @@ class CustomImageLabelingWrapper(private val modelPath: String) : MLServiceWrapp
                 minStorageMB = 15 * 1024
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 1500,
-                maxExecutionTimeMs = 25000
+                profileName = "custom-image-classifier",
+                cpuCores = 2,
+                gpuEnabled = false,
+                memoryMB = 1500,
+                storageMB = 15 * 1024
             )
         )
     }
@@ -371,8 +379,11 @@ class CustomObjectDetectionWrapper(private val modelPath: String) : MLServiceWra
                 minStorageMB = 35 * 1024
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 2500,
-                maxExecutionTimeMs = 30000
+                profileName = "custom-object-detector",
+                cpuCores = 2,
+                gpuEnabled = false,
+                memoryMB = 2500,
+                storageMB = 35 * 1024
             )
         )
     }
@@ -380,40 +391,71 @@ class CustomObjectDetectionWrapper(private val modelPath: String) : MLServiceWra
 
 // Tier 3: Direct LiteRT Implementation
 class LiteRTWrapper(
+    private val context: Context,
     private val modelPath: String,
-    private val options: Interpreter.Options
+    private val options: CompiledModel.Options
 ) : MLServiceWrapper {
-    
-    private var interpreter: Interpreter? = null
-    
+
+    companion object { private const val TAG = "LiteRTWrapper" }
+
+    private var compiledModel: CompiledModel? = null
+
     override suspend fun process(input: MLServiceInput): MLServiceResult {
         return try {
-            val interp = interpreter ?: loadModel()
-            
-            // Simplified inference - real implementation would handle tensor shapes
-            val result = performInference(interp, input)
-            
-            MLServiceResult.success(mapOf("result" to result))
+            val model = compiledModel ?: loadModel()
+
+            // Perform inference using LiteRT buffer-based API
+            val result = performInference(model, input)
+
+            MLServiceResult.success(mapOf<String, Any>("result" to result))
         } catch (e: Exception) {
+            Log.e(TAG, "LiteRT inference failed", e)
             MLServiceResult.error("LiteRT inference failed: ${e.message}")
         }
     }
-    
-    private fun loadModel(): Interpreter {
-        // Load model from assets or file system
-        val modelFile = context.assets.open(modelPath)
-        val modelBytes = modelFile.readBytes()
-        
-        val interpreter = Interpreter(modelBytes, options)
-        this.interpreter = interpreter
-        return interpreter
+
+    private fun loadModel(): CompiledModel {
+        try {
+            // Load model from assets
+            val modelFile = context.assets.open(modelPath)
+            val modelBytes = modelFile.readBytes()
+            modelFile.close()
+
+            val created = LitertCompiledModelFactory.tryCreateFromBytes(modelBytes, options)
+            if (created == null) {
+                throw IllegalStateException("Failed to create CompiledModel - no compatible factory available")
+            }
+            this.compiledModel = created
+            return created
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load LiteRT model: $modelPath", e)
+            throw e
+        }
     }
-    
-    private fun performInference(interpreter: Interpreter, input: MLServiceInput): Any {
-        // Placeholder - real implementation would handle proper tensor operations
-        return "inference_result"
+
+    private fun performInference(model: CompiledModel, input: MLServiceInput): Any {
+        // Create input and output buffers
+        val inputBuffers = model.createInputBuffers()
+        val outputBuffers = model.createOutputBuffers()
+
+        try {
+            // Simplified placeholder implementation
+            return "inference_result_placeholder"
+        } finally {
+            inputBuffers.forEach { it.close() }
+            outputBuffers.forEach { it.close() }
+        }
     }
-    
+
+    fun cleanup() {
+        try {
+            compiledModel?.close()
+            compiledModel = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error cleaning up LiteRT model", e)
+        }
+    }
+
     override fun getServiceAnnouncement(): ServiceAnnouncement {
         return ServiceAnnouncement(
             serviceId = modelPath.substringAfterLast("/").substringBeforeLast("."),
@@ -426,40 +468,17 @@ class LiteRTWrapper(
                 minStorageMB = 25 * 1024
             ),
             executionProfile = ExecutionProfile(
-                averageExecutionTimeMs = 2000,
-                maxExecutionTimeMs = 30000
+                profileName = modelPath.substringAfterLast("/").substringBeforeLast("."),
+                cpuCores = 1,
+                gpuEnabled = false,
+                memoryMB = 500,
+                storageMB = 25 * 1024
             )
         )
     }
 }
 
 // Data classes for ML service I/O
-data class MLServiceInput(
-    val bitmap: android.graphics.Bitmap? = null,
-    val text: String? = null,
-    val audioData: ByteArray? = null,
-    val parameters: Map<String, Any> = emptyMap()
-)
+// ...existing code...
 
-data class MLServiceResult(
-    val success: Boolean,
-    val data: Map<String, Any>? = null,
-    val error: String? = null,
-    val executionTimeMs: Long = 0,
-    val confidence: Float = 0f
-) {
-    companion object {
-        fun success(data: Map<String, Any>): MLServiceResult {
-            return MLServiceResult(success = true, data = data)
-        }
-        
-        fun error(message: String): MLServiceResult {
-            return MLServiceResult(success = false, error = message)
-        }
-    }
-}
-
-// Extension function for Task.await() - would be in a separate utils file
-suspend fun <T> com.google.android.gms.tasks.Task<T>.await(): T {
-    return kotlinx.coroutines.tasks.await(this)
-}
+// Task.await moved to TaskAwait.kt

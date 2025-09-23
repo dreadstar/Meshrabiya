@@ -22,6 +22,12 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
+// Note: model.DeviceCapabilities is a different serializable type used elsewhere.
+// This file defines a local VnetDeviceCapabilities to avoid naming collisions.
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
+
 /**
  * Data class capturing comprehensive node capabilities for role assignment
  */
@@ -43,9 +49,9 @@ data class NodeCapabilitySnapshot(
 }
 
 /**
- * Device capabilities for role assignment calculation
+ * Device capabilities for role assignment calculation local to vnet
  */
-data class DeviceCapabilities(
+data class VnetDeviceCapabilities(
     val storageAvailable: Long,
     val processingPower: Float, // 0.0-1.0
     val batteryInfo: BatteryInfo,
@@ -91,6 +97,24 @@ data class RoleTransitionPlan(
 )
 
 /**
+ * Priority levels for role transition plans
+ */
+enum class RoleTransitionPriority {
+    LOW, MODERATE, HIGH, IMMEDIATE
+}
+
+// Attach a priority to plans (computed by determineOptimalRoles)
+private fun RoleTransitionPlan.withPriority(priority: RoleTransitionPriority): RoleTransitionPlanWithPriority {
+    return RoleTransitionPlanWithPriority(this, priority)
+}
+
+data class RoleTransitionPlanWithPriority(
+    val plan: RoleTransitionPlan,
+    val priority: RoleTransitionPriority
+)
+
+
+/**
  * Enhanced emergent role manager that builds on the existing MeshRoleManager
  * Uses global mesh intelligence for smart, decentralized role assignment
  */
@@ -114,13 +138,13 @@ class EmergentRoleManager(
     private val _powerConstraints = MutableStateFlow(PowerConstraints())
     val powerConstraints: StateFlow<PowerConstraints> = _powerConstraints.asStateFlow()
     
-    @Serializable
     data class PowerConstraints(
         val canProvideMLInference: Boolean = true,
         val canProvideStorage: Boolean = true,
         val canRelayTraffic: Boolean = true,
-        val thermalState: String = "COOL",
-        val batteryLevel: Int = 100,
+        // Use neutral defaults so we don't unintentionally override real capabilities
+        val thermalState: String = "",
+        val batteryLevel: Int = -1,
         val powerSavingMode: String = "BALANCED",
         val lastUpdated: Long = System.currentTimeMillis()
     )
@@ -444,8 +468,8 @@ class EmergentRoleManager(
     /**
      * Create device capabilities with dynamic storage calculation
      */
-    private fun createDeviceCapabilities(batteryInfo: BatteryInfo, fitnessScore: FitnessScore): DeviceCapabilities {
-        return DeviceCapabilities(
+    private fun createDeviceCapabilities(batteryInfo: BatteryInfo, fitnessScore: FitnessScore): VnetDeviceCapabilities {
+        return VnetDeviceCapabilities(
             storageAvailable = calculateAvailableStorage(),
             processingPower = (fitnessScore.batteryLevel / 100.0f).coerceAtMost(1.0f),
             batteryInfo = batteryInfo,
@@ -538,6 +562,15 @@ class EmergentRoleManager(
         
         safeLog(LogLevel.INFO, "Applied role transition: +${plan.addRoles}, -${plan.removeRoles}")
         safeLog(LogLevel.INFO, "Current roles: $currentRoles")
+    }
+
+    /**
+     * Execute a role transition plan. Thin wrapper that currently applies
+     * the transition and logs the action; can be expanded later.
+     */
+    private fun executeRoleTransition(plan: RoleTransitionPlan) {
+        safeLog(LogLevel.INFO, "Executing role transition: +${plan.addRoles}, -${plan.removeRoles}")
+        applyTransitionPlan(plan)
     }
     
     /**
@@ -985,10 +1018,8 @@ class EmergentRoleManager(
             val constrainedCapabilities = applyPowerConstraints(currentCapabilities)
             val newPlan = determineOptimalRoles(constrainedCapabilities)
             
-            // Apply the new plan if it's beneficial
-            if (newPlan.priority >= RoleTransitionPriority.MODERATE) {
-                executeRoleTransition(newPlan)
-            }
+            // Apply the new plan. Priority handling isn't available here yet.
+            executeRoleTransition(newPlan)
         }
     }
     
@@ -998,36 +1029,41 @@ class EmergentRoleManager(
     private fun applyPowerConstraints(capabilities: NodeCapabilitySnapshot): NodeCapabilitySnapshot {
         val constraints = _powerConstraints.value
         
+        // Create a new ResourceCapabilities with updated storageOffered
+        val updatedResources = if (constraints.canProvideStorage) {
+            capabilities.resources
+        } else {
+            capabilities.resources.copy(storageOffered = 0L)
+        }
+
+        // Only override battery level if constraint explicitly sets it (non-negative)
+        val updatedBatteryInfo = if (constraints.batteryLevel >= 0) {
+            capabilities.batteryInfo.copy(level = constraints.batteryLevel)
+        } else {
+            capabilities.batteryInfo
+        }
+
+        val updatedThermalState = if (constraints.thermalState.isNotBlank()) {
+            when (constraints.thermalState.uppercase()) {
+                "COOL" -> ThermalState.COOL
+                "WARM" -> ThermalState.WARM
+                "HOT" -> ThermalState.HOT
+                "OVERHEATING" -> ThermalState.THROTTLING
+                "CRITICAL" -> ThermalState.CRITICAL
+                else -> capabilities.thermalState
+            }
+        } else {
+            capabilities.thermalState
+        }
+
         return capabilities.copy(
-            // Disable ML capabilities if power constraints don't allow
-            hasMLCapabilities = capabilities.hasMLCapabilities && constraints.canProvideMLInference,
-            
-            // Reduce storage allocation if power constraints limit storage
-            storageSpaceAvailableGB = if (constraints.canProvideStorage) {
-                capabilities.storageSpaceAvailableGB
-            } else {
-                0.0f // No storage offered if power doesn't allow
-            },
-            
-            // Reduce network capabilities if relay is disabled
-            networkBandwidthMbps = if (constraints.canRelayTraffic) {
-                capabilities.networkBandwidthMbps
-            } else {
-                capabilities.networkBandwidthMbps * 0.5f // Reduce bandwidth for local traffic only
-            },
-            
-            // Adjust performance based on thermal state
-            cpuPerformanceRatio = capabilities.cpuPerformanceRatio * getThermalPerformanceMultiplier(constraints.thermalState),
-            
-            // Adjust based on battery level
-            batteryLevel = constraints.batteryLevel.toFloat(),
-            
-            // Mark as power constrained
-            additionalMetadata = capabilities.additionalMetadata + mapOf(
-                "powerConstrained" to (constraints.powerSavingMode != "FULL_PERFORMANCE"),
-                "thermalState" to constraints.thermalState,
-                "powerSavingMode" to constraints.powerSavingMode
-            )
+            resources = updatedResources,
+            batteryInfo = updatedBatteryInfo,
+            thermalState = updatedThermalState,
+            // Optionally adjust networkQuality and stability if needed
+            // networkQuality = capabilities.networkQuality, // unchanged
+            // stability = capabilities.stability, // unchanged
+            timestamp = System.currentTimeMillis()
         )
     }
     

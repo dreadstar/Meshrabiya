@@ -1,4 +1,10 @@
+
 package com.ustadmobile.meshrabiya.service.ml
+
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
 
 /**
  * CORRECTED: Model quantization workflow for service library
@@ -19,7 +25,10 @@ package com.ustadmobile.meshrabiya.service.ml
  * 
  * Example Python script (runs on developer machine):
  * 
- * import tensorflow as tf
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
  * 
  * # Convert original model to different quantization levels
  * converter = tf.lite.TFLiteConverter.from_saved_model("original_model/")
@@ -74,11 +83,13 @@ class PreQuantizedModelService {
                         minStorageMB = 250 * 1024 // Extra space for runtime
                     ),
                     executionProfile = ExecutionProfile(
-                        averageExecutionTimeMs = 2000,
-                        maxExecutionTimeMs = 30000
+                        profileName = "fp32",
+                        cpuCores = 4,
+                        gpuEnabled = true,
+                        memoryMB = 6000,
+                        storageMB = 250 * 1024
                     )
                 ),
-                
                 // Mid-range devices: Float16 quantization
                 ServiceAnnouncement(
                     serviceId = "sentiment-analyzer-fp16",
@@ -91,11 +102,13 @@ class PreQuantizedModelService {
                         minStorageMB = 120 * 1024
                     ),
                     executionProfile = ExecutionProfile(
-                        averageExecutionTimeMs = 1500, // 1.5x faster
-                        maxExecutionTimeMs = 25000
+                        profileName = "fp16",
+                        cpuCores = 2,
+                        gpuEnabled = true,
+                        memoryMB = 3000,
+                        storageMB = 120 * 1024
                     )
                 ),
-                
                 // Low-end devices: Int8 quantization
                 ServiceAnnouncement(
                     serviceId = "sentiment-analyzer-int8",
@@ -108,8 +121,11 @@ class PreQuantizedModelService {
                         minStorageMB = 60 * 1024
                     ),
                     executionProfile = ExecutionProfile(
-                        averageExecutionTimeMs = 800, // 2.5x faster
-                        maxExecutionTimeMs = 15000
+                        profileName = "int8",
+                        cpuCores = 1,
+                        gpuEnabled = false,
+                        memoryMB = 1500,
+                        storageMB = 60 * 1024
                     )
                 )
             )

@@ -403,22 +403,7 @@ enum class NodeType {
     SMARTPHONE, TABLET, IOT_DEVICE, ROUTER, COMPUTER
 }
 
-enum class MeshRole {
-    // Gateway Roles
-    TOR_GATEWAY, CLEARNET_GATEWAY, I2P_GATEWAY,
-    
-    // Router Roles  
-    I2P_ROUTER, TOR_RELAY, MESH_ROUTER,
-    
-    // Service Roles
-    STORAGE_NODE, COMPUTE_NODE, COORDINATOR,
-    
-    // Specialized Roles
-    SEEDING_SERVICE, EXECUTION_PLANNER, SERVICE_REGISTRY,
-    
-    // Base Role
-    MESH_PARTICIPANT
-}
+// Use MeshRole from MeshRole.kt
 
 enum class ServiceType {
     COMPUTE_SERVICE, STORAGE_SERVICE, ROUTING_SERVICE,

@@ -38,8 +38,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ScheduledFuture
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 class AndroidVirtualNode(
+    emergentRoleManagerParam: EmergentRoleManager? = null,
     private val context: Context,
     port: Int = 0,
     json: Json = Json,
@@ -55,6 +57,7 @@ class AndroidVirtualNode(
     json = json,
     config = config,
 ) {
+    // meshrabiyaWifiManager will be initialized below with full config
 
     private val bluetoothManager: BluetoothManager by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -69,13 +72,57 @@ class AndroidVirtualNode(
      * established call addNewNeighborConnection to initialize the exchange of originator messages.
      */
     private val newWifiConnectionListener = MeshrabiyaWifiManagerAndroid.OnNewWifiConnectionListener {
+        // WifiConnectEvent contains socket and neighborVirtualAddress; pass them through
         addNewNeighborConnection(
             address = it.neighborInetAddress,
             port = it.neighborPort,
-            neighborNodeVirtualAddr =  it.neighborVirtualAddress,
+            neighborNodeVirtualAddr = it.neighborVirtualAddress,
             socket = it.socket,
         )
     }
+
+    /**
+     * Returns the node ID for this virtual node.
+     */
+    fun getNodeId(): Int = addressAsInt
+
+    /**
+     * Returns the hop count to the given node address using originator messages.
+     */
+    fun getHopCountToNode(nodeAddress: Int): Int? {
+        val originatorMsg = originatingMessageManager.getOriginatorMessages()[nodeAddress]
+        return originatorMsg?.hopCount?.toInt()
+    }
+
+    /**
+     * Sends data to the given node address using mesh routing.
+     */
+    fun sendToNode(nodeAddress: Int, data: ByteArray) {
+        val header = com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader(
+            toAddr = nodeAddress,
+                toPort = 0,
+                fromAddr = addressAsInt,
+                fromPort = 0,
+                lastHopAddr = addressAsInt,
+                hopCount = 1,
+                maxHops = config.maxHops.toByte(),
+                payloadSize = data.size
+            )
+            val packetBuffer = ByteArray(com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader.HEADER_SIZE + data.size).apply {
+                header.toBytes(this, 0)
+                System.arraycopy(data, 0, this, com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader.HEADER_SIZE, data.size)
+            }
+
+            // Use public factory to construct VirtualPacket (primary ctor is private)
+            val packet = com.ustadmobile.meshrabiya.vnet.VirtualPacket.fromHeaderAndPayloadData(
+                header = header,
+                data = packetBuffer,
+                payloadOffset = com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader.HEADER_SIZE,
+                headerAlreadyInData = true
+            )
+
+            route(packet, null, null)
+        }
 
     override val meshrabiyaWifiManager: MeshrabiyaWifiManagerAndroid = MeshrabiyaWifiManagerAndroid(
         appContext = context,
@@ -125,9 +172,9 @@ class AndroidVirtualNode(
 
     // Add MeshRoleManager
     val meshRoleManager: MeshRoleManager = MeshRoleManager(this, context)
-    
-    // Add EmergentRoleManager for advanced role assignment
-    val emergentRoleManager: EmergentRoleManager = EmergentRoleManager(this, context, meshRoleManager)
+
+    // Add EmergentRoleManager for advanced role assignment (use provided param if present)
+    val emergentRoleManager: EmergentRoleManager = emergentRoleManagerParam ?: EmergentRoleManager(this, context, meshRoleManager)
 
     // Add MeshTrafficRouter for gateway functionality
     private var meshTrafficRouter: Any? = null // Will be initialized when needed
@@ -136,6 +183,60 @@ class AndroidVirtualNode(
     private var currentBluetoothState: MeshrabiyaBluetoothState = MeshrabiyaBluetoothState()
     private val _nodeState = MutableStateFlow(LocalNodeState())
 
+        /**
+         * Announce a service to the mesh network. Broadcasts the signed bundle and announcement to all neighbors.
+         */
+        fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray) {
+            // Serialize the announcement and bundle
+            val announcementBytes = serializeServiceAnnouncement(serviceAnnouncement)
+            val payload = announcementBytes + signedBundle
+            // Broadcast to all known neighbors (use VirtualNode.neighbors())
+            val neighborList: List<Int> = neighbors().map { it.first }
+            for (neighbor in neighborList) {
+                sendToNode(neighbor, payload)
+            }
+            logger(Log.INFO, "Service announced: ${serviceAnnouncement.serviceId} to ${neighborList.size} neighbors")
+        }
+
+        /**
+         * Request a service bundle from the mesh network. Returns the bundle if found, null otherwise.
+         */
+        fun requestServiceBundle(serviceId: String, requesterOnionAddress: String): ByteArray? {
+            // Find candidate nodes to query (fall back to neighbor list)
+            val serviceNodes: List<Int> = neighbors().map { it.first }
+            for (nodeAddr in serviceNodes) {
+                // Send request packet to node
+                val requestPayload = buildServiceBundleRequest(serviceId, requesterOnionAddress)
+                sendToNode(nodeAddr, requestPayload)
+                // Wait for response (simplified: assume synchronous for now)
+                val response = receiveServiceBundleResponse(nodeAddr, serviceId)
+                if (response != null) {
+                    logger(Log.INFO, "Service bundle for $serviceId received from $nodeAddr")
+                    return response
+                }
+            }
+            logger(Log.WARN, "Service bundle for $serviceId not found in mesh")
+            return null
+        }
+
+        /** Serialize ServiceAnnouncement to ByteArray */
+        private fun serializeServiceAnnouncement(announcement: ServiceAnnouncement): ByteArray {
+            // Use kotlinx.serialization or manual serialization as needed
+            return announcement.toString().toByteArray()
+        }
+
+        /** Build service bundle request payload */
+        private fun buildServiceBundleRequest(serviceId: String, onionAddress: String): ByteArray {
+            val requestString = "REQUEST_BUNDLE:$serviceId:$onionAddress"
+            return requestString.toByteArray()
+        }
+
+        /** Receive service bundle response from node (placeholder for actual network logic) */
+        private fun receiveServiceBundleResponse(nodeAddr: Int, serviceId: String): ByteArray? {
+            // TODO: Implement actual network response handling
+            // For now, return null to indicate not found
+            return null
+        }
     override val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,

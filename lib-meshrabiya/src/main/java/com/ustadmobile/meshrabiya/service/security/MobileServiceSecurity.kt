@@ -9,10 +9,16 @@ import java.security.PublicKey
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import java.security.KeyFactory
+
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
 
 /**
  * Lightweight mobile-friendly service sandboxing and security
@@ -355,15 +361,17 @@ class ServiceReputationManager(private val context: Context) {
 /**
  * Integration point with existing ServiceLayerCoordinator
  */
-fun ServiceLayerCoordinator.executeSecureService(
+// Integration helper: avoid a hard compile dependency on the app-only ServiceLayerCoordinator
+// by keeping this as a generic extension on Any for library compilation. App module can
+// provide a proper bridge if needed.
+fun Any.executeSecureService(
+    context: android.content.Context,
     serviceId: String,
     input: ServiceInput
 ): ServiceResult {
-    
     val sandbox = MobileServiceSandbox(context)
     val serviceBundle = getServiceBundle(serviceId) // From existing registry
-    
-    return runBlocking {
+    return kotlinx.coroutines.runBlocking {
         sandbox.executeInSandbox(
             serviceBundle = serviceBundle,
             input = input,
@@ -414,4 +422,18 @@ data class ServiceResult(
 // Placeholder functions
 private fun verifyServiceSignature(bundle: ServiceBundle): Boolean = true
 private fun generateOnionAddressFromPublicKey(publicKey: ByteArray): String = ""
-private fun getServiceBundle(serviceId: String): ServiceBundle = ServiceBundle("", "", byteArrayOf(), "", ServiceAnnouncement("", ServiceAnnouncement.ServiceType.PYTHON, "", 0, emptyList(), ResourceRequirements(0, 0), ExecutionProfile(0)))
+private fun getServiceBundle(serviceId: String): ServiceBundle = ServiceBundle(
+    serviceId = "",
+    serviceType = "python",
+    payload = byteArrayOf(),
+    format = "zip",
+    metadata = ServiceAnnouncement(
+        serviceId = "",
+        serviceType = ServiceAnnouncement.ServiceType.PYTHON,
+        version = "",
+        sizeKB = 0,
+        capabilities = emptyList(),
+        resourceRequirements = ResourceRequirements(),
+        executionProfile = ExecutionProfile()
+    )
+)

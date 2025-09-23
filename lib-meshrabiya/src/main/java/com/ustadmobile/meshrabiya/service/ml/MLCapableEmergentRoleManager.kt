@@ -6,6 +6,7 @@ import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
 import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.mmcp.MeshRole
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,7 +22,8 @@ import java.util.concurrent.ConcurrentHashMap
 class MLCapableEmergentRoleManager(
     private val meshNode: AndroidVirtualNode,
     private val context: Context,
-    private val meshRoleManager: MeshRoleManager
+    private val meshRoleManager: MeshRoleManager,
+    private val emergentRoleManager: EmergentRoleManager
 ) {
     
     companion object {
@@ -71,16 +73,16 @@ class MLCapableEmergentRoleManager(
      * Add new ML server role to existing EmergentRoleManager roles
      */
     fun getCurrentEnhancedMeshRoles(): Set<MeshRole> {
-        val baseRoles = meshNode.emergentRoleManager.getCurrentMeshRoles()
+    val baseRoles: Set<MeshRole> = emergentRoleManager.getCurrentMeshRoles()
         val mlRoles = mutableSetOf<MeshRole>()
-        
+
         _mlServerRoles.value.values.forEach { assignment ->
             if (assignment.primaryServerId == meshNode.getNodeId()) {
-                mlRoles.add(MeshRole.ML_SERVER) // New role type
+                mlRoles.add(MeshRole.ML_SERVER)
             }
         }
-        
-        return baseRoles + mlRoles
+
+        return baseRoles.union(mlRoles)
     }
     
     /**
@@ -89,9 +91,8 @@ class MLCapableEmergentRoleManager(
     fun shouldServeMLService(serviceType: String): Boolean {
         val assignment = _mlServerRoles.value[serviceType]
         val nodeId = meshNode.getNodeId()
-        
-        return assignment?.let { 
-            it.primaryServerId == nodeId || nodeId in it.backupServerIds 
+        return assignment?.let {
+            it.primaryServerId == nodeId || nodeId in it.backupServerIds
         } ?: false
     }
     
@@ -108,7 +109,7 @@ class MLCapableEmergentRoleManager(
         val capabilities = mutableMapOf<Int, DeviceCapabilities>()
         
         // Add local device capabilities
-        val localNodeId = meshNode.getNodeId()
+    val localNodeId = meshNode.getNodeId()
         capabilities[localNodeId] = detectLocalMLCapabilities()
         
         // Add known mesh node capabilities (from service announcements)
@@ -126,9 +127,9 @@ class MLCapableEmergentRoleManager(
         val assignments = mutableMapOf<String, MLServerAssignment>()
         
         // ML Kit Native Services - prefer devices with good ML Kit performance
-        val mlKitCapableNodes = capabilities.filter { (_, caps) ->
+        val mlKitCapableNodes = capabilities.toList().filter { (_, caps) ->
             caps.mlKitFeatures.isNotEmpty() && caps.memoryMB > 2000
-        }.toList().sortedByDescending { (_, caps) -> caps.memoryMB }
+        }.sortedByDescending { (_, caps) -> caps.memoryMB }
         
         if (mlKitCapableNodes.isNotEmpty()) {
             assignments["ml-kit-native"] = MLServerAssignment(
@@ -140,9 +141,9 @@ class MLCapableEmergentRoleManager(
         }
         
         // ML Kit Custom Services - need good memory + network for Firebase
-        val customMLCapableNodes = capabilities.filter { (_, caps) ->
+        val customMLCapableNodes = capabilities.toList().filter { (_, caps) ->
             caps.mlKitCustomSupport && caps.memoryMB > 3000
-        }.toList().sortedByDescending { (_, caps) -> caps.memoryMB }
+        }.sortedByDescending { (_, caps) -> caps.memoryMB }
         
         if (customMLCapableNodes.isNotEmpty()) {
             assignments["ml-kit-custom"] = MLServerAssignment(
@@ -154,9 +155,9 @@ class MLCapableEmergentRoleManager(
         }
         
         // LiteRT Services - need high memory + storage + preferably GPU
-        val literTCapableNodes = capabilities.filter { (_, caps) ->
+        val literTCapableNodes = capabilities.toList().filter { (_, caps) ->
             caps.hasLiteRT && caps.memoryMB > 4000 && caps.storageMB > 1000
-        }.toList().sortedWith(
+        }.sortedWith(
             compareByDescending<Pair<Int, DeviceCapabilities>> { it.second.memoryMB }
                 .thenByDescending { it.second.hasGPUAcceleration }
                 .thenByDescending { it.second.storageMB }
@@ -172,9 +173,9 @@ class MLCapableEmergentRoleManager(
         }
         
         // Specialized assignments for specific model types
-        val highEndNodes = capabilities.filter { (_, caps) ->
+        val highEndNodes = capabilities.toList().filter { (_, caps) ->
             caps.deviceClass == DeviceCapabilities.DeviceClass.ML_POWERHOUSE
-        }.toList().sortedByDescending { (_, caps) -> caps.memoryMB }
+        }.sortedByDescending { (_, caps) -> caps.memoryMB }
         
         if (highEndNodes.isNotEmpty()) {
             assignments["large-language-models"] = MLServerAssignment(
@@ -190,7 +191,7 @@ class MLCapableEmergentRoleManager(
     
     private fun announceMLServerRoles(assignments: Map<String, MLServerAssignment>) {
         // Create enhanced service originator message with ML server role announcements
-        val localNodeId = meshNode.getNodeId()
+    val localNodeId = meshNode.getNodeId()
         val myAssignments = assignments.filter { (_, assignment) ->
             assignment.primaryServerId == localNodeId || localNodeId in assignment.backupServerIds
         }
@@ -301,27 +302,28 @@ class MLCapableEmergentRoleManager(
     
     private fun hasLiteRTSupport(): Boolean {
         return try {
-            // Check if TensorFlow Lite is available
-            Class.forName("org.tensorflow.lite.Interpreter")
-            true
+            Class.forName("com.google.ai.edge.litert.CompiledModel") != null
         } catch (e: ClassNotFoundException) {
             false
         }
     }
-    
+
     private fun hasGPUAcceleration(): Boolean {
         return try {
-            Class.forName("org.tensorflow.lite.gpu.GpuDelegate")
+            // Check if GPU accelerator is available by trying to create options
+            com.google.ai.edge.litert.CompiledModel.Options(com.google.ai.edge.litert.Accelerator.GPU)
             true
-        } catch (e: ClassNotFoundException) {
+        } catch (e: Exception) {
             false
         }
     }
-    
+
     private fun hasNNAPISupport(): Boolean {
         return try {
-            Class.forName("org.tensorflow.lite.nnapi.NnApiDelegate") &&
-            android.os.Build.VERSION.SDK_INT >= 27 // NNAPI requires API 27+
+            // NNAPI is handled internally by LiteRT when using CPU accelerator
+            // Check for general LiteRT support and API level
+            Class.forName("com.google.ai.edge.litert.CompiledModel") != null &&
+            android.os.Build.VERSION.SDK_INT >= 27
         } catch (e: ClassNotFoundException) {
             false
         }
@@ -329,14 +331,4 @@ class MLCapableEmergentRoleManager(
 }
 
 // Extension to MeshRole enum (would be added to existing enum)
-enum class EnhancedMeshRole {
-    // Existing roles from MeshRole...
-    CLEARNET_GATEWAY,
-    TOR_GATEWAY,
-    
-    // New ML server roles
-    ML_SERVER,           // General ML service provider
-    ML_KIT_SERVER,       // Specialized in ML Kit services
-    LITERT_SERVER,       // Specialized in direct TensorFlow Lite
-    ML_COORDINATOR       // Orchestrates ML workflows across devices
-}
+

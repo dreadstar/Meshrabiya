@@ -9,6 +9,11 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.security.SecureRandom
+import com.ustadmobile.meshrabiya.model.DeviceCapabilities
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.model.ExecutionProfile
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement.ServiceType
 
 /**
  * PRIVACY-PRESERVING MESH PROCESSING
@@ -91,7 +96,7 @@ class PrivacyPreservingMeshProcessor {
             val processedData = when (privacyLevel) {
                 PrivacyLevel.MINIMAL -> encryptedData
                 PrivacyLevel.STANDARD, PrivacyLevel.HIGH, PrivacyLevel.PARANOID -> {
-                    applyDifferentialPrivacy(encryptedData)
+                    DifferentialPrivacyManager().applyDifferentialPrivacy(encryptedData)
                 }
             }
             

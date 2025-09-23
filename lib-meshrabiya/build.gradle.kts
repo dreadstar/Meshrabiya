@@ -61,7 +61,22 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
-    
+
+    // LiteRT - Google's new TensorFlow Lite runtime
+    implementation("com.google.ai.edge.litert:litert:2.0.0-alpha")
+    implementation("com.google.ai.edge.litert:litert-gpu:2.0.0-alpha")
+    implementation("com.google.ai.edge.litert:litert-support:2.0.0-alpha")
+
+    // ML Kit - Using unbundled libraries (requires Google Play Services)
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.0")
+    implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+
+    // Additional Android dependencies that might be needed
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.gms:play-services-tasks:18.1.0")
+
     // Test dependencies - needed for both debug and release tests
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.5.0")
@@ -71,7 +86,7 @@ dependencies {
     testImplementation("androidx.test:core:1.5.0")
     testImplementation("androidx.test.ext:junit:1.1.5")
     testImplementation("org.robolectric:robolectric:4.10.3")
-    
+
     // Ensure ByteBuddy is available for Mockito
     testImplementation("net.bytebuddy:byte-buddy:1.14.15")
     testImplementation("net.bytebuddy:byte-buddy-agent:1.14.15")
