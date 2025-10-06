@@ -18,11 +18,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -50,8 +52,14 @@ class OriginatingMessageManager(
     private val getNodeRole: () -> Byte,
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
-    lostNodeCheckInterval: Int = 1_000,
-    private val betaLogger: BetaTestLogger? = null
+    private val lostNodeCheckInterval: Int = 1_000,
+    private val betaLogger: BetaTestLogger? = null,
+    /**
+     * When false, the periodic scheduled tasks (sending originating messages, pinging,
+     * and lost-node checks) will not be scheduled. Default reads system property
+     * `meshrabiya.enableOriginatingPeriodicTasks` (default true).
+     */
+    private val enablePeriodicTasks: Boolean = System.getProperty("meshrabiya.enableOriginatingPeriodicTasks")?.toBoolean() ?: true
 ) {
 
     private val logPrefix ="[OriginatingMessageManager for ${localNodeInetAddr}] "
@@ -59,6 +67,20 @@ class OriginatingMessageManager(
     private val scope = CoroutineScope(Dispatchers.IO + Job())
 
     private val localNodeAddress = localNodeInetAddr.requireAddressAsInt()
+
+    // Optional callback set by callers (e.g., VirtualNode) to be notified when the
+    // OriginatingMessageManager has started its internal consumer coroutine and
+    // scheduled tasks. Tests can use this to coordinate readiness.
+    private var onStartedCallback: (() -> Unit)? = null
+    @Volatile
+    private var started = false
+
+    fun setOnStartedCallback(cb: () -> Unit) {
+        onStartedCallback = cb
+        if (started) {
+            try { cb() } catch (_: Throwable) {}
+        }
+    }
 
     /**
      * The currently known latest originator messages that can be used to route traffic.
@@ -68,8 +90,22 @@ class OriginatingMessageManager(
     private val _state = MutableStateFlow(OriginatingMessageState())
     val state: StateFlow<OriginatingMessageState> = _state
 
-    private val receivedMessages: Flow<VirtualNode.LastOriginatorMessage> = MutableSharedFlow(
+    private val _receivedMessages = MutableSharedFlow<VirtualNode.LastOriginatorMessage>(
         replay = 1 , extraBufferCapacity = 0, onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    private val receivedMessages: Flow<VirtualNode.LastOriginatorMessage> = _receivedMessages.asSharedFlow()
+
+    // Incoming queue to decouple network I/O from processing. Bounded to provide backpressure.
+    private val incomingQueue = Channel<IncomingOriginatorMessage>(capacity = 512)
+
+    private val recentMessageIds = java.util.concurrent.ConcurrentLinkedDeque<Int>()
+    private val seenMessageIds = ConcurrentHashMap<Int, Unit>()
+
+    data class IncomingOriginatorMessage(
+        val mmcpMessage: MmcpNodeAnnouncement,
+        val datagramPacket: DatagramPacket,
+        val datagramSocket: VirtualNodeDatagramSocket,
+        val virtualPacket: VirtualPacket
     )
 
     data class PendingPing(
@@ -242,17 +278,58 @@ class OriginatingMessageManager(
         }
     }
 
-    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleAtFixedRate(
-        sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
-    )
+    private val sendOriginatorMessagesFuture: java.util.concurrent.ScheduledFuture<*>? = if (enablePeriodicTasks) {
+        scheduledExecutor.scheduleAtFixedRate(sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS)
+    } else null
 
-    private val pingNeighborsFuture = scheduledExecutor.scheduleAtFixedRate(
-        pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
-    )
+    init {
+        // Consumer coroutine to process incoming originator messages from the channel
+        scope.launch {
+            try {
+                // Log and notify that the consumer coroutine has started
+                logger(Log.DEBUG, message = { "$logPrefix : consumer coroutine launching" })
+                started = true
+                try {
+                    onStartedCallback?.invoke()
+                } catch (t: Throwable) {
+                    logger(Log.ERROR, message = { "$logPrefix : onStartedCallback threw" }, exception = t as? Exception)
+                }
+                logger(Log.DEBUG, message = { "$logPrefix : consumer coroutine started" })
 
-    private val checkLostNodesFuture = scheduledExecutor.scheduleAtFixedRate(
-        checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
-    )
+                for (incoming in incomingQueue) {
+                    try {
+                        // Dedup based on messageId
+                        val mid = incoming.mmcpMessage.messageId
+                        if (seenMessageIds.putIfAbsent(mid, Unit) == null) {
+                            recentMessageIds.addFirst(mid)
+                            if (recentMessageIds.size > 2000) {
+                                val removed = recentMessageIds.removeLast()
+                                seenMessageIds.remove(removed)
+                            }
+
+                            processOriginatingMessage(incoming.mmcpMessage, incoming.datagramPacket, incoming.datagramSocket, incoming.virtualPacket)
+                        } else {
+                            logBeta(LogLevel.DEBUG, "Dropped duplicate originating message id=$mid")
+                        }
+                    } catch (e: Exception) {
+                        logger(Log.ERROR, "$logPrefix : error processing queued originating message", e)
+                    }
+                }
+            } catch (t: Throwable) {
+                // Surface any exception that prevents the consumer coroutine from starting
+                logger(Log.ERROR, message = { "$logPrefix : exception in consumer coroutine" }, exception = t as? Exception)
+                throw t
+            }
+        }
+    }
+
+    private val pingNeighborsFuture: java.util.concurrent.ScheduledFuture<*>? = if (enablePeriodicTasks) {
+        scheduledExecutor.scheduleAtFixedRate(pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS)
+    } else null
+
+    private val checkLostNodesFuture: java.util.concurrent.ScheduledFuture<*>? = if (enablePeriodicTasks) {
+        scheduledExecutor.scheduleAtFixedRate(checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS)
+    } else null
 
     @Volatile
     private var closed = false
@@ -289,7 +366,28 @@ class OriginatingMessageManager(
         virtualPacket: VirtualPacket,
     ): Boolean {
         assertNotClosed()
-        logBeta(LogLevel.DEBUG, "Received originating message from ${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}, messageId=${mmcpMessage.messageId}, hopCount=${virtualPacket.header.hopCount}, timestamp=${mmcpMessage.timestamp}")
+        // Enqueue non-blocking; drop when the channel is full
+        val incoming = IncomingOriginatorMessage(mmcpMessage, datagramPacket, datagramSocket, virtualPacket)
+        val result = incomingQueue.trySend(incoming)
+        try { println("D: OriginatingMessageManager trySend id=${mmcpMessage.messageId} result=${result.isSuccess} from=${virtualPacket.header.fromAddr.addressToDotNotation()} hop=${virtualPacket.header.hopCount}") } catch (_: Throwable) {}
+        if (result.isSuccess) {
+            logBeta(LogLevel.DEBUG, "Enqueued originating message id=${mmcpMessage.messageId} from ${virtualPacket.header.fromAddr.addressToDotNotation()}")
+            return true
+        } else {
+            logBeta(LogLevel.WARN, "Dropping originating message id=${mmcpMessage.messageId} due to full queue")
+            try { println("D: OriginatingMessageManager dropped id=${mmcpMessage.messageId} queueFull=true") } catch (_: Throwable) {}
+            return false
+        }
+    }
+
+    private fun processOriginatingMessage(
+        mmcpMessage: MmcpNodeAnnouncement,
+        datagramPacket: DatagramPacket,
+        datagramSocket: VirtualNodeDatagramSocket,
+        virtualPacket: VirtualPacket,
+    ): Boolean {
+        try { println("D: OriginatingMessageManager processing id=${mmcpMessage.messageId} from=${virtualPacket.header.fromAddr.addressToDotNotation()} lastHop=${virtualPacket.header.lastHopAddr.addressToDotNotation()} hopCount=${virtualPacket.header.hopCount}") } catch (_: Throwable) {}
+        logBeta(LogLevel.DEBUG, "Processing originating message from ${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}, messageId=${mmcpMessage.messageId}, hopCount=${virtualPacket.header.hopCount}, timestamp=${mmcpMessage.timestamp}")
         //Dont keep originator messages in our own table for this node
         logger(
             Log.VERBOSE,
@@ -301,8 +399,6 @@ class OriginatingMessageManager(
         )
 
         val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0.toLong()
-        // MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
-        //     ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
 
         val currentOriginatorMessage = originatorMessages[virtualPacket.header.fromAddr]
 
@@ -341,31 +437,22 @@ class OriginatingMessageManager(
             )
             // Store neighbor fitness and role info
             neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair((mmcpMessage.fitnessScore * 100).toInt(), 0) // Convert fitness score back to 0-100 scale, default role
-            
+
             // Update EmergentRoleManager with mesh intelligence if available
             (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.processNodeAnnouncement(
                 nodeId = mmcpMessage.nodeId,
                 meshRoles = mmcpMessage.meshRoles
             )
-            
-            // Also update MeshRoleManager if available
-            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
-            //     neighborId = virtualPacket.header.fromAddr.toString(),
-            //     fitnessScore = mmcpMessage.fitnessScore,
-            //     nodeRole = mmcpMessage.nodeRole
-            // )
+
             // Update neighbor RSSI (if available)
             val rssi = datagramPacket.javaClass.getDeclaredField("rssi").let { field ->
                 field.isAccessible = true
                 (field.get(datagramPacket) as? Int) ?: 0
             }
-            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborSignalStrength(
-            //     neighborId = virtualPacket.header.fromAddr.toString(),
-            //     rssi = rssi
-            // )
+
             // Multi-hop: update neighbor centrality info if available
             neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
-            // Optionally, use neighborCount for richer mesh awareness
+
             logger(
                 Log.VERBOSE,
                 message = {
@@ -380,18 +467,19 @@ class OriginatingMessageManager(
                 pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
             logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}")
+
+            // emit to receivedMessages so addNeighbor can observe replies
+            try {
+                _receivedMessages.tryEmit(originatorMessages[virtualPacket.header.fromAddr]!!)
+            } catch (e: Exception) {
+                // ignore emission failures
+            }
         }
 
         if(isNewNeighbor) {
             //trigger immediate sending of originator messages so it can see us
             scheduledExecutor.submit(sendOriginatingMessageRunnable)
         }
-
-        // 2. When receiving, update topology map
-        // topologyMap[virtualPacket.header.fromAddr] = mmcpMessage.neighbors.toSet() // neighbors not present in MmcpNodeAnnouncement
-
-        // 4. Placeholder for choke point and hop calculations
-        // (to be used by MeshRoleManager)
 
         return isMoreRecentOrBetter
     }
@@ -531,9 +619,9 @@ class OriginatingMessageManager(
 
 
     fun close(){
-        sendOriginatorMessagesFuture.cancel(true)
-        pingNeighborsFuture.cancel(true)
-        checkLostNodesFuture.cancel(true)
+        try { sendOriginatorMessagesFuture?.cancel(true) } catch (_: Exception) {}
+        try { pingNeighborsFuture?.cancel(true) } catch (_: Exception) {}
+        try { checkLostNodesFuture?.cancel(true) } catch (_: Exception) {}
         scope.cancel("$logPrefix closed")
         closed = true
     }

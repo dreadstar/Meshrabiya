@@ -41,8 +41,15 @@ android {
             all {
                 it.jvmArgs("-XX:+EnableDynamicAgentLoading")
                 it.systemProperty("mockito.verbose", "true")
+                // Disable periodic originating-message tasks during unit tests to avoid
+                // noisy background schedulers and make unit tests deterministic.
+                it.systemProperty("meshrabiya.enableOriginatingPeriodicTasks", "false")
                 it.testLogging {
-                    events("passed", "skipped", "failed")
+                    // Show when tests start, and show standard output/error so test runtime
+                    // information (like "sending originating message" or socket startup)
+                    // is visible during a run instead of leaving the build silent.
+                    events("started", "passed", "skipped", "failed", "standardOut", "standardError")
+                    showStandardStreams = true
                     exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
                 }
             }

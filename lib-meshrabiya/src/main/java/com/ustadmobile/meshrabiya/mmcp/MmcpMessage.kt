@@ -80,6 +80,8 @@ sealed class MmcpMessage(
         const val WHAT_EMERGENCY_BROADCAST = 15.toByte()
         const val WHAT_NETWORK_METRICS = 16.toByte()
         const val WHAT_GATEWAY_ANNOUNCEMENT = 17.toByte()
+    // Delegation message (ResourceRequest/ResourceOffer/Assignment/AssignmentResult)
+    const val WHAT_DELEGATION_MESSAGE = 18.toByte()
 
         const val MMCP_HEADER_LEN = 5 //1 byte what, 4 bytes message id
 
@@ -113,6 +115,7 @@ sealed class MmcpMessage(
                 WHAT_QUORUM_PROPOSAL -> MmcpQuorumProposal.fromBytes(byteArray, offset, len)
                 WHAT_HEARTBEAT -> MmcpHeartbeat.fromBytes(byteArray, offset, len)
                 WHAT_EMERGENCY_BROADCAST -> MmcpEmergencyBroadcast.fromBytes(byteArray, offset, len)
+                WHAT_DELEGATION_MESSAGE -> MmcpDelegationMessage.fromBytes(byteArray, offset, len)
                 WHAT_NETWORK_METRICS -> MmcpNetworkMetrics.fromBytes(byteArray, offset, len)
                 WHAT_GATEWAY_ANNOUNCEMENT -> MmcpGatewayAnnouncement.fromBytes(byteArray, offset, len)
                 else -> throw IllegalArgumentException("Mmcp: Invalid what: $what")

@@ -20,4 +20,10 @@ abstract class ChainSocketFactory: SocketFactory() {
 
     abstract fun createChainSocket(address: InetAddress, port: Int): ChainSocketResult
 
+    /** New overload to allow implementations to receive socket timeout provider for created sockets. */
+    open fun createSocket(socketTimeoutsProvider: com.ustadmobile.meshrabiya.net.SocketTimeoutsProvider = com.ustadmobile.meshrabiya.net.DefaultSocketTimeoutsProvider()): Socket {
+        // default to existing behavior
+        return createSocket()
+    }
+
 }

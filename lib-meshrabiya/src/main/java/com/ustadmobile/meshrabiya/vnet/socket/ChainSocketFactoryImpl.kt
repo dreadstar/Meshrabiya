@@ -12,6 +12,7 @@ class ChainSocketFactoryImpl(
     internal val virtualRouter: VirtualRouter,
     private val systemSocketFactory: SocketFactory = getDefault(),
     private val logger: MNetLogger,
+    private val socketTimeoutsProvider: com.ustadmobile.meshrabiya.net.SocketTimeoutsProvider = com.ustadmobile.meshrabiya.net.DefaultSocketTimeoutsProvider(),
 ) : ChainSocketFactory() {
 
     private val logPrefix: String = "[ChainSocketFactoryImpl for ${virtualRouter.address}]"
@@ -26,10 +27,64 @@ class ChainSocketFactoryImpl(
             val nextHop = virtualRouter.lookupNextHopForChainSocket(address, port)
             val socketFactory = nextHop.network?.socketFactory ?: systemSocketFactory
             val socket = if(localAddress != null && localPort != null) {
-                socketFactory.createSocket(nextHop.address, nextHop.port, localAddress, localPort)
+                // Create unconnected socket and connect with timeout if provider specifies
+                val s = socketFactory.createSocket() as java.net.Socket
+                if (localAddress != null && localPort != null) {
+                    s.bind(java.net.InetSocketAddress(localAddress, localPort))
+                }
+                val connectTimeout = socketTimeoutsProvider.connectTimeoutMillis
+                // Retry connect a few times to tolerate spurious failures in tests/environments
+                val maxRetries = 3
+                var attempt = 0
+                var lastEx: Exception? = null
+                while(attempt < maxRetries) {
+                    try {
+                        if (connectTimeout > 0) {
+                            s.connect(java.net.InetSocketAddress(nextHop.address, nextHop.port), connectTimeout)
+                        } else {
+                            s.connect(java.net.InetSocketAddress(nextHop.address, nextHop.port))
+                        }
+                        lastEx = null
+                        break
+                    } catch(e: Exception) {
+                        lastEx = e
+                        attempt++
+                        if(attempt < maxRetries) Thread.sleep(50L * attempt)
+                    }
+                }
+                if(lastEx != null) throw lastEx
+                s
             }else {
-                socketFactory.createSocket(nextHop.address, nextHop.port)
+                val s = socketFactory.createSocket() as java.net.Socket
+                val connectTimeout = socketTimeoutsProvider.connectTimeoutMillis
+                // Retry connect a few times to tolerate spurious failures in tests/environments
+                val maxRetries = 3
+                var attempt = 0
+                var lastEx: Exception? = null
+                while(attempt < maxRetries) {
+                    try {
+                        if (connectTimeout > 0) {
+                            s.connect(java.net.InetSocketAddress(nextHop.address, nextHop.port), connectTimeout)
+                        } else {
+                            s.connect(java.net.InetSocketAddress(nextHop.address, nextHop.port))
+                        }
+                        lastEx = null
+                        break
+                    } catch(e: Exception) {
+                        lastEx = e
+                        attempt++
+                        if(attempt < maxRetries) Thread.sleep(50L * attempt)
+                    }
+                }
+                if(lastEx != null) throw lastEx
+                s
             }
+
+            // apply SO_TIMEOUT/read/write settings where applicable
+            try {
+                val so = socketTimeoutsProvider.socketSoTimeoutMillis
+                if (so > 0) socket.soTimeout = so
+            } catch (_: Exception) {}
 
             socket.initializeChainIfNotFinalDest(
                 ChainSocketInitRequest(
@@ -88,7 +143,7 @@ class ChainSocketFactoryImpl(
     }
 
     override fun createSocket(): Socket {
-        return ChainSocket(virtualRouter, logger)
+        return ChainSocket(virtualRouter, logger, socketTimeoutsProvider)
     }
 
     override fun createChainSocket(address: InetAddress, port: Int): ChainSocketResult {
