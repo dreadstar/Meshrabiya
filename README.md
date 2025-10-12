@@ -184,4 +184,159 @@ destination address to 255.255.255.255
 Instrumented test debug: You must go to test settings, debug tab, and change to "java only" 
 debugger type. Thank you, Google.
 
+## 🍴 Fork Information
+
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
+This is a **highly modified fork** of the original Meshrabiya library developed by UstadMobile FZ-LLC. Our fork extends the core mesh networking capabilities with distributed computing and storage features for the orbot-abhaya-android project.
+
+### 🆚 Upstream vs Fork
+
+**Upstream Repository**: [UstadMobile/Meshrabiya](https://github.com/UstadMobile/Meshrabiya)  
+**Fork Repository**: [dreadstar/Meshrabiya](https://github.com/dreadstar/Meshrabiya)  
+**Integration**: Used in [orbot-abhaya-android](https://github.com/dreadstar/orbot-abhaya-android)
+
+### 🔄 Major Modifications
+
+This fork includes significant architectural enhancements beyond the original mesh networking:
+
+#### 1. **Distributed Storage Layer**
+- **Data Persistence**: Distributed storage across mesh nodes
+- **Replication**: Automatic data replication with configurable redundancy
+- **Content Discovery**: Advanced content routing and discovery mechanisms
+- **Storage Coordination**: Coordinated storage allocation and management
+
+#### 2. **Distributed Compute Framework**
+- **Task Orchestration**: Distributed workflow coordination and execution
+- **Compute Services**: Library for distributed processing across mesh nodes
+- **Resource Management**: Dynamic resource allocation and load balancing
+- **Service Interoperability**: Seamless compute+storage integration
+
+#### 3. **Enhanced Mesh Management**
+- **Coordinator Adapters**: Advanced mesh coordination requirements
+- **EmergentRoleManager**: Power-aware role management and constraints
+- **VirtualNode Improvements**: Race condition fixes and coroutine enhancements
+- **Service Lifecycle**: Enhanced mesh service lifecycle management
+
+#### 4. **Gateway & Integration**
+- **Internet Gateway**: Improved mesh-to-internet gateway functionality
+- **Testing Framework**: Enhanced Robolectric-based integration testing
+- **API Extensions**: Backward-compatible API extensions for distributed features
+
+### 🏗️ Architecture Differences
+
+```
+Original Meshrabiya:          Enhanced Fork:
+┌─────────────────┐          ┌─────────────────┐
+│   Mesh Core     │          │   Mesh Core     │
+│                 │          │                 │
+│  ┌───────────┐  │          │  ┌───────────┐  │
+│  │ Routing   │  │          │  │ Routing   │  │
+│  │ Discovery │  │    →     │  │ Discovery │  │
+│  │ Hotspot   │  │          │  │ Hotspot   │  │
+│  └───────────┘  │          │  └───────────┘  │
+└─────────────────┘          │                 │
+                              │  ┌───────────┐  │
+                              │  │ Dist.     │  │
+                              │  │ Storage   │  │
+                              │  └───────────┘  │
+                              │                 │
+                              │  ┌───────────┐  │
+                              │  │ Dist.     │  │
+                              │  │ Compute   │  │
+                              │  └───────────┘  │
+                              └─────────────────┘
+```
+
+### 🔄 Upstream Compatibility
+
+- **API Compatibility**: Maintains backward compatibility with original Meshrabiya API
+- **Selective Updates**: Incorporates upstream security fixes and performance improvements
+- **Extension Points**: New features use extension interfaces to avoid conflicts
+- **Migration Path**: Existing Meshrabiya applications can upgrade with minimal changes
+
+### 🛠️ Building the Fork
+
+```bash
+# Clone the fork
+git clone https://github.com/dreadstar/Meshrabiya.git
+cd Meshrabiya
+
+# Build all modules
+./gradlew build
+
+# Run tests
+./gradlew test
+
+# Build library AAR
+./gradlew :lib-meshrabiya:assembleRelease
+```
+
+### 🧪 Testing
+
+```bash
+# Unit tests
+./gradlew :lib-meshrabiya:test
+
+# Integration tests (requires robolectric)
+./gradlew :lib-meshrabiya:testDebugUnitTest
+
+# Test app (for manual testing)
+./gradlew :test-app:assembleDebug
+```
+
+### 🔀 Synchronizing with Upstream
+
+We periodically review upstream changes and selectively integrate:
+
+1. **Security Fixes**: Always integrated
+2. **Performance Improvements**: Evaluated and integrated where compatible
+3. **API Changes**: Carefully reviewed for backward compatibility
+4. **New Features**: Integrated if they don't conflict with our extensions
+
+### 📋 Modification Log
+
+Recent major modifications (see full commit history for details):
+
+- **2025-01**: Distributed Storage & Compute integration
+- **2024-12**: Enhanced mesh coordination and role management  
+- **2024-11**: Gateway integration improvements
+- **2024-10**: Architecture modernization and build fixes
+- **2024-09**: VirtualNode race condition resolution
+
+## 📄 License
+
+This fork maintains the original **LGPL-3.0** license with dual copyright:
+
+- **Original Work**: Copyright © 2023 UstadMobile FZ-LLC
+- **Fork Modifications**: Copyright © 2025 Tyrone Thomas/BreakThrough Technologies
+
+### What This Means
+
+✅ **Use in Any Application**: Your app can use any license (including proprietary)  
+✅ **Commercial Use**: No restrictions for commercial applications  
+✅ **Dynamic Linking**: No license requirements on your application code  
+✅ **Modification Allowed**: You can modify the library for your needs  
+⚠️ **Share Improvements**: Modifications to the library itself must remain LGPL  
+⚠️ **Static Linking**: Requires your app to be LGPL compatible  
+
+### Why LGPL-3.0?
+
+1. **Maximum Adoption**: Allows proprietary applications to use the mesh networking
+2. **Community Growth**: Ensures improvements to the library benefit everyone  
+3. **Upstream Compatibility**: Maintains same license as original project
+
+### Questions & Support
+
+- **Fork Issues**: [GitHub Issues](https://github.com/dreadstar/orbot-abhaya-android/issues)
+- **Upstream Issues**: [UstadMobile Issues](https://github.com/UstadMobile/Meshrabiya/issues)  
+- **License Questions**: See [THIRD_PARTY_LICENSES.md](https://github.com/dreadstar/orbot-abhaya-android/blob/master/THIRD_PARTY_LICENSES.md)
+- **Integration Help**: [Project Discussions](https://github.com/dreadstar/orbot-abhaya-android/discussions)
+
+---
+
+**Original Meshrabiya** Copyright © 2023 UstadMobile FZ-LLC  
+**Fork Enhancements** Copyright © 2025 Tyrone Thomas/BreakThrough Technologies  
+Licensed under LGPL-3.0 - see [LICENSE](./LICENSE) and [NOTICE](./NOTICE) for details.
+
 
