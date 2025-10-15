@@ -8,7 +8,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.Executors
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 
 class ForwardingTest {
 
@@ -30,8 +29,8 @@ class ForwardingTest {
 
         val decoded = String(receivePacket.data, receivePacket.offset, receivePacket.length)
         Assert.assertEquals("Hello", decoded)
-    executor.shutdown()
-    TestUtils.safeClose(echoServer)
+        executor.shutdown()
+        echoServer.close()
     }
 
     @Test(timeout = 5000)
@@ -65,8 +64,11 @@ class ForwardingTest {
         val decoded = String(receivePacket.data, receivePacket.offset, receivePacket.length)
         Assert.assertEquals("Hello", decoded)
         
-    // Cleanup
-    executor.shutdown()
-    TestUtils.safeClose(echoServer, forwardingRule, boundSocket, client)
+        // Cleanup
+        executor.shutdown()
+        echoServer.close()
+        forwardingRule.close()
+        boundSocket.close()
+        client.close()
     }
 }

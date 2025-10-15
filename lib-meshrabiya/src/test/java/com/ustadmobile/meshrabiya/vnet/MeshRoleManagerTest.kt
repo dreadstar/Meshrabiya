@@ -9,7 +9,6 @@ import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 
 class MeshRoleManagerTest {
     private lateinit var context: Context
@@ -37,19 +36,12 @@ class MeshRoleManagerTest {
                 nextMmcpMessageId = { nextMmcpMessageId() },
                 getWifiState = { currentNodeState.wifiState },
                 getFitnessScore = { getCurrentFitnessScore() },
-                getNodeRole = { getCurrentNodeRole() },
-                enablePeriodicTasks = false
+                getNodeRole = { getCurrentNodeRole() }
             )
             override val currentNodeState: LocalNodeState
                 get() = LocalNodeState(wifiState = MeshrabiyaWifiState())
         }
         roleManager = MeshRoleManager(virtualNode, context)
-    }
-
-    @org.junit.After
-    fun teardown() {
-        // Ensure we close underlying socket resources created by VirtualNode
-        if (::virtualNode.isInitialized) TestUtils.safeClose(virtualNode)
     }
 
     @Test
@@ -85,19 +77,14 @@ class MeshRoleManagerTest {
                 nextMmcpMessageId = { nextMmcpMessageId() },
                 getWifiState = { currentNodeState.wifiState },
                 getFitnessScore = { getCurrentFitnessScore() },
-                getNodeRole = { getCurrentNodeRole() },
-                enablePeriodicTasks = false
+                getNodeRole = { getCurrentNodeRole() }
             )
             override val currentNodeState: LocalNodeState
                 get() = LocalNodeState(wifiState = MeshrabiyaWifiState())
         }
-        try {
-            val lowFitnessManager = MeshRoleManager(lowFitnessNode, context)
-            lowFitnessManager.updateRole()
-            assertEquals(NodeRole.CLIENT, lowFitnessManager.currentRole.value)
-        } finally {
-            TestUtils.safeClose(lowFitnessNode)
-        }
+        val lowFitnessManager = MeshRoleManager(lowFitnessNode, context)
+        lowFitnessManager.updateRole()
+        assertEquals(NodeRole.CLIENT, lowFitnessManager.currentRole.value)
     }
 
     @Test
@@ -120,19 +107,14 @@ class MeshRoleManagerTest {
                 nextMmcpMessageId = { nextMmcpMessageId() },
                 getWifiState = { currentNodeState.wifiState },
                 getFitnessScore = { getCurrentFitnessScore() },
-                getNodeRole = { getCurrentNodeRole() },
-                enablePeriodicTasks = false
+                getNodeRole = { getCurrentNodeRole() }
             )
             override val currentNodeState: LocalNodeState
                 get() = LocalNodeState(wifiState = MeshrabiyaWifiState())
         }
-        try {
-            val bridgeManager = MeshRoleManager(bridgeFitnessNode, context)
-            bridgeManager.updateRole()
-            assertEquals(NodeRole.BRIDGE, bridgeManager.currentRole.value)
-        } finally {
-            TestUtils.safeClose(bridgeFitnessNode)
-        }
+        val bridgeManager = MeshRoleManager(bridgeFitnessNode, context)
+        bridgeManager.updateRole()
+        assertEquals(NodeRole.BRIDGE, bridgeManager.currentRole.value)
     }
 
     @Test

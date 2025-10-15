@@ -341,7 +341,23 @@ class PrivacyPreservingMeshProcessor {
         return listOf("image") // Placeholder
     }
     
-    private fun getCurrentDeviceOnion(): String = "device123.onion" // Get from Tor
+    private fun getCurrentDeviceOnion(): String {
+        try {
+            val ctx = android.app.Application().applicationContext
+            // Fallback: attempt to fetch via package-local AIDL client if available
+            val pub = try {
+                // Use reflection to avoid compile-time dependency on sensor module
+                val cls = Class.forName("com.ustadmobile.meshrabiya.sensor.meshrabiya.MeshrabiyaAidlClient")
+                val m = cls.getMethod("fetchOnionPubKeyBlocking", android.content.Context::class.java)
+                m.invoke(null, ctx) as? String
+            } catch (_: Throwable) { null }
+            if (!pub.isNullOrBlank()) return pub
+        } catch (_: Throwable) {
+            // If we can't access application context here, fall through to placeholder
+        }
+
+        return "device123.onion" // Fallback placeholder
+    }
     
     private fun generateRequestId(): String = java.util.UUID.randomUUID().toString()
     

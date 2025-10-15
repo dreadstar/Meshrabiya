@@ -26,12 +26,11 @@ class FileEchoSocketServer (
             FileInputStream(file).use { fileIn ->
                 fileIn.copyTo(client.getOutputStream())
             }
-            try { client.close() } catch (_: Exception) {}
+            client.close()
         }
     }
 
     fun close() {
-        try { serverSocket.close() } catch (_: Exception) {}
         future.cancel(true)
     }
 

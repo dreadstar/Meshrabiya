@@ -25,8 +25,6 @@ import java.util.concurrent.Future
  *                     and it is created at the time the network object is available, this is the
  *                     most convenient and logical place to keep this reference.
  */
-import com.ustadmobile.meshrabiya.net.SocketTimeoutsProvider
-
 class VirtualNodeDatagramSocket(
     private val socket: DatagramSocket,
     private val localNodeVirtualAddress: Int,
@@ -35,10 +33,6 @@ class VirtualNodeDatagramSocket(
     private val logger: MNetLogger,
     name: String? = null,
     val boundNetwork: Network? = null,
-    private val socketTimeoutsProvider: SocketTimeoutsProvider = com.ustadmobile.meshrabiya.net.DefaultSocketTimeoutsProvider(),
-    /** Optional callback invoked once the receive-loop has started. Used by callers/tests to
-     *  be notified when the datagram receive thread is alive. */
-    private val onStarted: (() -> Unit)? = null,
 ):  Runnable, Closeable {
 
     private val future: Future<*>
@@ -59,32 +53,7 @@ class VirtualNodeDatagramSocket(
 
     override fun run() {
         val buffer = ByteArray(VirtualPacket.MAX_PAYLOAD_SIZE)
-    logger(Log.DEBUG, "$logPrefix Started on ${socket.localPort} waiting for first packet", null)
-    // Notify owner that the datagram receive loop has started.
-    try { onStarted?.invoke() } catch (_: Throwable) {}
-        var lastHeartbeat = System.currentTimeMillis()
-    val isTestMode = java.lang.Boolean.getBoolean("meshrabiya.hardware.testMode") || Thread.currentThread().stackTrace.any { it.className.lowercase().contains("junit") || it.className.lowercase().contains("gradle") }
-    // Allow suppressing repetitive heartbeat logs in CI/unit-test runs to avoid flooding
-    // the test output. Default to true when in test mode.
-    val silentHeartbeats = if (isTestMode) true else java.lang.Boolean.getBoolean("um.vnet.silentHeartbeats")
-
-        // Configure socket receive timeout if provider suggests one. A receive timeout makes the
-        // loop responsive to interruption and allows periodic heartbeats without relying on
-        // thread interruption semantics which can be flaky across platforms.
-        val soTimeout = socketTimeoutsProvider.socketSoTimeoutMillis
-        try {
-            if(soTimeout > 0) socket.soTimeout = soTimeout
-        } catch (_: Exception) {
-            // ignore any failures to set SO_TIMEOUT on specialized sockets
-        }
-
-        // If provider suggests a short socket timeout, make heartbeat interval a fraction of that so
-        // we surface liveliness more often in tests. Otherwise use default 5s.
-        val heartbeatInterval = when {
-            soTimeout > 0 -> kotlin.math.max(250L, soTimeout / 2L)
-            isTestMode -> 1000L
-            else -> 5000L
-        }
+        logger(Log.DEBUG, "$logPrefix Started on ${socket.localPort} waiting for first packet", null)
 
         while(!Thread.interrupted() && !socket.isClosed) {
             try {
@@ -97,21 +66,9 @@ class VirtualNodeDatagramSocket(
                     datagramPacket = rxPacket,
                     virtualNodeDatagramSocket = this,
                 )
-            } catch(e: java.net.SocketTimeoutException) {
-                // Expected when a SO_TIMEOUT is configured. Treat as heartbeat opportunity.
-                if(!silentHeartbeats)
-                    logger(Log.DEBUG, "$logPrefix : run : receive timed out (soTimeout) - continuing", null)
-            } catch(e: Exception) {
+            }catch(e: Exception) {
                 if(!socket.isClosed)
                     logger(Log.WARN, "$logPrefix : run : exception handling packet", e)
-            }
-
-            // heartbeat to show the loop is alive and waiting
-            val now = System.currentTimeMillis()
-            if(now - lastHeartbeat > heartbeatInterval) {
-                if(!silentHeartbeats)
-                    logger(Log.DEBUG, "$logPrefix : run : heartbeat - waiting on socket (localPort=${socket.localPort})", null)
-                lastHeartbeat = now
             }
         }
         logger(Log.DEBUG, "$logPrefix : run : finished")
@@ -138,8 +95,6 @@ class VirtualNodeDatagramSocket(
     }
 
     override fun close() {
-        // Ensure the underlying socket is closed so any blocking receive unblocks and the
-        // run loop can finish promptly when tests/shutdown requests close().
-        close(true)
+        close(false)
     }
 }

@@ -22,7 +22,6 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 
 class TestAppServerInstrumentedTest {
 
@@ -126,9 +125,9 @@ class TestAppServerInstrumentedTest {
 
                 assertFileContentsAreEqual(randomFile, destFile)
             }
-        } finally {
-            TestUtils.safeClose(testNode1.testNode)
-            TestUtils.safeClose(testNode2.testNode)
+        }finally {
+            testNode1.testNode.close()
+            testNode2.testNode.close()
         }
     }
 

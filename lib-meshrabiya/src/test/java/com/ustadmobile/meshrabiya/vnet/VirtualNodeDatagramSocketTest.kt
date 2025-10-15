@@ -12,7 +12,6 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.Executors
 import kotlin.random.Random
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 
 class VirtualNodeDatagramSocketTest {
 
@@ -30,7 +29,6 @@ class VirtualNodeDatagramSocketTest {
             ioExecutorService = executorService,
             router = socket1Router,
             logger = MNetLoggerStdout(),
-            socketTimeoutsProvider = com.ustadmobile.meshrabiya.net.TestSocketTimeoutsProvider(),
         )
 
         val socket2Router: VirtualRouter = mock { }
@@ -40,7 +38,6 @@ class VirtualNodeDatagramSocketTest {
             ioExecutorService = executorService,
             router = socket2Router,
             logger = MNetLoggerStdout(),
-            socketTimeoutsProvider = com.ustadmobile.meshrabiya.net.TestSocketTimeoutsProvider(),
         )
 
         try {
@@ -77,7 +74,8 @@ class VirtualNodeDatagramSocketTest {
             )
         } finally {
             executorService.shutdown()
-            TestUtils.safeClose(socket1, socket2)
+            socket1.close()
+            socket2.close()
         }
     }
 }

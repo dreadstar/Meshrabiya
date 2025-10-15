@@ -38,8 +38,6 @@ class AndroidDeviceCapabilityManager(
     
     companion object {
         private const val TAG = "AndroidHardwareMetrics"
-        // System property to enable test-mode heartbeats and shorter delays for unit tests
-        private const val SYS_PROP_TEST_MODE = "meshrabiya.hardware.testMode"
         private const val CPU_STAT_FILE = "/proc/stat"
         private const val MEMORY_INFO_FILE = "/proc/meminfo"
         private const val DEFAULT_MONITORING_INTERVAL = 30000L // 30 seconds
@@ -432,86 +430,15 @@ class AndroidDeviceCapabilityManager(
     
     override suspend fun getCapabilitySnapshot(nodeId: String): NodeCapabilitySnapshot {
         try {
-            val isTestMode = java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE)
-            if (isTestMode) {
-                // In test-mode we avoid doing heavy or potentially blocking system calls.
-                if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                    betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot (test-mode): quick path for $nodeId")
-
-                val cpuUtilization = 0.5f
-                val availableMemory = try { getAvailableMemory() } catch (_: Exception) { 0L }
-                val totalMemory = try { getTotalMemory() } catch (_: Exception) { 0L }
-                val batteryInfo = try { getBatteryInfo() } catch (_: Exception) {
-                    BatteryInfo(level = 50, isCharging = false, estimatedTimeRemaining = null, temperatureCelsius = 25, health = BatteryHealth.GOOD, chargingSource = null)
-                }
-
-                val thermalState = ThermalState.COOL
-                val bandwidth = MIN_BANDWIDTH_ESTIMATE
-                val networkInterfaces = emptySet<com.ustadmobile.meshrabiya.mmcp.SerializableNetworkInterfaceInfo>()
-                val storageCapabilities = StorageCapabilities(totalOffered = 100 * 1024L * 1024L, currentlyUsed = 0L, replicationFactor = 3, compressionSupported = true, encryptionSupported = true, accessPatterns = setOf(AccessPattern.RANDOM))
-                val stabilityScore = 0.8f
-
-                val powerState = when {
-                    batteryInfo.level > 70 -> PowerState.BATTERY_HIGH
-                    batteryInfo.level > 30 -> PowerState.BATTERY_MEDIUM
-                    batteryInfo.level > 10 -> PowerState.BATTERY_LOW
-                    else -> PowerState.BATTERY_CRITICAL
-                }
-
-                val resources = ResourceCapabilities(
-                    availableCPU = 1.0f - cpuUtilization,
-                    availableRAM = availableMemory,
-                    availableBandwidth = bandwidth,
-                    storageOffered = storageCapabilities.totalOffered,
-                    batteryLevel = batteryInfo.level,
-                    thermalThrottling = false,
-                    powerState = powerState,
-                    networkInterfaces = networkInterfaces
-                )
-
-                val snapshot = NodeCapabilitySnapshot(
-                    nodeId = nodeId,
-                    resources = resources,
-                    batteryInfo = batteryInfo,
-                    thermalState = thermalState,
-                    networkQuality = 0.5f,
-                    stability = stabilityScore
-                )
-
-                betaTestLogger.log(LogLevel.INFO, TAG, "Capability snapshot (test-mode) for $nodeId: $snapshot")
-                return snapshot
-            }
-            // If in test-mode, emit a short progress log so tests can see activity
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: starting collection for $nodeId")
-            
             val cpuUtilization = getCpuUtilization()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: cpu done for $nodeId")
             val availableMemory = getAvailableMemory()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: memory done for $nodeId")
             val totalMemory = getTotalMemory()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: total memory done for $nodeId")
             val batteryInfo = getBatteryInfo()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: battery done for $nodeId")
             val thermalState = getThermalState()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: thermal done for $nodeId")
             val bandwidth = getEstimatedBandwidth()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: bandwidth done for $nodeId")
             val networkInterfaces = getNetworkInterfaces()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: network interfaces done for $nodeId")
             val storageCapabilities = getStorageCapabilities()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: storage done for $nodeId")
             val stabilityScore = getStabilityScore()
-            if (java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE))
-                betaTestLogger.log(LogLevel.DETAILED, TAG, "getCapabilitySnapshot: stability done for $nodeId")
             
             val powerState = when {
                 batteryInfo.level > 70 -> PowerState.BATTERY_HIGH
@@ -565,12 +492,6 @@ class AndroidDeviceCapabilityManager(
         betaTestLogger.log(LogLevel.INFO, TAG, "Started hardware monitoring with ${intervalMs}ms interval")
         
         monitoringJob = CoroutineScope(Dispatchers.IO).launch {
-            // If test-mode is enabled, shorten the monitoring interval so tests see frequent updates
-            val isTestMode = java.lang.Boolean.getBoolean(SYS_PROP_TEST_MODE)
-            val effectiveInterval = if (isTestMode) 3000L else intervalMs
-
-            var heartbeatCounter = 0
-
             while (isActive && isMonitoringActive) {
                 try {
                     // Update connectivity history
@@ -583,21 +504,12 @@ class AndroidDeviceCapabilityManager(
                     
                     betaTestLogger.log(LogLevel.DETAILED, TAG, 
                         "Monitoring update: connected=$isConnected, thermal=$thermalState")
-
-                    // Emit a lightweight heartbeat log every few iterations when in test-mode so tests can
-                    // show progress instead of appearing to hang.
-                    if (isTestMode) {
-                        heartbeatCounter++
-                        if (heartbeatCounter % 2 == 0) {
-                            betaTestLogger.log(LogLevel.INFO, TAG, "Heartbeat monitoring: connected=$isConnected, thermal=$thermalState")
-                        }
-                    }
                     
                 } catch (e: Exception) {
                     betaTestLogger.log(LogLevel.BASIC, TAG, "Error during monitoring: ${e.message}")
                 }
                 
-                delay(effectiveInterval)
+                delay(intervalMs)
             }
         }
     }

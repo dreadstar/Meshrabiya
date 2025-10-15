@@ -22,7 +22,6 @@ import java.net.SocketAddress
 class ChainSocket(
     private val virtualRouter: VirtualRouter,
     private val logger: MNetLogger,
-    private val socketTimeoutsProvider: com.ustadmobile.meshrabiya.net.SocketTimeoutsProvider = com.ustadmobile.meshrabiya.net.DefaultSocketTimeoutsProvider(),
 ): Socket() {
 
     private val logPrefix = "[ChainSocket for ${virtualRouter.address}]"
@@ -46,27 +45,7 @@ class ChainSocket(
             }
 
             try {
-                val connectTimeout = socketTimeoutsProvider.connectTimeoutMillis
-                // Retry a few times for transient failures (tests or short races)
-                val maxRetries = 3
-                var attempt = 0
-                var lastEx: Exception? = null
-                while(attempt < maxRetries) {
-                    try {
-                        if (connectTimeout > 0) {
-                            super.connect(InetSocketAddress(nextHop.address, nextHop.port), connectTimeout)
-                        } else {
-                            super.connect(InetSocketAddress(nextHop.address, nextHop.port))
-                        }
-                        lastEx = null
-                        break
-                    } catch(e: Exception) {
-                        lastEx = e
-                        attempt++
-                        if(attempt < maxRetries) Thread.sleep(50L * attempt)
-                    }
-                }
-                if(lastEx != null) throw lastEx
+                super.connect(InetSocketAddress(nextHop.address, nextHop.port))
 
                 initializeChainIfNotFinalDest(
                     ChainSocketInitRequest(
@@ -85,13 +64,7 @@ class ChainSocket(
                 throw e
             }
         }else {
-            // Non-virtual address: honor provider connect timeout if specified, otherwise pass through
-            val providerTimeout = socketTimeoutsProvider.connectTimeoutMillis
-            if (providerTimeout > 0) {
-                super.connect(endpoint, providerTimeout)
-            } else {
-                super.connect(endpoint, timeout)
-            }
+            super.connect(endpoint, timeout)
         }
 
     }

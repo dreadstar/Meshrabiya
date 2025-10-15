@@ -121,12 +121,6 @@ class GatewayProtocolIntegrationTest {
     public fun tearDown() {
         Dispatchers.resetMain()
     }
-
-    @After
-    fun cleanupNodes() {
-        if (::androidVirtualNode.isInitialized) TestUtils.safeClose(androidVirtualNode)
-        if (::virtualNode.isInitialized) TestUtils.safeClose(virtualNode)
-    }
     // Test double for DeviceCapabilityManager (pattern from HardwareIntegrationTest)
     fun mockDeviceCapabilityManager(): DeviceCapabilityManager {
         return object : com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager {

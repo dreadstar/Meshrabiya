@@ -60,16 +60,17 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.SocketFactory
 import kotlin.random.Random
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
-    // APIPA addresses are in 169.254.0.0/16 — construct a random host portion
-    val fixedSection = (169 shl 24) or (254 shl 16)
-    val host = Random.nextInt(0, 1 shl 16)
-    return fixedSection or host
+    //169.254
+    val fixedSection = (169 shl 24).or(254 shl 16)
+
+    val randomSection = Random.nextInt(Short.MAX_VALUE.toInt())
+
+    return fixedSection.or(randomSection)
 }
 
 fun randomApipaInetAddr() = InetAddress.getByAddress(randomApipaAddr().addressToByteArray())
@@ -97,41 +98,14 @@ abstract class VirtualNode(
 
     val addressAsInt: Int = address.requireAddressAsInt()
 
-    // Prefix used in log messages for this node
-    protected val logPrefix: String = "[VirtualNode ${addressAsInt}]"
-
     //This executor is used for direct I/O activities
-    // If running under unit-test mode, create daemon threads so background I/O
-    // threads don't prevent the JVM (Gradle worker) from exiting when tests finish.
-    // Allow automatic detection of test-mode when running under JUnit/Gradle so
-    // tests that forget to set the system property still get daemon threads.
-    private val _isTestMode = run {
-        val prop = java.lang.Boolean.getBoolean("meshrabiya.hardware.testMode")
-        if (prop) {
-            true
-        } else {
-            // Inspect the current thread stack for common test runner markers. This
-            // is a conservative heuristic and only enables test mode when running
-            // under typical test harnesses (JUnit, Gradle). Keep it simple to avoid
-            // false positives in production.
-            Thread.currentThread().stackTrace.any { st ->
-                val cn = st.className
-                val lower = cn.lowercase()
-                lower.contains("junit") || lower.contains("gradle") || lower.contains("testrunner")
-            }
-        }
-    }
-    protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool({ r ->
-        Thread(r).apply { isDaemon = _isTestMode }
-    })
+    protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
 
     //This executor is used to schedule maintenance e.g. pings etc.
-    protected val scheduledExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2, { r ->
-        Thread(r).apply { isDaemon = _isTestMode }
-    })
+    protected val scheduledExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
 
-    // Use a SupervisorJob so that child coroutine failures don't cancel the entire scope
-    protected val coroutineScope = CoroutineScope(Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+    protected val coroutineScope = CoroutineScope(Dispatchers.Default + Job())
+
     private val messageCounter = AtomicInteger(0)
 
     private val _state = MutableStateFlow(LocalNodeState())
@@ -148,6 +122,8 @@ abstract class VirtualNode(
     abstract val meshrabiyaWifiManager: MeshrabiyaWifiManager
 
     private val pongListeners = CopyOnWriteArrayList<PongListener>()
+
+    protected val logPrefix: String = "[VirtualNode ${addressAsInt.addressToDotNotation()}]"
 
     protected val iDatagramSocketFactory = VirtualNodeReturnPathSocketFactory(this)
 
@@ -183,48 +159,7 @@ abstract class VirtualNode(
         getNodeRole = { getCurrentNodeRole() }
     )
 
-    init {
-        try {
-            originatingMessageManager.setOnStartedCallback {
-                try {
-                    if (networkComponentsRemaining.decrementAndGet() <= 0) networkReadyDeferred.complete(Unit)
-                } catch (_: Throwable) {}
-            }
-        } catch (_: Throwable) {}
-    }
-
-    // Fallback instance used if an overridden originatingMessageManager is not yet
-    // initialized when base-class init code runs. Access via `getOriginatingMessageManager()`.
-    private val fallbackOriginatingMessageManager = OriginatingMessageManager(
-        localNodeInetAddr = address,
-        logger = logger,
-        scheduledExecutor = scheduledExecutor,
-        nextMmcpMessageId = { nextMmcpMessageId() },
-        getWifiState = { currentNodeState.wifiState },
-        getFitnessScore = { getCurrentFitnessScore() },
-        getNodeRole = { getCurrentNodeRole() }
-    )
-
     private val localPort = findFreePort(0)
-
-    // A CompletableDeferred that completes when the node's network stacks are started
-    // such that they are ready to receive/send packets. Tests can await this to avoid
-    // races with background socket startup.
-    private val networkReadyDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
-
-    private fun onNetworkComponentStarted(name: String) {
-        try { logger(Log.DEBUG, "$logPrefix network component started: $name", null) } catch (_: Throwable) {}
-    }
-
-    /**
-     * Suspend until the networking components (datagram receive loop and servers) are
-     * started and ready to use. This is intended for tests to avoid racing with
-     * asynchronous startup.
-     */
-    suspend fun awaitNetworkReady() = networkReadyDeferred.await()
-
-    // Track readiness of network subcomponents (datagram receive loop & chain server)
-        private val networkComponentsRemaining = java.util.concurrent.atomic.AtomicInteger(3)
 
     val datagramSocket = VirtualNodeDatagramSocket(
         socket = DatagramSocket(localPort),
@@ -232,15 +167,6 @@ abstract class VirtualNode(
         router = this,
         localNodeVirtualAddress = addressAsInt,
         logger = logger,
-        onStarted = {
-            try {
-                onNetworkComponentStarted("datagramSocket")
-                if (networkComponentsRemaining.decrementAndGet() <= 0) {
-                    networkReadyDeferred.complete(Unit)
-                    try { logger(Log.DEBUG, "$logPrefix networkReadyDeferred completed (all components started)", null) } catch (_: Throwable) {}
-                }
-            } catch (_: Throwable) {}
-        }
     )
 
     protected val chainSocketFactory: ChainSocketFactory = ChainSocketFactoryImpl(
@@ -256,17 +182,9 @@ abstract class VirtualNode(
         executorService = connectionExecutor,
         chainSocketFactory = chainSocketFactory,
         name = addressAsInt.addressToDotNotation(),
-        logger = logger,
-        onStarted = {
-            try {
-                onNetworkComponentStarted("chainSocketServer")
-                if (networkComponentsRemaining.decrementAndGet() <= 0) {
-                    networkReadyDeferred.complete(Unit)
-                    try { logger(Log.DEBUG, "$logPrefix networkReadyDeferred completed (all components started)", null) } catch (_: Throwable) {}
-                }
-            } catch (_: Throwable) {}
-        }
+        logger = logger
     )
+
     private val _incomingMmcpMessages = MutableSharedFlow<MmcpMessageAndPacketHeader>(
         replay = 8,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -287,36 +205,12 @@ abstract class VirtualNode(
         // Launch coroutine after ensuring originatingMessageManager is properly initialized
         coroutineScope.launch {
             try {
-                // Capture the manager instance once to avoid races where subclass
-                // initialization might change or throw when accessed repeatedly.
-                val mgr = try {
-                    getOriginatingMessageManager()
-                } catch (t: Throwable) {
-                    // If anything unexpected happens fall back to the safe instance
-                    safeLog(LogLevel.WARN, "VirtualNode", "getOriginatingMessageManager() threw; using fallback", mapOf("address" to address.hostAddress), t)
-                    fallbackOriginatingMessageManager
-                }
-
-                mgr.state.collect { state ->
-                    // Protect calls into the manager from throwing and ensure any
-                    // unexpected throwable does not cancel the coroutine in a way that
-                    // surfaces to the caller. If an error occurs, log it and continue.
-                    val originators: Map<Int, VirtualNode.LastOriginatorMessage> = try {
-                        mgr.getOriginatorMessages()
-                    } catch (t: Throwable) {
-                        safeLog(LogLevel.WARN, "VirtualNode", "originatingMessageManager.getOriginatorMessages() threw; using empty map", mapOf("address" to address.hostAddress), t)
-                        emptyMap()
-                    }
-
-                    try {
-                        _state.update { prev ->
-                            prev.copy(
-                                originatorMessages = originators
-                            )
-                        }
-                    } catch (t: Throwable) {
-                        // Protect the state update from unexpected throwables
-                        safeLog(LogLevel.ERROR, "VirtualNode", "Failed to update node state from originator manager", mapOf("address" to address.hostAddress), t)
+                // Use the property directly rather than the getter to avoid inheritance issues
+                originatingMessageManager.state.collect { state ->
+                    _state.update { prev ->
+                        prev.copy(
+                            originatorMessages = originatingMessageManager.getOriginatorMessages()
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -475,8 +369,6 @@ abstract class VirtualNode(
         //This is an Mmcp message
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
-            // Debug: log receipt of an MMCP message and its type
-            try { logger(Log.DEBUG, "$logPrefix onIncomingMmcpMessage: received ${mmcpMessage::class.simpleName} from ${virtualPacket.header.fromAddr.addressToDotNotation()}", null) } catch (_: Throwable) {}
             val from = virtualPacket.header.fromAddr
             logger(Log.VERBOSE,
                 message = {
@@ -513,7 +405,7 @@ abstract class VirtualNode(
 
                 mmcpMessage is MmcpPong && isToThisNode -> {
                     logger(Log.VERBOSE, { "$logPrefix Received pong(id=${mmcpMessage.messageId})}" })
-                    getOriginatingMessageManager().onPongReceived(from, mmcpMessage)
+                    originatingMessageManager.onPongReceived(from, mmcpMessage)
                     pongListeners.forEach {
                         it.onPongReceived(from, mmcpMessage)
                     }
@@ -541,37 +433,12 @@ abstract class VirtualNode(
                 }
 
                 mmcpMessage is MmcpNodeAnnouncement -> {
-                    shouldRoute = getOriginatingMessageManager().onReceiveOriginatingMessage(
+                    shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
                         mmcpMessage = mmcpMessage,
                         datagramPacket = datagramPacket ?: return false,
                         datagramSocket = datagramSocket ?: return false,
                         virtualPacket = virtualPacket,
                     )
-                }
-
-                mmcpMessage is com.ustadmobile.meshrabiya.mmcp.MmcpDelegationMessage -> {
-                    // Debug: delegation message received - log id and sender
-                    try { println("D: $logPrefix Received MmcpDelegationMessage id=${(mmcpMessage as com.ustadmobile.meshrabiya.mmcp.MmcpDelegationMessage).messageId} from ${from.addressToDotNotation()}") } catch (_: Throwable) {}
-                    // Verify delegation message signatures before handing to higher layers.
-                    // Per design unsigned messages are allowed. If signature/public key are
-                    // present but verification fails, drop the message.
-                    val delegation = mmcpMessage as com.ustadmobile.meshrabiya.mmcp.MmcpDelegationMessage
-                    val verified = try {
-                        val v = delegation.verify()
-                        try { println("D: $logPrefix Delegation id=${delegation.messageId} verify=$v hasPayload=${delegation.jsonPayload != null}") } catch (_: Throwable) {}
-                        v
-                    } catch (e: Exception) {
-                        try { println("D: $logPrefix Delegation id=${delegation.messageId} verify threw: ${e.message}") } catch (_: Throwable) {}
-                        false
-                    }
-
-                    if (!verified) {
-                        logger(Log.WARN, "$logPrefix Dropping MmcpDelegationMessage id=${delegation.messageId} due to invalid signature", null)
-                        try { println("D: $logPrefix Dropped delegation id=${delegation.messageId}") } catch (_: Throwable) {}
-                        return false
-                    }
-                    // allow routing to continue for valid or unsigned messages
-                    shouldRoute = true
                 }
 
                 mmcpMessage is MmcpGatewayAnnouncement -> {
@@ -585,10 +452,7 @@ abstract class VirtualNode(
                 }
             }
 
-            // Debug: about to emit incoming MMCP to flows
-            try { logger(Log.DEBUG, "$logPrefix onIncomingMmcpMessage: emitting to incomingMmcpMessages flow", null) } catch (_: Throwable) {}
-            val emitOk = _incomingMmcpMessages.tryEmit(MmcpMessageAndPacketHeader(mmcpMessage, virtualPacket.header))
-            try { println("D: $logPrefix onIncomingMmcpMessage: emitted to incoming flow emitOk=$emitOk type=${mmcpMessage::class.simpleName} header=${virtualPacket.header}") } catch (_: Throwable) {}
+            _incomingMmcpMessages.tryEmit(MmcpMessageAndPacketHeader(mmcpMessage, virtualPacket.header))
 
             return shouldRoute
         }catch(e: Exception) {
@@ -637,7 +501,7 @@ abstract class VirtualNode(
 
                 packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
                 if(toAddr == ADDR_BROADCAST) {
-                    getOriginatingMessageManager().neighbors().filter {
+                    originatingMessageManager.neighbors().filter {
                         it.first != fromLastHop && it.first != packet.header.fromAddr
                     }.forEach {
                         logger(Log.VERBOSE,
@@ -657,7 +521,7 @@ abstract class VirtualNode(
                     }
 
                 }else {
-                    val originatorMessage = getOriginatingMessageManager()
+                    val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
                     if(originatorMessage != null) {
                         originatorMessage.receivedFromSocket.send(
@@ -681,7 +545,7 @@ abstract class VirtualNode(
     }
 
     override fun lookupNextHopForChainSocket(address: InetAddress, port: Int): ChainSocketNextHop {
-        return getOriginatingMessageManager().lookupNextHopForChainSocket(address, port)
+        return originatingMessageManager.lookupNextHopForChainSocket(address, port)
     }
 
 
@@ -702,7 +566,7 @@ abstract class VirtualNode(
         )
 
         coroutineScope.launch {
-            getOriginatingMessageManager().addNeighbor(
+            originatingMessageManager.addNeighbor(
                 neighborRealInetAddr = address,
                 neighborRealPort = port,
                 socket =  socket,
@@ -744,7 +608,7 @@ abstract class VirtualNode(
     }
 
     fun sendMessage(message: MmcpMessage) {
-        getOriginatingMessageManager().sendMessage(message)
+        originatingMessageManager.sendMessage(message)
     }
 
     /**
@@ -770,105 +634,18 @@ abstract class VirtualNode(
         return currentNodeState
     }
 
-    fun neighbors() = getOriginatingMessageManager().neighbors()
+    fun neighbors() = originatingMessageManager.neighbors()
 
     override fun close() {
-        // Make close idempotent and swallow any throwable during shutdown so that
-        // test teardown and repeated closes do not cause the test runner to fail.
-        if (this::class.java.getDeclaredField("__closedFlagAddedByPatch").let { false }) {
-            // no-op; defensive placeholder for older runtime safety
-        }
+        datagramSocket.close(closeSocket = true)
+        chainSocketServer.close(closeSocket = true)
+        coroutineScope.cancel(message = "VirtualNode closed")
 
-        // Use an atomic flag to ensure idempotence
-        try {
-            val closedField = this::class.java.getDeclaredField("closed")
-            // If reflection field exists, we assume earlier patch applied and use it
-        } catch (_: Throwable) {
-            // ignore - we'll still proceed with best effort
-        }
-
-        // Replace with a robust approach: try to mark closed via an atomic flag stored in a backing field.
-        try {
-            val closedFieldName = "__virtualNodeClosedFlag"
-            val clazz = this::class.java
-            val field = try {
-                clazz.getDeclaredField(closedFieldName)
-            } catch (t: NoSuchFieldException) {
-                // add a synthetic field by storing in a Kotlin property via reflection is not trivial; instead
-                // fallback to a local static map is too heavy. We'll simply attempt shutdown but ensure we
-                // catch all Throwables so repeated calls are harmless.
-                null
-            }
-            // Proceed to shutdown; catch everything
-        } catch (_: Throwable) {}
-
-        try {
-            try {
-                chainSocketServer.close(closeSocket = true)
-            } catch (t: Throwable) {
-                safeLog(LogLevel.WARN, "VirtualNode", "Error closing chainSocketServer", mapOf("address" to address.hostAddress), t)
-            }
-
-            try {
-                datagramSocket.close(closeSocket = true)
-            } catch (t: Throwable) {
-                safeLog(LogLevel.WARN, "VirtualNode", "Error closing datagramSocket", mapOf("address" to address.hostAddress), t)
-            }
-
-            try {
-                coroutineScope.cancel(message = "VirtualNode closed")
-            } catch (t: Throwable) {
-                safeLog(LogLevel.WARN, "VirtualNode", "Error cancelling coroutineScope", mapOf("address" to address.hostAddress), t)
-            }
-
-            try {
-                connectionExecutor.shutdownNow()
-            } catch (t: Throwable) {
-                // nothing much to do
-            }
-
-            try {
-                scheduledExecutor.shutdownNow()
-            } catch (t: Throwable) {
-                // nothing much to do
-            }
-        } catch (t: Throwable) {
-            // As a last resort swallow everything to avoid teardown failures
-            safeLog(LogLevel.ERROR, "VirtualNode", "Unexpected error during close()", mapOf("address" to address.hostAddress), t)
-        }
+        connectionExecutor.shutdown()
+        scheduledExecutor.shutdown()
     }
 
-    internal fun getOriginatingMessageManager(): OriginatingMessageManager {
-        return try {
-            // Access the (possibly overridden) property; if the subclass's override
-            // has not initialized yet this can throw. Be defensive and catch any
-            // Throwable, returning the fallback instance so callers never get null.
-            originatingMessageManager
-        } catch (t: Throwable) {
-            safeLog(
-                LogLevel.WARN,
-                "VirtualNode",
-                "originatingMessageManager access failed; using fallback",
-                mapOf("address" to address.hostAddress),
-                t
-            )
-            try {
-                fallbackOriginatingMessageManager
-            } catch (t2: Throwable) {
-                // As a last resort, create a new fallback here to guarantee non-null return
-                safeLog(LogLevel.ERROR, "VirtualNode", "fallbackOriginatingMessageManager access failed; creating ad-hoc instance", mapOf("address" to address.hostAddress), t2)
-                OriginatingMessageManager(
-                    localNodeInetAddr = address,
-                    logger = logger,
-                    scheduledExecutor = scheduledExecutor,
-                    nextMmcpMessageId = { nextMmcpMessageId() },
-                    getWifiState = { currentNodeState.wifiState },
-                    getFitnessScore = { getCurrentFitnessScore() },
-                    getNodeRole = { getCurrentNodeRole() }
-                )
-            }
-        }
-    }
+    internal fun getOriginatingMessageManager() = originatingMessageManager
 
     internal open fun getMeshRoleManager(): MeshRoleManager? = null
     

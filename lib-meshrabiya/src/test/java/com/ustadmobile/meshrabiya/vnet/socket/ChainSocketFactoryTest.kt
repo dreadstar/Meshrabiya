@@ -13,7 +13,6 @@ import org.junit.Assert
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.stub
@@ -105,7 +104,7 @@ class ChainSocketFactoryTest {
             val initRequest = acceptedSocket.getInputStream().readChainSocketInitRequest()
             acceptedSocket.getOutputStream().writeChainSocketInitResponse(ChainSocketInitResponse(200))
             acceptedSocket.getOutputStream().write(serverResponsePayload)
-            TestUtils.safeClose(acceptedSocket)
+            acceptedSocket.close()
             initChainRequest.complete(initRequest)
         }.start()
 
@@ -115,8 +114,8 @@ class ChainSocketFactoryTest {
             destAddr, destPort
         )
 
-    val chainResponse = chainSocket.getInputStream().readBytes()
-    TestUtils.safeClose(chainSocket)
+        val chainResponse = chainSocket.getInputStream().readBytes()
+        chainSocket.close()
 
         val initRequest = initChainRequest.get()
 

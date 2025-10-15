@@ -351,9 +351,8 @@ class EmergentRoleManagerSimpleIntegrationTest {
         val endTime = System.currentTimeMillis()
         val executionTime = endTime - startTime
         
-    // Should complete 100 calculations in a reasonable time. Increase threshold to
-    // 3000ms to account for slower CI/JDK21 environments while still catching major regressions.
-    assertTrue(executionTime < 3000, "100 role calculations should complete in under 3 seconds, took ${executionTime}ms")
+        // Should complete 100 calculations in under 1 second (reasonable performance expectation)
+        assertTrue(executionTime < 1000, "100 role calculations should complete in under 1 second, took ${executionTime}ms")
     }
 
     @Test

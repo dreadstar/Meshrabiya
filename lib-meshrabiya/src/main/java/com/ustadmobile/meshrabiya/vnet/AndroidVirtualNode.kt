@@ -90,7 +90,7 @@ class AndroidVirtualNode(
      * Returns the hop count to the given node address using originator messages.
      */
     fun getHopCountToNode(nodeAddress: Int): Int? {
-        val originatorMsg = getOriginatingMessageManager().getOriginatorMessages()[nodeAddress]
+        val originatorMsg = originatingMessageManager.getOriginatorMessages()[nodeAddress]
         return originatorMsg?.hopCount?.toInt()
     }
 

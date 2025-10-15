@@ -31,7 +31,19 @@ class StrangersSafeComputeEngine(private val context: Context) {
 
         // Library-level helper to provide current device onion address for nested classes
         // App module may override or call different APIs if needed.
-        fun getCurrentDeviceOnion(): String = "device.onion"
+        fun getCurrentDeviceOnion(): String {
+            try {
+                val ctx = android.app.Application().applicationContext
+                val pub = try {
+                    val cls = Class.forName("com.ustadmobile.meshrabiya.sensor.meshrabiya.MeshrabiyaAidlClient")
+                    val m = cls.getMethod("fetchOnionPubKeyBlocking", android.content.Context::class.java)
+                    m.invoke(null, ctx) as? String
+                } catch (_: Throwable) { null }
+                if (!pub.isNullOrBlank()) return pub
+            } catch (_: Throwable) {
+            }
+            return "device.onion"
+        }
     }
     
     /**

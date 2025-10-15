@@ -7,7 +7,6 @@ import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.test.FileEchoSocketServer
 import com.ustadmobile.meshrabiya.test.assertFileContentsAreEqual
 import com.ustadmobile.meshrabiya.test.writeRandomData
-import com.ustadmobile.meshrabiya.vnet.TestUtils
 import com.ustadmobile.meshrabiya.vnet.VirtualRouter
 import com.ustadmobile.meshrabiya.vnet.randomApipaAddr
 import org.junit.Assert
@@ -56,12 +55,7 @@ class ChainSocketServerTest {
         }
 
         val chainSocketServer = ChainSocketServer(
-            serverSocket = ServerSocket(0),
-            executorService = Executors.newCachedThreadPool(),
-            chainSocketFactory = chainSocketFactory,
-            name = "test",
-            logger = mNetLogger,
-            socketTimeoutsProvider = com.ustadmobile.meshrabiya.net.TestSocketTimeoutsProvider(acceptTimeoutMillis = 0)
+            ServerSocket(0), Executors.newCachedThreadPool(), chainSocketFactory, "test", mNetLogger
         )
 
         val clientSocket = Socket(InetAddress.getLoopbackAddress(), chainSocketServer.localPort)
@@ -80,7 +74,7 @@ class ChainSocketServerTest {
         FileOutputStream(downloadFile).use {
             clientSocket.getInputStream().copyTo(it)
         }
-    TestUtils.safeClose(clientSocket)
+        clientSocket.close()
 
         assertFileContentsAreEqual(randomDataFile, downloadFile)
         Assert.assertEquals(200, initResponse.statusCode)
@@ -129,25 +123,15 @@ class ChainSocketServerTest {
         //ChainSocketFactory2 represents the node that is a neighbor to the final destination
         val chainSocketFactory2 = spy(ChainSocketFactoryImpl(virtualRouter2, logger = mNetLogger))
         val chainSocketServer2 = ChainSocketServer(
-            serverSocket = chainServerSocket2,
-            executorService = Executors.newCachedThreadPool(),
-            chainSocketFactory = chainSocketFactory2,
-            name = "server2",
-            logger = mNetLogger,
-            socketTimeoutsProvider = com.ustadmobile.meshrabiya.net.TestSocketTimeoutsProvider(acceptTimeoutMillis = 0),
-            onMakeChainSocket = onMakeChainSocket
+            chainServerSocket2, Executors.newCachedThreadPool(), chainSocketFactory2,
+            "server2", mNetLogger, onMakeChainSocket
         )
 
         //ChainSocketFactory1 represents the node that makes the request that will run via ChainSocketFactory2
         val chainSocketFactory1 = spy(ChainSocketFactoryImpl(virtualRouter1, logger = mNetLogger))
         val chainSocketServer1 = ChainSocketServer(
-            serverSocket = chainServerSocket1,
-            executorService = Executors.newCachedThreadPool(),
-            chainSocketFactory = chainSocketFactory1,
-            name = "server1",
-            logger = mNetLogger,
-            socketTimeoutsProvider = com.ustadmobile.meshrabiya.net.TestSocketTimeoutsProvider(acceptTimeoutMillis = 0),
-            onMakeChainSocket = onMakeChainSocket
+            chainServerSocket1, Executors.newCachedThreadPool(), chainSocketFactory1,
+            "server1", mNetLogger, onMakeChainSocket
         )
 
         val clientSocket = Socket(InetAddress.getLoopbackAddress(), chainSocketServer1.localPort)
@@ -166,14 +150,15 @@ class ChainSocketServerTest {
         FileOutputStream(downloadFile).use {
             clientSocket.getInputStream().copyTo(it)
         }
-    TestUtils.safeClose(clientSocket)
+        clientSocket.close()
         assertFileContentsAreEqual(randomDataFile, downloadFile)
         Assert.assertEquals(200, initResponse.statusCode)
         verify(virtualRouter1, atLeastOnce()).lookupNextHopForChainSocket(destAddr, randomFileSocketServer.localPort)
         verify(virtualRouter2, atLeastOnce()).lookupNextHopForChainSocket(destAddr, randomFileSocketServer.localPort)
 
 
-    TestUtils.safeClose(chainSocketServer1, chainSocketServer2)
+        chainSocketServer1.close()
+        chainSocketServer2.close()
     }
 
     @Test(timeout = 5000)
