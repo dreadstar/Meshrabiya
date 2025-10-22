@@ -17,31 +17,75 @@ class MeshGossipService(private val context: Context) {
         timeoutMs: Long,
         onResponses: (List<StorageNodeResponse>) -> Unit
     ) {
-        // Broadcast request to mesh, collect responses within timeout
-        // ...implementation: send request, collect responses, call onResponses...
+        // Implementation: send request to mesh, collect responses, call onResponses
+        CoroutineScope(Dispatchers.IO).launch {
+            val responses = mutableListOf<StorageNodeResponse>()
+            // Simulate mesh broadcast and response collection
+            // Replace with actual mesh logic
+            meshBroadcast(request) { response ->
+                response?.let { responses.add(it) }
+            }
+            delay(timeoutMs)
+            onResponses(responses)
+        }
     }
 
     // --- New code: Handle incoming storage node request ---
     fun handleIncomingStorageNodeRequest(request: StorageNodeRequest): StorageNodeResponse? {
         if (emergentRoleManager.isStorageNode() &&
-            emergentRoleManager.getCurrentCapabilities().thermalState == ThermalState.HEALTHY &&
+            emergentRoleManager.getSystemState() == "healthy" &&
             emergentRoleManager.calculateAvailableStorage() >= request.requiredSpace) {
             return StorageNodeResponse(
                 nodeId = virtualNode.addressAsInt.toString(),
                 availableSpace = emergentRoleManager.calculateAvailableStorage(),
-                systemState = emergentRoleManager.getCurrentCapabilities().thermalState.name,
+                systemState = emergentRoleManager.getSystemState(),
                 url = "meshrabiya://${virtualNode.addressAsInt}/storage",
                 latency = estimateLatency(request.senderId),
-                fitnessScore = calculateFitnessScore(),
-                // ...other relevant info...
+                fitnessScore = emergentRoleManager.calculateFitnessScore()
             )
         }
         return null
     }
 
-    // --- New code: Send file and handle completion ---
+    // --- NEW CODE: Send file and handle completion ---
     fun sendFile(destinationUrl: String, file: java.io.File, onComplete: (FileTransferResult) -> Unit) {
-        // Chunk file, send over mesh, await completion notification
-        // ...implementation...
+        CoroutineScope(Dispatchers.IO).launch {
+            // Simulate file transfer
+            val result = meshFileTransfer(destinationUrl, file)
+            onComplete(result)
+        }
+    }
+
+    // --- NEW CODE: Query file replicas on mesh ---
+    fun queryFileReplicas(fileId: String, timeoutMs: Long, onResult: (List<String>) -> Unit) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val replicaNodes = mutableListOf<String>()
+            // Simulate mesh query
+            meshReplicaQuery(fileId) { nodeId ->
+                nodeId?.let { replicaNodes.add(it) }
+            }
+            delay(timeoutMs)
+            onResult(replicaNodes)
+        }
+    }
+
+    // --- Helper methods (replace with real mesh logic) ---
+    private fun meshBroadcast(request: StorageNodeRequest, onResponse: (StorageNodeResponse?) -> Unit) {
+        // Simulate broadcast to mesh nodes
+        // Call onResponse for each candidate node
+    }
+
+    private fun meshFileTransfer(destinationUrl: String, file: java.io.File): FileTransferResult {
+        // Simulate file transfer and return result
+        return FileTransferResult(success = true, fileId = "file-" + file.name)
+    }
+
+    private fun meshReplicaQuery(fileId: String, onNode: (String?) -> Unit) {
+        // Simulate querying mesh for file replicas
+    }
+
+    private fun estimateLatency(senderId: String): Int {
+        // Simulate latency estimation
+        return 10
     }
 }

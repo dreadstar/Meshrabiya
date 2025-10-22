@@ -3,26 +3,29 @@ package com.ustadmobile.meshrabiya.storage
 import com.ustadmobile.meshrabiya.meshgossip.MeshGossipService
 import com.ustadmobile.meshrabiya.meshgossip.model.StorageNodeRequest
 import com.ustadmobile.meshrabiya.settings.AppSettings
+import java.io.File
 
 
 class ReplicationManager(private val meshGossipService: MeshGossipService) {
     // --- New code: Replication initiation ---
-    fun replicateFile(fileId: String, file: java.io.File) {
+    fun replicateFile(fileId: String, file: File) {
         val desiredReplicas = AppSettings.getReplicaCount()
-        val currentReplicas = queryReplicaCount(fileId)
-        if (currentReplicas >= desiredReplicas) return
+        meshGossipService.queryFileReplicas(fileId, timeoutMs = 3000) { replicaNodes ->
+            val currentReplicas = replicaNodes.size
+            if (currentReplicas >= desiredReplicas) return@queryFileReplicas
 
-        val request = StorageNodeRequest(file.length(), file.name, fileId)
-        meshGossipService.broadcastStorageNodeRequest(request, timeoutMs = 5000) { candidates ->
-            val replicasNeeded = desiredReplicas - currentReplicas
-            val selectedNodes = candidates
-                .filter { it.availableSpace >= file.length() }
-                .sortedWith(compareBy({ -it.availableSpace }, { it.latency }))
-                .take(replicasNeeded)
+            val request = StorageNodeRequest(file.length(), file.name, fileId)
+            meshGossipService.broadcastStorageNodeRequest(request, timeoutMs = 5000) { candidates ->
+                val replicasNeeded = desiredReplicas - currentReplicas
+                val selectedNodes = candidates
+                    .filter { it.availableSpace >= file.length() }
+                    .sortedWith(compareBy({ -it.availableSpace }, { it.latency }))
+                    .take(replicasNeeded)
 
-            selectedNodes.forEach { node ->
-                meshGossipService.sendFile(node.url, file) { result ->
-                    // Optionally handle completion
+                selectedNodes.forEach { node ->
+                    meshGossipService.sendFile(node.url, file) { result ->
+                        // Optionally handle completion, logging, or UI update here
+                    }
                 }
             }
         }
