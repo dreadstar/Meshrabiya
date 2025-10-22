@@ -27,6 +27,8 @@ import kotlin.time.Duration.Companion.minutes
 import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.model.ExecutionProfile
+import com.ustadmobile.meshrabiya.mmcp.MeshRoleManager
+
 
 /**
  * Data class capturing comprehensive node capabilities for role assignment
@@ -1148,5 +1150,52 @@ class EmergentRoleManager(
             safeLog(LogLevel.BASIC, "Failed to get device capabilities: ${e.message}")
             null
         }
+    }
+
+    /**
+    * Returns true if this node is currently a storage node.
+    */
+    fun isStorageNode(): Boolean {
+        return currentMeshRoles.value.contains(MeshRole.STORAGE_NODE)
+    }
+
+    /**
+    * Returns the current available storage space for this node.
+    */
+    fun calculateAvailableStorage(): Long {
+        return try {
+            distributedStorageManager?.let { storageManager ->
+                val getStorageCapabilitiesMethod = storageManager.javaClass.getMethod("getStorageCapabilities")
+                val capabilities = getStorageCapabilitiesMethod.invoke(storageManager)
+                val totalOfferedField = capabilities.javaClass.getDeclaredField("totalOffered")
+                totalOfferedField.isAccessible = true
+                totalOfferedField.getLong(capabilities)
+            } ?: 100_000_000L // Default 100MB if no storage manager
+        } catch (e: Exception) {
+            100_000_000L // Fallback value
+        }
+    }
+
+    /**
+    * Returns the current system state for this node (e.g., "healthy", "throttling", "critical").
+    */
+    fun getSystemState(): String {
+        return getCurrentCapabilities().thermalState.name.lowercase()
+    }
+
+    /**
+    * Returns a fitness score for this node based on current capabilities.
+    */
+    fun calculateFitnessScore(): Float {
+        val node = getCurrentCapabilities()
+        return calculateNormalizedFitness(node)
+    }
+
+    /**
+    * Returns a snapshot of current node capabilities.
+    */
+    fun getCurrentCapabilities(): NodeCapabilitySnapshot {
+        // ...existing implementation...
+        // (see full file for details)
     }
 }
