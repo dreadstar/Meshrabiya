@@ -1,4 +1,10 @@
 # Meshrabiya
+## MeshSettings
+
+**Location:** `Meshrabiya/lib-meshrabiya/src/main/java/com/ustadmobile/meshrabiya/settings/MeshSettings.kt`
+
+**Purpose:**
+MeshSettings provides centralized configuration and runtime settings for the Meshrabiya library. It manages mesh-related preferences such as replica count and is intended for use by Meshrabiya components only. Use `MeshSettings.init(context)` to initialize and access mesh settings within the library.
 
 Meshrabiya is a mesh network for Android that operates over WiFi. It allows applications
 to seamlessly communicate over multiple hops and multiple WiFi direct and/or Local Only Hotspots.

@@ -2,6 +2,7 @@ plugins {
     id 'com.android.library' version '8.12.2'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization'
+    id 'kotlin-kapt' // <-- REQUIRED for Room annotation processing
     id 'maven-publish'
     id 'jacoco'
 }
@@ -66,11 +67,7 @@ dependencies {
     api "org.bouncycastle:bcpkix-jdk18on:1.75"
     api "org.bouncycastle:bcutil-jdk18on:1.75"
     api "com.github.seancfoley:ipaddress:5.5.1"
-    // LiteRT dependency - litert AAR is available on Google Maven. Sub-artifacts (gpu/support) aren't published
-    // for this version, so only include the main litert artifact which provides the core runtime classes.
     api "com.google.ai.edge.litert:litert:2.0.0-alpha"
-
-    // ML Kit Play Services (unbundled) - ensure tasks dependency is present
     api "com.google.android.gms:play-services-mlkit-text-recognition:19.0.1"
     api "com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.0"
     api "com.google.android.gms:play-services-mlkit-face-detection:17.1.0"
@@ -90,6 +87,9 @@ dependencies {
     testImplementation "com.squareup.okhttp3:okhttp:4.12.0"
     testImplementation "androidx.test:core:1.5.0"
     testImplementation "org.jetbrains.kotlin:kotlin-test:1.9.0"
+    implementation 'org.msgpack:msgpack-core:0.8.22'
+    implementation "androidx.room:room-runtime:2.6.1"
+    kapt "androidx.room:room-compiler:2.6.1" // <-- Room annotation processor
 }
 
 // Configure JaCoCo test coverage for Meshrabiya module
