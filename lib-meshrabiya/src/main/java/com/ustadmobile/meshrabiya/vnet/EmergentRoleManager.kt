@@ -179,6 +179,18 @@ class EmergentRoleManager(
         }
     }
 
+    // --- NEW: Compute Node Participation Setter ---
+    fun setComputeNodeParticipationEnabled(enabled: Boolean) {
+        val current = _preferredRoles.value.toMutableSet()
+        if (enabled) {
+            current.add(MeshRole.COMPUTE_NODE)
+        } else {
+            current.remove(MeshRole.COMPUTE_NODE)
+        }
+        _preferredRoles.value = current
+        updateRoles()
+    }
+
     fun determineOptimalRoles(
         nodeCapabilities: NodeCapabilitySnapshot = getCurrentCapabilities(),
         meshIntelligence: MeshIntelligence = this.meshIntelligence.value,

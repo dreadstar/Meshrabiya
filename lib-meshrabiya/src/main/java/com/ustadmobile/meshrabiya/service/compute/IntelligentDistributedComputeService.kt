@@ -56,6 +56,23 @@ class IntelligentDistributedComputeService(
         // TODO: Implement actual permission update and job trigger logic
     }
 
+    fun processTaskRequest(localRequest: LocalComputeTaskRequest) {
+        ClientTaskRequestTracker.add(localRequest) // Add to client-side request list
+        CoroutineScope(Dispatchers.IO).launch {
+            val responses = meshGossipService.broadcastComputeTaskRequestSync(
+                localRequest.mmcpRequest,
+                MeshrabiyaConstants.getTimeoutMs()
+            )
+            handleComputeNodeResponses(localRequest, responses)
+        }
+    }
+
+    fun handleComputeNodeResponses(localRequest: LocalComputeTaskRequest, responses: List<ComputeNodeResponse>) {
+        // Select nodes, update client-side request status
+        ClientTaskRequestTracker.updateWithResponses(localRequest, responses)
+        // Optionally trigger remote execution
+    }
+
     val builtinLibraryEntries: List<LibraryEntry> = listOf(
         LibraryEntry.PythonServiceEntry(
             serviceId = "builtin_image_preprocessing",

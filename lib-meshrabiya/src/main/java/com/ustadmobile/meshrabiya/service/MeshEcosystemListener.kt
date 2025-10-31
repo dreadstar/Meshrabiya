@@ -7,8 +7,12 @@ import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
 import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
 import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import kotlinx.coroutines.*
 import java.util.concurrent.atomic.AtomicBoolean
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
+import org.torproject.android.service.compute.IntelligentDistributedComputeService
 
 /**
  * Listens for mesh ecosystem events: chunk transfer, broadcast responses, permission updates, etc.
@@ -18,19 +22,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MeshEcosystemListener(
     private val meshNetworkInterface: MeshNetworkInterface,
     private val meshGossipService: MeshGossipService,
-    connectionPoolSize: Int = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getConnectionPoolSize()
+    private val coreGossipBroadcastService: CoreGossipBroadcastService,
+    connectionPoolSize: Int = MeshrabiyaConstants.getConnectionPoolSize()
 ) {
 
     private val connectionPool = MeshConnectionPool(meshNetworkInterface, poolSize = connectionPoolSize)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // Registered handlers
-    private var storageManager: com.ustadmobile.meshrabiya.storage.DistributedStorageManager? = null
-    private var computeService: org.torproject.android.service.compute.IntelligentDistributedComputeService? = null
+    private var storageManager: DistributedStorageManager? = null
+    private var computeService: IntelligentDistributedComputeService? = null
 
     private val isShutdown = AtomicBoolean(false)
     private var isStorageParticipationEnabled: Boolean = false
-
 
     // Controls whether storage node responsibilities are enabled
     var isStorageNodeEnabled: Boolean = true
@@ -38,17 +42,15 @@ class MeshEcosystemListener(
             field = value
         }
 
-    private val isShutdown = AtomicBoolean(false)
-
     init {
         registerBroadcastListeners()
     }
 
-    fun registerStorageManager(manager: com.ustadmobile.meshrabiya.storage.DistributedStorageManager) {
+    fun registerStorageManager(manager: DistributedStorageManager) {
         storageManager = manager
     }
 
-    fun registerComputeService(service: org.torproject.android.service.compute.IntelligentDistributedComputeService) {
+    fun registerComputeService(service: IntelligentDistributedComputeService) {
         computeService = service
     }
 
@@ -56,33 +58,43 @@ class MeshEcosystemListener(
         isStorageParticipationEnabled = enabled
     }
 
+    // TODO: Add similar enable/disable for compute participation if needed
+    // TODO: Add compute related broadcast listeners
     private fun registerBroadcastListeners() {
-        meshGossipService.registerStorageNodeResponseListener { senderId, response ->
-            if (isStorageParticipationEnabled) {
-                routeStorageNodeResponse(senderId, response)
+        // StorageNodeResponse broadcast listener
+        coreGossipBroadcastService.registerListener("StorageNodeResponse") { senderId, bytes, type, msg ->
+            if (isStorageParticipationEnabled && type == "StorageNodeResponse" && msg is StorageNodeResponse) {
+                routeStorageNodeResponse(senderId, msg)
             }
         }
-        meshGossipService.registerChunkRetrievalResponseListener { senderId, response ->
-            if (isStorageParticipationEnabled) {
-                routeChunkRetrievalResponse(senderId, response)
+        // ChunkRetrievalResponse broadcast listener
+        coreGossipBroadcastService.registerListener("ChunkRetrievalResponse") { senderId, bytes, type, msg ->
+            if (isStorageParticipationEnabled && type == "ChunkRetrievalResponse" && msg is ChunkRetrievalResponse) {
+                routeChunkRetrievalResponse(senderId, msg)
             }
         }
-        meshGossipService.registerReplicaResponseListener { senderId, response ->
-            if (isStorageParticipationEnabled) {
-                routeReplicaResponse(senderId, response)
+        // ReplicaResponse broadcast listener
+        coreGossipBroadcastService.registerListener("ReplicaResponse") { senderId, bytes, type, msg ->
+            if (isStorageParticipationEnabled && type == "ReplicaResponse" && msg is ReplicaResponse) {
+                routeReplicaResponse(senderId, msg)
             }
         }
-        meshGossipService.registerPermissionUpdateConfirmationListener { confirmation ->
-            if (isStorageParticipationEnabled) {
-                routePermissionUpdateConfirmation(confirmation)
+        // PermissionUpdateConfirmation broadcast listener
+        coreGossipBroadcastService.registerListener("FilePermissionUpdateConfirmation") { _, _, type, msg ->
+            if (isStorageParticipationEnabled && type == "FilePermissionUpdateConfirmation" && msg is MeshGossipService.FilePermissionUpdateConfirmation) {
+                routePermissionUpdateConfirmation(msg)
             }
         }
-        meshGossipService.registerTaskDataAccessUpdateListener { updateMsg ->
-            routeTaskDataAccessUpdate(updateMsg)
+        // TaskDataAccessUpdate broadcast listener
+        coreGossipBroadcastService.registerListener("TaskDataAccessUpdateMessage") { _, _, type, msg ->
+            if (type == "TaskDataAccessUpdateMessage" && msg is MeshGossipService.TaskDataAccessUpdateMessage) {
+                routeTaskDataAccessUpdate(msg)
+            }
         }
-        meshGossipService.registerChunkTransferListener { senderId, chunkMsg ->
-            if (isStorageParticipationEnabled) {
-                onChunkTransfer(senderId, chunkMsg)
+        // ChunkTransfer broadcast listener
+        coreGossipBroadcastService.registerListener("ChunkTransfer") { senderId, _, type, msg ->
+            if (isStorageParticipationEnabled && type == "ChunkTransfer" && msg is MeshGossipService.ChunkTransferMessage) {
+                onChunkTransfer(senderId, msg)
             }
         }
     }
@@ -106,7 +118,7 @@ class MeshEcosystemListener(
         }
     }
 
-    private fun routePermissionUpdateConfirmation(confirmation: MeshGossipService.PermissionUpdateConfirmation) {
+    private fun routePermissionUpdateConfirmation(confirmation: MeshGossipService.FilePermissionUpdateConfirmation) {
         if (isStorageNodeEnabled) {
             storageManager?.handlePermissionUpdateConfirmation(confirmation)
         }

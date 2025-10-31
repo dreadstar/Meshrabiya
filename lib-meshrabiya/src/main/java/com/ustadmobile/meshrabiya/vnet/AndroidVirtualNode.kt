@@ -41,6 +41,7 @@ import java.util.concurrent.ScheduledFuture
 import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.storage.StorageDataStore
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 
 class AndroidVirtualNode(
     emergentRoleManagerParam: EmergentRoleManager? = null,
@@ -51,7 +52,8 @@ class AndroidVirtualNode(
     private val jetpackDataStore: JetpackDataStore<Preferences>,
     address: InetAddress = randomApipaInetAddr(),
     config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
-    private val scheduledExecutorService: ScheduledExecutorService
+    private val scheduledExecutorService: ScheduledExecutorService,
+    private val originatingMessageManager: OriginatingMessageManager,
 ) : VirtualNode(
     port = port,
     logger = logger,
@@ -61,6 +63,12 @@ class AndroidVirtualNode(
 ) {
 
     private val storageDataStore: StorageDataStore = StorageDataStore.getInstance(context)
+
+    // Instantiate CoreGossipBroadcastService
+    private val coreGossipBroadcastService = CoreGossipBroadcastService(
+        originatingMessageManager = originatingMessageManager,
+        sendToNode = { addr, bytes -> sendToNode(addr, bytes) }
+    )
 
     companion object {
         @Volatile
@@ -647,6 +655,19 @@ class AndroidVirtualNode(
     fun onGossipMessageReceived(senderId: Int, messageBytes: ByteArray) {
         for (listener in gossipListeners) {
             listener(senderId, messageBytes)
+        }
+
+        // Attempt to deserialize and determine messageType (replace with your actual logic)
+        val (messageType, messageObj) = try {
+            deserializeMessage(messageBytes) // You must implement this method or use your existing one
+        } catch (e: Exception) {
+            null to null
+        }
+
+        // List of broadcast message types to handle
+        val broadcastTypes = setOf("ComputeTaskRequest", "StorageNodeRequest", "OriginatorAnnouncement")
+        if (messageType != null && messageType in broadcastTypes) {
+            coreGossipBroadcastService.onReceiveBroadcast(messageBytes, messageType, messageObj)
         }
     }
 

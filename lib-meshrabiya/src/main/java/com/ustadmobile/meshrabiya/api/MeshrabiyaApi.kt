@@ -68,7 +68,16 @@ interface MeshrabiyaApi {
     fun getServiceParticipationStatus(serviceId: String): Boolean
 
     // --- Compute/Task Operations ---
-    fun addTask(task: ComputeTask, callback: (Result<String>) -> Unit)
+    fun addTask(requestParams: Map<String, Any>): ApiResult {
+        val localRequest = LocalComputeTaskRequest(
+            mmcpRequest = MmcpComputeTaskRequest.fromParams(requestParams),
+            metadata = requestParams
+        )
+        IntelligentDistributedComputeService.processTaskRequest(localRequest)
+        // Add to client-side task requests list
+        ClientTaskRequestTracker.add(localRequest)
+        // Return API result, possibly with taskId or status
+    }
     fun startTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun getTaskStatus(taskId: String): ExecutionPlan?

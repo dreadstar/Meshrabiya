@@ -2,6 +2,7 @@ package com.ustadmobile.meshrabiya.service
 
 import android.content.Context
 import com.ustadmobile.meshrabiya.vnet.*
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import com.ustadmobile.meshrabiya.storage.MeshChunk
 import kotlinx.coroutines.*
 import org.msgpack.core.MessagePack
@@ -9,13 +10,17 @@ import org.msgpack.core.MessageUnpacker
 import org.msgpack.core.MessageBufferPacker
 import java.security.MessageDigest
 import java.util.concurrent.ScheduledExecutorService
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
+import com.ustadmobile.meshrabiya.mmcp.MmcpComputeTaskRequest
 
 class MeshGossipService private constructor(
     val virtualNode: VirtualNode,
     val meshRoleManager: MeshRoleManager,
     val context: Context,
     val scheduledExecutorService: ScheduledExecutorService,
-    val originatingMessageManager: OriginatingMessageManager
+    val originatingMessageManager: OriginatingMessageManager,
+    val coreGossipBroadcastService: CoreGossipBroadcastService 
 ) {
 
     private val emergentRoleManager = EmergentRoleManager.getInstance(context, virtualNode, meshRoleManager)
@@ -33,9 +38,14 @@ class MeshGossipService private constructor(
             scheduledExecutorService: ScheduledExecutorService,
             originatingMessageManager: OriginatingMessageManager
         ): MeshGossipService {
+            val androidVirtualNode = AndroidVirtualNode.getInstance(context, scheduledExecutorService)
+            val coreGossipBroadcastService = CoreGossipBroadcastService(
+                originatingMessageManager = originatingMessageManager,
+                sendToNode = { addr, bytes -> androidVirtualNode.sendToNode(addr, bytes) }
+            )
             return instance ?: synchronized(this) {
                 instance ?: MeshGossipService(
-                    virtualNode, meshRoleManager, context, scheduledExecutorService, originatingMessageManager
+                    virtualNode, meshRoleManager, context, scheduledExecutorService, originatingMessageManager, coreGossipBroadcastService
                 ).also { instance = it }
             }
         }
@@ -45,21 +55,15 @@ class MeshGossipService private constructor(
     suspend fun broadcastStorageNodeRequestSync(request: StorageNodeRequest, timeoutMs: Long): List<StorageNodeResponse> {
         val requestBytes = serializeMessage(request, "StorageNodeRequest")
         val responses = mutableListOf<StorageNodeResponse>()
-        val listener: (Int, ByteArray) -> Unit = { senderId, bytes ->
-            val (type, msg) = deserializeMessage(bytes)
-            if (type == "StorageNodeResponse") {
-                responses.add(msg as StorageNodeResponse)
+        val listener: (Int, ByteArray, String, Any?) -> Unit = { senderId, bytes, type, msg ->
+            if (type == "StorageNodeResponse" && msg is StorageNodeResponse) {
+                responses.add(msg)
             }
         }
-        val job = CoroutineScope(Dispatchers.IO).launch {
-            androidVirtualNode.addGossipListener(listener)
-            originatingMessageManager.neighbors().forEach { neighbor ->
-                androidVirtualNode.sendToNode(neighbor.first, requestBytes)
-            }
-            delay(timeoutMs)
-            androidVirtualNode.removeGossipListener(listener)
-        }
-        job.join()
+        coreGossipBroadcastService.registerListener("StorageNodeResponse", listener)
+        coreGossipBroadcastService.sendBroadcast(requestBytes, "StorageNodeRequest")
+        delay(timeoutMs)
+        coreGossipBroadcastService.unregisterListener("StorageNodeResponse", listener)
         return responses
     }
 
@@ -68,21 +72,15 @@ class MeshGossipService private constructor(
         val queryMsg = ChunkRetrievalQuery(fileId)
         val queryBytes = serializeMessage(queryMsg, "ChunkRetrievalQuery")
         val responses = mutableListOf<ChunkRetrievalResponse>()
-        val listener: (Int, ByteArray) -> Unit = { senderId, bytes ->
-            val (type, msg) = deserializeMessage(bytes)
-            if (type == "ChunkRetrievalResponse") {
-                responses.add(msg as ChunkRetrievalResponse)
+        val listener: (Int, ByteArray, String, Any?) -> Unit = { senderId, bytes, type, msg ->
+            if (type == "ChunkRetrievalResponse" && msg is ChunkRetrievalResponse) {
+                responses.add(msg)
             }
         }
-        val job = CoroutineScope(Dispatchers.IO).launch {
-            androidVirtualNode.addGossipListener(listener)
-            originatingMessageManager.neighbors().forEach { neighbor ->
-                androidVirtualNode.sendToNode(neighbor.first, queryBytes)
-            }
-            delay(timeoutMs)
-            androidVirtualNode.removeGossipListener(listener)
-        }
-        job.join()
+        coreGossipBroadcastService.registerListener("ChunkRetrievalResponse", listener)
+        coreGossipBroadcastService.sendBroadcast(queryBytes, "ChunkRetrievalQuery")
+        delay(timeoutMs)
+        coreGossipBroadcastService.unregisterListener("ChunkRetrievalResponse", listener)
         return responses
     }
 
@@ -90,29 +88,50 @@ class MeshGossipService private constructor(
     suspend fun queryFileReplicasSync(fileId: String, timeoutMs: Long): List<String> {
         val queryBytes = serializeMessage(ReplicaQuery(fileId), "ReplicaQuery")
         val replicaNodes = mutableListOf<String>()
-        val listener: (Int, ByteArray) -> Unit = { senderId, bytes ->
-            val (type, msg) = deserializeMessage(bytes)
-            if (type == "ReplicaResponse") {
-                replicaNodes.add((msg as ReplicaResponse).nodeId)
+        val listener: (Int, ByteArray, String, Any?) -> Unit = { senderId, bytes, type, msg ->
+            if (type == "ReplicaResponse" && msg is ReplicaResponse) {
+                replicaNodes.add(msg.nodeId)
             }
         }
-        val job = CoroutineScope(Dispatchers.IO).launch {
-            androidVirtualNode.addGossipListener(listener)
-            originatingMessageManager.neighbors().forEach { neighbor ->
-                androidVirtualNode.sendToNode(neighbor.first, queryBytes)
-            }
-            delay(timeoutMs)
-            androidVirtualNode.removeGossipListener(listener)
-        }
-        job.join()
+        coreGossipBroadcastService.registerListener("ReplicaResponse", listener)
+        coreGossipBroadcastService.sendBroadcast(queryBytes, "ReplicaQuery")
+        delay(timeoutMs)
+        coreGossipBroadcastService.unregisterListener("ReplicaResponse", listener)
         return replicaNodes
     }
 
     // === Gossip-based Storage Advertisement ===
     suspend fun broadcastStorageAdvertisement(capabilities: StorageCapabilities) {
         val msgBytes = serializeMessage(capabilities, "StorageCapabilities")
-        originatingMessageManager.neighbors().forEach { neighbor ->
-            androidVirtualNode.sendToNode(neighbor.first, msgBytes)
+        coreGossipBroadcastService.sendBroadcast(msgBytes, "StorageCapabilities")
+    }
+
+    suspend fun broadcastComputeTaskRequestSync(
+        request: MmcpComputeTaskRequest,
+        timeoutMs: Long
+    ): List<ComputeNodeResponse> {
+        val requestBytes = request.toBytes()
+        val responses = mutableListOf<ComputeNodeResponse>()
+        val listener: (Int, ByteArray, String, Any?) -> Unit = { senderId, bytes, type, msg ->
+            if (type == "ComputeNodeResponse" && msg is ComputeNodeResponse) {
+                responses.add(msg)
+            }
+        }
+        coreGossipBroadcastService.registerListener("ComputeNodeResponse", listener)
+        coreGossipBroadcastService.sendBroadcast(requestBytes, "MmcpComputeTaskRequest")
+        delay(timeoutMs)
+        coreGossipBroadcastService.unregisterListener("ComputeNodeResponse", listener)
+        return responses
+    }
+
+    fun addTaskRequest(localRequest: LocalComputeTaskRequest) {
+        taskRequestList.add(localRequest)
+        CoroutineScope(Dispatchers.IO).launch {
+            val responses = meshGossipService.broadcastComputeTaskRequestSync(
+                localRequest.mmcpRequest,
+                MeshrabiyaConstants.getTimeoutMs()
+            )
+            handleComputeNodeResponses(localRequest, responses)
         }
     }
 
@@ -163,9 +182,7 @@ class MeshGossipService private constructor(
     // === Gossip-based Permission Update Broadcast ===
     suspend fun broadcastFilePermissionUpdate(msg: FilePermissionUpdateMessage) {
         val msgBytes = serializeMessage(msg, "FilePermissionUpdateMessage")
-        originatingMessageManager.neighbors().forEach { neighbor ->
-            androidVirtualNode.sendToNode(neighbor.first, msgBytes)
-        }
+        coreGossipBroadcastService.sendBroadcast(msgBytes, "FilePermissionUpdateMessage")
     }
 
     // === Gossip-based Permission Update Confirmation ===
@@ -180,9 +197,7 @@ class MeshGossipService private constructor(
     // === Gossip-based Task Data Access Update Broadcast ===
     suspend fun broadcastTaskDataAccessUpdate(msg: TaskDataAccessUpdateMessage) {
         val msgBytes = serializeMessage(msg, "TaskDataAccessUpdateMessage")
-        originatingMessageManager.neighbors().forEach { neighbor ->
-            androidVirtualNode.sendToNode(neighbor.first, msgBytes)
-        }
+        coreGossipBroadcastService.sendBroadcast(msgBytes, "TaskDataAccessUpdateMessage")
     }
 
     // === Gossip Message Models ===
