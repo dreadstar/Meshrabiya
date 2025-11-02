@@ -1,6 +1,8 @@
 package com.ustadmobile.meshrabiya.api
 
 import java.io.File
+import android.content.Context
+import kotlinx.coroutines.flow.Flow
 import com.ustadmobile.meshrabiya.storage.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
@@ -10,6 +12,9 @@ import com.ustadmobile.meshrabiya.service.compute.JobType
 import com.ustadmobile.meshrabiya.mesh.MeshState
 import com.ustadmobile.meshrabiya.mesh.NetworkInfo
 import com.ustadmobile.meshrabiya.mesh.NodeInfo
+import com.ustadmobile.meshrabiya.vnet.LocalNodeState
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
  * Unified API interface for Meshrabiya module.
@@ -17,13 +22,18 @@ import com.ustadmobile.meshrabiya.mesh.NodeInfo
  */
 interface MeshrabiyaApi {
 
+    // --- Mesh Initialization ---
+    fun initMesh(context: Context)
+
     // --- Mesh State & Network Info ---
     fun getNodeRole(): Byte
     fun getFitnessScore(): Int
     fun getConnectionUri(): String
-    fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState
+    fun getLocalNodeState(): LocalNodeState
     fun getNeighbors(): List<Int>
     fun getHopCountToNode(nodeId: Int): Int?
+    fun getConnectLink(): String?
+    fun getConnectLinkFlow(): Flow<String?>
 
     // --- Mesh Network Controls ---
     fun startMesh(callback: (Result<Unit>) -> Unit)
@@ -68,16 +78,7 @@ interface MeshrabiyaApi {
     fun getServiceParticipationStatus(serviceId: String): Boolean
 
     // --- Compute/Task Operations ---
-    fun addTask(requestParams: Map<String, Any>): ApiResult {
-        val localRequest = LocalComputeTaskRequest(
-            mmcpRequest = MmcpComputeTaskRequest.fromParams(requestParams),
-            metadata = requestParams
-        )
-        IntelligentDistributedComputeService.processTaskRequest(localRequest)
-        // Add to client-side task requests list
-        ClientTaskRequestTracker.add(localRequest)
-        // Return API result, possibly with taskId or status
-    }
+    fun addTask(requestParams: Map<String, Any>): ApiResult
     fun startTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun getTaskStatus(taskId: String): ExecutionPlan?
@@ -98,19 +99,15 @@ interface MeshrabiyaApi {
     fun setSetting(key: String, value: Any, callback: (Result<Unit>) -> Unit)
 
     // --- Service Bundle & Gateway Controls ---
-    fun announceService(serviceAnnouncement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit)
-
+    fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit)
     fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit)
-
-    fun setOnGatewayTraffic(handler: (packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean)
-
+    fun setOnGatewayTraffic(handler: (packet: VirtualPacket) -> Boolean)
     fun getMeshTrafficRouterStatus(): String
 
-        // --- Event/Callback Integration ---
-    fun setOnMeshStateChanged(handler: (newState: com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit)
+    // --- Event/Callback Integration ---
+    fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit)
     fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit)
     fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit)
-    fun setOnServiceAnnounced(handler: (serviceId: String, announcement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit)
+    fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit)
     fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit)
-
 }

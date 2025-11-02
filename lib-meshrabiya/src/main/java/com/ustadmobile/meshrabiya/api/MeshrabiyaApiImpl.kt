@@ -1,6 +1,9 @@
 package com.ustadmobile.meshrabiya.api
 
 import java.io.File
+import android.content.Context
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStore
 import com.ustadmobile.meshrabiya.storage.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
@@ -12,204 +15,166 @@ import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeS
 import com.ustadmobile.meshrabiya.mesh.MeshState
 import com.ustadmobile.meshrabiya.mesh.NetworkInfo
 import com.ustadmobile.meshrabiya.mesh.NodeInfo
-import com.ustadmobile.meshrabiya.mesh.MeshNetworkManager
-import com.ustadmobile.meshrabiya.gateway.GatewayCapabilitiesManager
-import com.ustadmobile.meshrabiya.MeshrabiyaConstants
-import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
-import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
+import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
+import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
+import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage.ComputeTaskRequestMessage
 
 /**
  * Production-ready implementation of MeshrabiyaApi.
  * Delegates all operations to internal Meshrabiya components.
  */
-class MeshrabiyaApiImpl(
-    private val meshNetworkManager: MeshNetworkManager,
-    private val gatewayManager: GatewayCapabilitiesManager,
-    private val storageManager: DistributedStorageManager,
-    private val computeService: IntelligentDistributedComputeService
-) : MeshrabiyaApi {
+class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     companion object {
         @Volatile
         private var instance: MeshrabiyaApiImpl? = null
 
-        fun getInstance(context: android.content.Context): MeshrabiyaApiImpl {
+        fun getInstance(): MeshrabiyaApiImpl {
             return instance ?: synchronized(this) {
-                instance ?: MeshrabiyaApiImpl(
-                    MeshNetworkManager.getInstance(context.applicationContext),
-                    GatewayCapabilitiesManager.getInstance(context.applicationContext),
-                    DistributedStorageManager.getInstance(context.applicationContext),
-                    IntelligentDistributedComputeService.getInstance(context.applicationContext)
-                ).also { instance = it }
+                instance ?: MeshrabiyaApiImpl().also { instance = it }
             }
         }
     }
 
-    // --- Track compute node participation ---
-    private var computeNodeParticipationEnabled: Boolean = false
+    // Internal managers, initialized in initMesh
+    private var myNode: AndroidVirtualNode? = null
+    private var distributedStorageManager: DistributedStorageManager? = null
+    private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
 
-    // --- Event Handlers ---
-    private var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
-    private var onFileStored: ((fileId: String, file: File) -> Unit)? = null
-    private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
-    private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
-    private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
-    private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
-    private var onFileAddedToDropFolder: ((fileId: String, file: File) -> Unit)? = null
+    // --- Mesh Initialization ---
+    override fun initMesh(context: Context) {
+        val Context.dataStore by preferencesDataStore(name = "meshr_settings")
+        val dataStore = context.dataStore
+
+        myNode = AndroidVirtualNode(
+            appContext = context.applicationContext,
+            dataStore = dataStore
+        )
+
+        distributedStorageManager = myNode?.getDistributedStorageManager()
+        intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
+    }
 
     // --- Mesh State & Network Info ---
-    override fun getNodeRole(): Byte = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().getCurrentNodeRole()
-    override fun getFitnessScore(): Int = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().getCurrentFitnessScore()
-    override fun getConnectionUri(): String = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().nodeState.value.connectUri
-    override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().nodeState.value
-    override fun getNeighbors(): List<Int> = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().neighbors().map { it.first }
-    override fun getHopCountToNode(nodeId: Int): Int? = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().getHopCountToNode(nodeId)
+    override fun getNodeRole(): Byte = myNode?.getCurrentNodeRole() ?: 0
+    override fun getFitnessScore(): Int = myNode?.getCurrentFitnessScore() ?: 0
+    override fun getConnectionUri(): String = myNode?.nodeState?.value?.connectUri ?: ""
+    override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = myNode?.nodeState?.value ?: throw IllegalStateException("Mesh not initialized")
+    override fun getNeighbors(): List<Int> = myNode?.neighbors()?.map { it.first } ?: emptyList()
+    override fun getHopCountToNode(nodeId: Int): Int? = myNode?.getHopCountToNode(nodeId)
 
-    // --- Event/Callback Integration ---
-    private var onMeshStateChanged: ((com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit)? = null
-    private var onPeerCountChanged: ((Int) -> Unit)? = null
-    private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
-    private var onServiceAnnounced: ((String, com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit)? = null
-    private var onGossipMessage: ((Int, ByteArray) -> Unit)? = null
-
-    override fun setOnMeshStateChanged(handler: (newState: com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit) {
-        onMeshStateChanged = handler
-    }
-    override fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit) {
-        onPeerCountChanged = handler
-    }
-    override fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit) {
-        onServiceBundleReceived = handler
-    }
-    override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit) {
-        onServiceAnnounced = handler
-    }
-    override fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit) {
-        onGossipMessage = handler
-        com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().addGossipListener(handler)
-    }
-
-    // --- Service Bundle & Gateway Controls ---
-    override fun announceService(serviceAnnouncement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
-        try {
-            com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().announceService(serviceAnnouncement, signedBundle)
-            callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
-    }
-    override fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit) {
-        try {
-            val result = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().requestServiceBundle(serviceId, requesterOnionAddress)
-            callback(Result.success(result))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
-    }
-    private var onGatewayTraffic: ((packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean)? = null
-    override fun setOnGatewayTraffic(handler: (packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean) {
-        onGatewayTraffic = handler
-    }
-    override fun getMeshTrafficRouterStatus(): String {
-        val router = com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode.getInstance().getMeshTrafficRouter()
-        return if (router != null) "Active: ${router.javaClass.name}" else "Inactive"
-    }
-
-    init {
-        storageManager.onFileStored = { fileId, file -> onFileStored?.invoke(fileId, file) }
-        storageManager.onFileRetrieved = { fileId, file -> onFileRetrieved?.invoke(fileId, file) }
-        computeService.onTaskCompleted = { taskId, result -> onTaskCompleted?.invoke(taskId, result) }
-        computeService.onTaskFailed = { taskId, error -> onOperationFailed?.invoke("taskFailed", error) }
-    }
+    override fun getConnectLink(): String? = myNode.state.filter {
+        it.connectUri != null
+    }.first()
+    override fun getConnectLinkFlow(): Flow<String?> = myNode?.state?.map { it.connectUri } ?: flowOf(null)
 
     // --- Mesh Network Controls ---
     override fun startMesh(callback: (Result<Unit>) -> Unit) {
         try {
-            meshNetworkManager.startMesh()
+            runBlocking {
+                myNode?.setWifiHotspotEnabled(
+                    enabled = true,
+                    preferredBand = ConnectBand.BAND_5GHZ,
+                    hotspotType = HotspotType.DEFAULT
+                )
+            }
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
+
     override fun stopMesh(callback: (Result<Unit>) -> Unit) {
         try {
-            meshNetworkManager.stopMesh()
+            runBlocking {
+                myNode?.setWifiHotspotEnabled(
+                    enabled = false,
+                    preferredBand = ConnectBand.BAND_5GHZ,
+                    hotspotType = HotspotType.DEFAULT
+                )
+            }
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getMeshStatus(): MeshState = meshNetworkManager.getMeshState()
-    override fun getPeerCount(): Int = meshNetworkManager.getPeerCount()
-    override fun getNetworkInfo(): NetworkInfo = meshNetworkManager.getNetworkInfo()
-    override fun getNodeInfo(nodeId: String): NodeInfo = meshNetworkManager.getNodeInfo(nodeId)
+
+    override fun getMeshStatus(): MeshState = myNode?.getMeshStatus() ?: MeshState.UNKNOWN
+    override fun getPeerCount(): Int = myNode?.getPeerCount() ?: 0
+    override fun getNetworkInfo(): NetworkInfo = myNode?.getNetworkInfo() ?: NetworkInfo()
+    override fun getNodeInfo(nodeId: String): NodeInfo = myNode?.getNodeInfo(nodeId) ?: NodeInfo()
 
     // --- Gateway Controls ---
     override fun setTorGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         try {
-            gatewayManager.setTorGatewayEnabled(enabled)
+            myNode?.setTorGatewayEnabled(enabled)
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getTorGatewayStatus(): Boolean = gatewayManager.isTorGatewayEnabled()
+    override fun getTorGatewayStatus(): Boolean = myNode?.getTorGatewayStatus() ?: false
     override fun setInternetGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         try {
-            gatewayManager.setInternetGatewayEnabled(enabled)
+            myNode?.setInternetGatewayEnabled(enabled)
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getInternetGatewayStatus(): Boolean = gatewayManager.isInternetGatewayEnabled()
-    override fun getGatewayStatus(): Boolean = gatewayManager.isGatewayActive()
+    override fun getInternetGatewayStatus(): Boolean = myNode?.getInternetGatewayStatus() ?: false
+    override fun getGatewayStatus(): Boolean = myNode?.getGatewayStatus() ?: false
 
     // --- Storage Participation ---
     override fun setStorageParticipationEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         try {
-            storageManager.setParticipationEnabled(enabled)
+            distributedStorageManager?.setParticipationEnabled(enabled)
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getStorageParticipationStatus(): Boolean = storageManager.isParticipationEnabled()
-    override fun getAvailableStorageDevices(): List<StorageDevice> = storageManager.getAvailableDevices()
+    override fun getStorageParticipationStatus(): Boolean = distributedStorageManager?.isParticipationEnabled() ?: false
+    override fun getAvailableStorageDevices(): List<StorageDevice> = distributedStorageManager?.getAvailableDevices() ?: emptyList()
     override fun setStorageAllocation(deviceId: String, allocatedMB: Long, callback: (Result<Unit>) -> Unit) {
         try {
-            storageManager.setStorageAllocation(deviceId, allocatedMB)
+            distributedStorageManager?.setStorageAllocation(deviceId, allocatedMB)
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getStorageAllocations(): List<StorageAllocation> = storageManager.getStorageAllocations()
+    override fun getStorageAllocations(): List<StorageAllocation> = distributedStorageManager?.getStorageAllocations() ?: emptyList()
     override fun enableDistributedStorage() {
-        storageManager.registerWithEcosystemListener(MeshEcosystemListener)
+        distributedStorageManager?.registerWithEcosystemListener(myNode?.getMeshEcosystemListener())
     }
     override fun disableDistributedStorage() {
-        storageManager.unregisterFromEcosystemListener(MeshEcosystemListener)
+        distributedStorageManager?.unregisterFromEcosystemListener(myNode?.getMeshEcosystemListener())
     }
     override fun isServiceLayerParticipating(): Boolean {
-        return storageManager.participationEnabled.value
+        return distributedStorageManager?.participationEnabled?.value ?: false
     }
 
     // --- Drop Folder Management ---
     override fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit) {
         try {
-            storageManager.selectDropFolder(path)
+            distributedStorageManager?.selectDropFolder(path)
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getDropFolder(): File? = storageManager.getDropFolder()
-    override fun getDropFolderFiles(): List<File> = storageManager.getDropFolderFiles()
+    override fun getDropFolder(): File? = distributedStorageManager?.getDropFolder()
+    override fun getDropFolderFiles(): List<File> = distributedStorageManager?.getDropFolderFiles() ?: emptyList()
 
     // --- File Operations ---
     override fun storeFile(file: File, callback: (Result<String>) -> Unit) {
-        storageManager.storeFile(file) { result ->
+        distributedStorageManager?.storeFile(file) { result ->
             result.onSuccess { fileId ->
                 callback(Result.success(fileId))
                 onFileStored?.invoke(fileId, file)
@@ -220,7 +185,7 @@ class MeshrabiyaApiImpl(
         }
     }
     override fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit) {
-        storageManager.retrieveFile(fileId) { result ->
+        distributedStorageManager?.retrieveFile(fileId) { result ->
             result.onSuccess { file ->
                 callback(Result.success(file))
                 onFileRetrieved?.invoke(fileId, file)
@@ -231,7 +196,7 @@ class MeshrabiyaApiImpl(
         }
     }
     override fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        storageManager.streamFile(fileId) { result ->
+        distributedStorageManager?.streamFile(fileId) { result ->
             callback(result)
             result.onFailure { error ->
                 onOperationFailed?.invoke("streamFile", error)
@@ -239,69 +204,70 @@ class MeshrabiyaApiImpl(
         }
     }
     override fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        storageManager.deleteFile(fileId) { result ->
+        distributedStorageManager?.deleteFile(fileId) { result ->
             callback(result)
             result.onFailure { error ->
                 onOperationFailed?.invoke("deleteFile", error)
             }
         }
     }
-    override fun getAllMeshFiles(): List<MeshFile> = storageManager.getAllMeshFiles()
+    override fun getAllMeshFiles(): List<MeshFile> = distributedStorageManager?.getAllMeshFiles() ?: emptyList()
 
     // --- Distributed Service Layer ---
     override fun setServiceParticipationEnabled(serviceId: String, enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         try {
-            if (serviceId == "compute_node") {
-                computeNodeParticipationEnabled = enabled
-                EmergentRoleManager.setComputeNodeParticipation(enabled)
-                MeshEcosystemListener.setComputeNodeParticipationEnabled(enabled)
-                callback(Result.success(Unit))
-            } else {
-                meshNetworkManager.setServiceParticipationEnabled(serviceId, enabled)
-                callback(Result.success(Unit))
-            }
+            myNode?.setServiceParticipationEnabled(serviceId, enabled)
+            callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
     }
-    override fun getAvailableServices(): List<String> = meshNetworkManager.getAvailableServices()
+    override fun getAvailableServices(): List<String> = myNode?.getAvailableServices() ?: emptyList()
     override fun getServiceParticipationStatus(serviceId: String): Boolean {
-        return if (serviceId == "compute_node") computeNodeParticipationEnabled
-        else meshNetworkManager.isServiceParticipationEnabled(serviceId)
+        return myNode?.getServiceParticipationStatus(serviceId) ?: false
     }
 
     // --- Compute/Task Operations ---
-    override fun addTask(task: ComputeTask, callback: (Result<String>) -> Unit) {
-        computeService.addTask(task) { result ->
-            result.onSuccess { taskId ->
-                callback(Result.success(taskId))
-            }.onFailure { error ->
-                callback(Result.failure(error))
-                onOperationFailed?.invoke("addTask", error)
-            }
-        }
+    override fun addTask(requestParams: Map<String, Any>): ApiResult {
+        val taskId = requestParams["taskId"] as? String ?: java.util.UUID.randomUUID().toString()
+        val serviceId = requestParams["serviceId"] as? String ?: "unknown_service"
+        val inputParams = requestParams["inputParams"] as? Map<String, Any> ?: emptyMap()
+        val metadata = requestParams
+
+        // Create canonical MeshEcosystemMessage for compute task request
+        val computeTaskMsg = ComputeTaskRequestMessage(
+            taskId = taskId,
+            serviceId = serviceId,
+            inputParams = inputParams,
+            metadata = metadata
+        )
+
+        // Pass the ecosystem message to the compute service for processing and broadcast
+        intelligentDistributedComputeService?.processTaskRequest(computeTaskMsg)
+
+        return ApiResult.Success // Optionally return taskId or status
     }
+
     override fun startTask(taskId: String, callback: (Result<Unit>) -> Unit) {
-        computeService.startTask(taskId) { result ->
-            callback(result)
-            result.onFailure { error ->
-                onOperationFailed?.invoke("startTask", error)
-            }
-        }
+        intelligentDistributedComputeService?.startTask(taskId, callback)
     }
+
     override fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit) {
-        computeService.cancelTask(taskId) { result ->
-            callback(result)
-            result.onFailure { error ->
-                onOperationFailed?.invoke("cancelTask", error)
-            }
-        }
+        intelligentDistributedComputeService?.cancelTask(taskId, callback)
     }
-    override fun getTaskStatus(taskId: String): ExecutionPlan? = computeService.getTaskStatus(taskId)
-    override fun getAllTasks(): List<ComputeTask> = computeService.getAllTasks()
-    override fun getJobTypes(): List<JobType> = computeService.getJobTypes()
+    override fun getTaskStatus(taskId: String): ExecutionPlan? = intelligentDistributedComputeService?.getTaskStatus(taskId)
+    override fun getAllTasks(): List<ComputeTask> = intelligentDistributedComputeService?.getAllTasks() ?: emptyList()
+    override fun getJobTypes(): List<JobType> = intelligentDistributedComputeService?.getJobTypes() ?: emptyList()
 
     // --- Event Registration ---
+    private var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
+    private var onFileStored: ((fileId: String, file: File) -> Unit)? = null
+    private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
+    private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
+    private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
+    private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
+    private var onFileAddedToDropFolder: ((fileId: String, file: File) -> Unit)? = null
+
     override fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit) {
         onFileRetrieved = handler
     }
@@ -327,28 +293,70 @@ class MeshrabiyaApiImpl(
     // --- Settings and State ---
     override fun getSettings(): Map<String, Any> {
         return mapOf(
-            "meshEnabled" to meshNetworkManager.isMeshEnabled(),
-            "torGatewayEnabled" to gatewayManager.isTorGatewayEnabled(),
-            "internetGatewayEnabled" to gatewayManager.isInternetGatewayEnabled(),
-            "storageParticipationEnabled" to storageManager.isParticipationEnabled(),
-            "dropFolderPath" to (storageManager.getDropFolder()?.absolutePath ?: ""),
-            "availableServices" to meshNetworkManager.getAvailableServices(),
-            "jobTypes" to computeService.getJobTypes()
+            "dropFolderPath" to (distributedStorageManager?.getDropFolder()?.absolutePath ?: ""),
+            "availableServices" to (myNode?.getAvailableServices() ?: emptyList<String>()),
+            "jobTypes" to (intelligentDistributedComputeService?.getJobTypes() ?: emptyList<JobType>())
         )
     }
     override fun setSetting(key: String, value: Any, callback: (Result<Unit>) -> Unit) {
         try {
             when (key) {
-                "meshEnabled" -> meshNetworkManager.setMeshEnabled(value as Boolean)
-                "torGatewayEnabled" -> gatewayManager.setTorGatewayEnabled(value as Boolean)
-                "internetGatewayEnabled" -> gatewayManager.setInternetGatewayEnabled(value as Boolean)
-                "storageParticipationEnabled" -> storageManager.setParticipationEnabled(value as Boolean)
-                "dropFolderPath" -> storageManager.selectDropFolder(value as String)
+                "dropFolderPath" -> distributedStorageManager?.selectDropFolder(value as String)
                 else -> throw IllegalArgumentException("Unknown setting key: $key")
             }
             callback(Result.success(Unit))
         } catch (e: Exception) {
             callback(Result.failure(e))
         }
+    }
+
+    // --- Service Bundle & Gateway Controls ---
+    override fun announceService(serviceAnnouncement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
+        try {
+            myNode?.announceService(serviceAnnouncement, signedBundle)
+            callback(Result.success(Unit))
+        } catch (e: Exception) {
+            callback(Result.failure(e))
+        }
+    }
+    override fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit) {
+        try {
+            val result = myNode?.requestServiceBundle(serviceId, requesterOnionAddress)
+            callback(Result.success(result))
+        } catch (e: Exception) {
+            callback(Result.failure(e))
+        }
+    }
+    private var onGatewayTraffic: ((packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean)? = null
+    override fun setOnGatewayTraffic(handler: (packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean) {
+        onGatewayTraffic = handler
+    }
+    override fun getMeshTrafficRouterStatus(): String {
+        val router = myNode?.getMeshTrafficRouter()
+        return if (router != null) "Active: ${router.javaClass.name}" else "Inactive"
+    }
+
+    // --- Event/Callback Integration ---
+    private var onMeshStateChanged: ((com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit)? = null
+    private var onPeerCountChanged: ((Int) -> Unit)? = null
+    private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
+    private var onServiceAnnounced: ((String, com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit)? = null
+    private var onGossipMessage: ((Int, ByteArray) -> Unit)? = null
+
+    override fun setOnMeshStateChanged(handler: (newState: com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit) {
+        onMeshStateChanged = handler
+    }
+    override fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit) {
+        onPeerCountChanged = handler
+    }
+    override fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit) {
+        onServiceBundleReceived = handler
+    }
+    override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit) {
+        onServiceAnnounced = handler
+    }
+    override fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit) {
+        onGossipMessage = handler
+        myNode?.addGossipListener(handler)
     }
 }

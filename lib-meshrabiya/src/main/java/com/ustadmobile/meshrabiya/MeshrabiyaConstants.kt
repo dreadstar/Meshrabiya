@@ -48,6 +48,16 @@ object MeshrabiyaConstants {
     fun getNoChunking(): Boolean = prefs?.getBoolean("no_chunking", false) ?: false
     fun setNoChunking(noChunking: Boolean) = prefs?.edit()?.putBoolean("no_chunking", noChunking)?.apply()
 
+
+    private const val DEFAULT_ECOSYSTEM_GOSSIP_PORT = 8647
+    fun getEcosystemGossipPort(): Int {
+        return prefs?.getInt("ecosystem_gossip_port", DEFAULT_ECOSYSTEM_GOSSIP_PORT) ?: DEFAULT_ECOSYSTEM_GOSSIP_PORT
+    }
+
+    fun setEcosystemGossipPort(port: Int) {
+        prefs?.edit()?.putInt("ecosystem_gossip_port", port)?.apply()
+    }
+
     private const val DEFAULT_CONNECTION_POOL_SIZE = 8
 
     fun getConnectionPoolSize(): Int {

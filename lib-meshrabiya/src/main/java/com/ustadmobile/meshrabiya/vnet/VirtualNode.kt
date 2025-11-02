@@ -9,14 +9,7 @@ import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
-import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotRequest
-import com.ustadmobile.meshrabiya.mmcp.MmcpHotspotResponse
-import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
-import com.ustadmobile.meshrabiya.mmcp.MmcpMessageAndPacketHeader
-import com.ustadmobile.meshrabiya.mmcp.MmcpNodeAnnouncement
-import com.ustadmobile.meshrabiya.mmcp.MmcpPing
-import com.ustadmobile.meshrabiya.mmcp.MmcpPong
-import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
+import com.ustadmobile.meshrabiya.mmcp.*
 import com.ustadmobile.meshrabiya.portforward.ForwardBindPoint
 import com.ustadmobile.meshrabiya.portforward.UdpForwardRule
 import com.ustadmobile.meshrabiya.util.findFreePort
@@ -24,52 +17,35 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
 import com.ustadmobile.meshrabiya.vnet.datagram.VirtualDatagramSocket2
 import com.ustadmobile.meshrabiya.vnet.datagram.VirtualDatagramSocketImpl
-import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketFactory
-import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketFactoryImpl
-import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketNextHop
-import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketServer
-import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
-import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
-import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
-import com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager
-import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotRequest
-import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotResponse
+import com.ustadmobile.meshrabiya.vnet.socket.*
+import com.ustadmobile.meshrabiya.vnet.wifi.*
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
 import java.io.Closeable
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
+import java.net.*
+import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 import kotlin.random.Random
+import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
+import com.ustadmobile.meshrabiya.service.MeshGossipService
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
+import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
+import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
+import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
+import com.ustadmobile.meshrabiya.role.EmergentRoleManager
+import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
     //169.254
     val fixedSection = (169 shl 24).or(254 shl 16)
-
     val randomSection = Random.nextInt(Short.MAX_VALUE.toInt())
-
     return fixedSection.or(randomSection)
 }
 
@@ -129,11 +105,6 @@ abstract class VirtualNode(
 
     private val forwardingRules: MutableMap<ForwardBindPoint, UdpForwardRule> = ConcurrentHashMap()
 
-    /**
-     * @param originatorMessage the Originator message itself
-     * @param timeReceived the time this message was received
-     * @param lastHopAddr the recorded last hop address
-     */
     data class LastOriginatorMessage(
         val originatorMessage: MmcpNodeAnnouncement,
         val timeReceived: Long,
@@ -144,7 +115,7 @@ abstract class VirtualNode(
         val lastHopRealPort: Int,
     )
 
-    @Suppress("unused") //Part of the API
+    @Suppress("unused")
     enum class Zone {
         VNET, REAL
     }
@@ -194,6 +165,45 @@ abstract class VirtualNode(
 
     private val activeSockets: MutableMap<Int, VirtualDatagramSocketImpl> = ConcurrentHashMap()
 
+    // === New Service Instantiations ===
+    private val scheduledExecutorService = Executors.newScheduledThreadPool(2)
+    private val originatingMessageManager: OriginatingMessageManager = OriginatingMessageManager(
+        localNodeInetAddr = address,
+        logger = logger,
+        scheduledExecutor = scheduledExecutorService,
+        nextMmcpMessageId = { nextMmcpMessageId() }
+    )
+    private val emergentRoleManager: EmergentRoleManager = EmergentRoleManager.getInstance(
+        context = appContext,
+        virtualNode = this,
+        meshRoleManager = null
+    )
+    private val meshNetworkInterface: MeshNetworkInterface = MeshNetworkInterface.getInstance(appContext)
+
+    private val coreGossipBroadcastService: CoreGossipBroadcastService = CoreGossipBroadcastService(
+        virtualNode = this
+    )
+
+    private val meshGossipService: MeshGossipService = MeshGossipService.getInstance(
+        virtualNode = this,
+        meshRoleManager = null,
+        context = appContext,
+        scheduledExecutorService = scheduledExecutorService,
+        originatingMessageManager = originatingMessageManager,
+        coreGossipBroadcastService = coreGossipBroadcastService
+    )
+
+    private val distributedStorageManager: DistributedStorageManager = DistributedStorageManager.getInstance(appContext)
+
+    private val intelligentDistributedComputeService: IntelligentDistributedComputeService =
+        IntelligentDistributedComputeService.getInstance(appContext)
+
+    private val meshEcosystemListener: MeshEcosystemListener = MeshEcosystemListener(
+        meshNetworkInterface = meshNetworkInterface,
+        coreGossipBroadcastService = coreGossipBroadcastService,
+        connectionPoolSize = MeshrabiyaConstants.getConnectionPoolSize()
+    )
+
     init {
         _state.update { prev ->
             prev.copy(
@@ -202,10 +212,8 @@ abstract class VirtualNode(
             )
         }
 
-        // Launch coroutine after ensuring originatingMessageManager is properly initialized
         coroutineScope.launch {
             try {
-                // Use the property directly rather than the getter to avoid inheritance issues
                 originatingMessageManager.state.collect { state ->
                     _state.update { prev ->
                         prev.copy(
@@ -239,8 +247,6 @@ abstract class VirtualNode(
         if(portNum > 0) {
             if(activeSockets.containsKey(portNum))
                 throw IllegalStateException("VirtualNode: port $portNum already allocated!")
-
-            //requested port is not allocated, everything OK
             activeSockets[portNum] = virtualDatagramSocketImpl
             return portNum
         }
@@ -252,7 +258,6 @@ abstract class VirtualNode(
                 activeSockets[randomPort] = virtualDatagramSocketImpl
                 return randomPort
             }
-
             attemptCount++
         }while(attemptCount < 100)
 
@@ -273,9 +278,6 @@ abstract class VirtualNode(
         }
     }
 
-    /**
-     *
-     */
     fun forward(
         bindAddress: InetAddress,
         bindPort: Int,
@@ -343,10 +345,8 @@ abstract class VirtualNode(
         )
     }
 
-
     override val localDatagramPort: Int
         get() = datagramSocket.localPort
-
 
     protected fun generateConnectLink(
         hotspot: WifiConnectConfig?,
@@ -366,7 +366,6 @@ abstract class VirtualNode(
         datagramPacket: DatagramPacket?,
         datagramSocket: VirtualNodeDatagramSocket?,
     ) : Boolean {
-        //This is an Mmcp message
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
             val from = virtualPacket.header.fromAddr
@@ -388,7 +387,6 @@ abstract class VirtualNode(
                             "$logPrefix Received ping(id=${mmcpMessage.messageId}) from ${from.addressToDotNotation()}"
                         }
                     )
-                    //send pong
                     val pongMessage = MmcpPong(
                         messageId = nextMmcpMessageId(),
                         replyToMessageId = mmcpMessage.messageId
@@ -444,7 +442,7 @@ abstract class VirtualNode(
                 mmcpMessage is MmcpGatewayAnnouncement -> {
                     logger(Log.INFO, "$logPrefix received gateway announcement from ${from.addressToDotNotation()}: ${mmcpMessage.gatewayType}", null)
                     onGatewayAnnouncementReceived(mmcpMessage, from)
-                    shouldRoute = true // Continue routing gateway announcements to other nodes
+                    shouldRoute = true
                 }
 
                 else -> {
@@ -459,9 +457,11 @@ abstract class VirtualNode(
             e.printStackTrace()
             return false
         }
-
     }
 
+    // Deduplication cache for broadcast packets
+    private val seenBroadcasts = ConcurrentHashMap<String, Long>()
+    private val broadcastTtlMs: Long = 60_000L
 
     override fun route(
         packet: VirtualPacket,
@@ -479,16 +479,30 @@ abstract class VirtualNode(
                 return
             }
 
+            // MMCP message handling (unchanged)
             if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
-                //this is an MMCP message
                 if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
-                    //It was determined that this packet should go no further by MMCP processing
                     logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
                 }
             }
 
+            // Ecosystem message handling (UDP broadcast or direct)
+            val ecosystemPort = MeshrabiyaConstants.getEcosystemGossipPort()
+            if(packet.header.toPort == ecosystemPort) {
+                val bytes = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
+                val msgType = try {
+                    MeshEcosystemMessage.fromBytes(bytes).type
+                } catch (e: Exception) {
+                    logger(Log.WARN, "$logPrefix: Failed to deserialize MeshEcosystemMessage: ${e.message}")
+                    null
+                }
+                if (msgType != null) {
+                    coreGossipBroadcastService.onReceiveBroadcast(bytes, msgType)
+                }
+                return
+            }
+
             if(packet.header.toAddr == addressAsInt) {
-                //this is an incoming packet - give to the destination virtual socket/forwarding
                 val listeningSocket = activeSockets[packet.header.toPort]
                 if(listeningSocket != null) {
                     listeningSocket.onIncomingPacket(packet)
@@ -496,30 +510,30 @@ abstract class VirtualNode(
                     logger(Log.DEBUG, "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}")
                 }
             }else {
-                //packet needs to be sent to next hop / destination
                 val toAddr = packet.header.toAddr
-
                 packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
                 if(toAddr == ADDR_BROADCAST) {
-                    originatingMessageManager.neighbors().filter {
-                        it.first != fromLastHop && it.first != packet.header.fromAddr
-                    }.forEach {
-                        logger(Log.VERBOSE,
-                            message = {
-                                "$logPrefix broadcast packet " +
-                                        "from=${packet.header.fromAddr.addressToDotNotation()} " +
-                                        "lasthop=${fromLastHop.addressToDotNotation()} " +
-                                        "send to ${it.first.addressToDotNotation()}"
+                    val broadcastId = computeBroadcastId(packet)
+                    val now = System.currentTimeMillis()
+                    val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
+                    if (prev == null) {
+                        val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                        if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER)")
+                            originatingMessageManager.neighbors().filter {
+                                it.first != fromLastHop && it.first != packet.header.fromAddr
+                            }.forEach {
+                                logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
+                                it.second.receivedFromSocket.send(
+                                    nextHopAddress = it.second.lastHopRealInetAddr,
+                                    nextHopPort = it.second.lastHopRealPort,
+                                    virtualPacket = packet,
+                                )
                             }
-                        )
-
-                        it.second.receivedFromSocket.send(
-                            nextHopAddress = it.second.lastHopRealInetAddr,
-                            nextHopPort = it.second.lastHopRealPort,
-                            virtualPacket = packet,
-                        )
+                        } else {
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
+                        }
                     }
-
                 }else {
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
@@ -548,10 +562,6 @@ abstract class VirtualNode(
         return originatingMessageManager.lookupNextHopForChainSocket(address, port)
     }
 
-
-    /**
-     * Respond to a new
-     */
     fun addNewNeighborConnection(
         address: InetAddress,
         port: Int,
@@ -572,7 +582,6 @@ abstract class VirtualNode(
                 socket =  socket,
             )
         }
-
     }
 
     fun addPongListener(listener: PongListener) {
@@ -611,19 +620,11 @@ abstract class VirtualNode(
         originatingMessageManager.sendMessage(message)
     }
 
-    /**
-     * Handle incoming gateway announcements from other nodes
-     */
     protected open fun onGatewayAnnouncementReceived(announcement: MmcpGatewayAnnouncement, fromNodeAddr: Int) {
         logger(Log.INFO, "$logPrefix Gateway ${announcement.gatewayType} available from ${fromNodeAddr.addressToDotNotation()}")
-        
-        // Store gateway information for routing decisions
-        // Subclasses can override this to implement gateway discovery/selection logic
         try {
-            // Basic validation
             if (announcement.isActive && announcement.capacity.downloadMbps > 0) {
                 logger(Log.DEBUG, "$logPrefix Valid gateway: capacity=${announcement.capacity.downloadMbps}Mbps, latency=${announcement.latency.averageMs}ms")
-                // TODO: Store in gateway registry for routing decisions
             }
         } catch (e: Exception) {
             logger(Log.WARN, "$logPrefix Error processing gateway announcement: ${e.message}")
@@ -640,7 +641,6 @@ abstract class VirtualNode(
         datagramSocket.close(closeSocket = true)
         chainSocketServer.close(closeSocket = true)
         coroutineScope.cancel(message = "VirtualNode closed")
-
         connectionExecutor.shutdown()
         scheduledExecutor.shutdown()
     }
@@ -648,11 +648,7 @@ abstract class VirtualNode(
     internal fun getOriginatingMessageManager() = originatingMessageManager
 
     internal open fun getMeshRoleManager(): MeshRoleManager? = null
-    
-    /**
-     * Safe logging method with comprehensive metadata support
-     * Maintains consistency with enterprise logging standards across the project
-     */
+
     protected fun safeLog(
         level: LogLevel,
         category: String,
@@ -661,26 +657,20 @@ abstract class VirtualNode(
         throwable: Throwable? = null
     ) {
         try {
-            // Try to use BetaTestLogger if available
             val betaLogger = (logger as? BetaTestLogger)
             if (betaLogger != null) {
-                // BetaTestLogger expects non-null metadata values (Map<String, String>).
-                // Convert nullable values to empty string to avoid type mismatch.
                 val nonNullMetadata: Map<String, String> = if (metadata.isEmpty()) {
                     emptyMap()
                 } else {
                     metadata.mapValues { it.value ?: "" }
                 }
-
                 betaLogger.log(level, category, message, nonNullMetadata, throwable)
             } else {
-                // Fallback to standard logger with formatted message
                 val formattedMessage = if (metadata.isNotEmpty()) {
                     "$message [${metadata.map { "${it.key}=${it.value}" }.joinToString(", ")}]"
                 } else {
                     message
                 }
-                
                 when (level) {
                     LogLevel.ERROR -> logger(Log.ERROR, "[$category] $formattedMessage", throwable as? Exception)
                     LogLevel.WARN -> logger(Log.WARN, "[$category] $formattedMessage", throwable as? Exception)
@@ -689,12 +679,20 @@ abstract class VirtualNode(
                     LogLevel.DETAILED -> logger(Log.DEBUG, "[$category] $formattedMessage", throwable as? Exception)
                     LogLevel.FULL -> logger(Log.VERBOSE, "[$category] $formattedMessage", throwable as? Exception)
                     LogLevel.BASIC -> logger(Log.INFO, "[$category] $formattedMessage", throwable as? Exception)
-                    LogLevel.DISABLED -> { /* No logging */ }
+                    LogLevel.DISABLED -> { }
                 }
             }
         } catch (e: Exception) {
-            // Fallback to basic Android logging if all else fails
             Log.e("VirtualNode", "Logging failed: ${e.message}, original message: $message", e)
         }
     }
+
+    fun getMeshGossipService(): MeshGossipService = meshGossipService
+    fun getCoreGossipBroadcastService(): CoreGossipBroadcastService = coreGossipBroadcastService
+    fun getDistributedStorageManager(): DistributedStorageManager = distributedStorageManager
+    fun getIntelligentDistributedComputeService(): IntelligentDistributedComputeService = intelligentDistributedComputeService
+    fun getMeshEcosystemListener(): MeshEcosystemListener = meshEcosystemListener
+    fun getMeshNetworkInterface(): MeshNetworkInterface = meshNetworkInterface
+    fun getEmergentRoleManager(): EmergentRoleManager = emergentRoleManager
+    fun getOriginatingMessageManager(): OriginatingMessageManager = originatingMessageManager
 }

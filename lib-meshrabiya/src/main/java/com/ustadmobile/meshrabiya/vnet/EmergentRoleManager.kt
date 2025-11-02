@@ -25,6 +25,7 @@ import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.model.ExecutionProfile
 import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
+import com.ustadmobile.meshrabiya.util.WifiConcurrencyUtil
 
 data class NodeCapabilitySnapshot(
     val nodeId: String,
@@ -233,8 +234,12 @@ class EmergentRoleManager(
             (userPreferences.isEmpty() || MeshRole.COMPUTE_NODE in userPreferences)) {
             roles.add(MeshRole.COMPUTE_NODE)
         }
-        if (fitness > 0.6 && virtualNode.neighbors().size >= 2) {
+        // --- WiFi AP/Station concurrency check for MESH_ROUTER role ---
+        val apStaSupported = WifiConcurrencyUtil.isApStaConcurrencySupported(context)
+        if (fitness > 0.6 && virtualNode.neighbors().size >= 2 && apStaSupported) {
             roles.add(MeshRole.MESH_ROUTER)
+        } else {
+            roles.remove(MeshRole.MESH_ROUTER)
         }
         if (fitness > 0.85 &&
             node.hasStableConnection() &&

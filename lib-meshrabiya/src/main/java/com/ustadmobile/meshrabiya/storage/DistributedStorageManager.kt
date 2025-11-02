@@ -1,4 +1,3 @@
-
 package com.ustadmobile.meshrabiya.storage
 
 import android.content.Context
@@ -18,6 +17,7 @@ import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.vnet.StorageNodeRequest
 import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
 import com.ustadmobile.meshrabiya.vnet.MeshChunk
@@ -39,9 +39,10 @@ class DistributedStorageManager(
     private val storageConfig: StorageConfiguration,
     private val connectionPool: MeshConnectionPool
 ) {
-        // --- Event Handlers ---
-        var onFileStored: ((fileId: String, file: File) -> Unit)? = null
-        var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
+    // --- Event Handlers ---
+    var onFileStored: ((fileId: String, file: File) -> Unit)? = null
+    var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
+
     companion object {
         private const val TAG = "DistributedStorageManager"
         private const val RETRY_DELAY_MS = 10000L
@@ -70,9 +71,9 @@ class DistributedStorageManager(
 
     // Track outstanding storage node requests for broadcast/response lifecycle
     private val pendingStorageNodeRequests = ConcurrentLinkedQueue<PendingStorageNodeRequest>()
-    private val pendingChunkRetrievals = ConcurrentHashMap<String, MutableList<ChunkRetrievalResponse>>()
-    private val pendingReplicaResponses = ConcurrentHashMap<String, MutableList<ReplicaResponse>>()
-    private val pendingPermissionConfirmations = ConcurrentHashMap<String, MutableList<MeshGossipService.FilePermissionUpdateConfirmation>>()
+    private val pendingChunkRetrievals = ConcurrentHashMap<String, MutableList<com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse>>()
+    private val pendingReplicaResponses = ConcurrentHashMap<String, MutableList<com.ustadmobile.meshrabiya.vnet.ReplicaResponse>>()
+    private val pendingPermissionConfirmations = ConcurrentHashMap<String, MutableList<MeshEcosystemMessage.FilePermissionUpdateConfirmationMessage>>()
 
     data class PendingStorageNodeRequest(
         val request: StorageNodeRequest,
@@ -114,7 +115,7 @@ class DistributedStorageManager(
      * Handles chunk retrieval responses.
      * Used to aggregate responses for ongoing retrieval requests.
      */
-    fun handleChunkRetrievalResponse(senderId: Int, response: ChunkRetrievalResponse) {
+    fun handleChunkRetrievalResponse(senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse) {
         val chunkId = response.chunkId
         pendingChunkRetrievals.computeIfAbsent(chunkId) { mutableListOf() }.add(response)
         // Optionally: trigger retrieval continuation or update state
@@ -124,7 +125,7 @@ class DistributedStorageManager(
      * Handles replica responses.
      * Used to track replica state and health for files/chunks.
      */
-    fun handleReplicaResponse(senderId: Int, response: ReplicaResponse) {
+    fun handleReplicaResponse(senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ReplicaResponse) {
         val fileId = response.fileId
         pendingReplicaResponses.computeIfAbsent(fileId) { mutableListOf() }.add(response)
         replicationTracker.updateReplicaState(fileId, response)
@@ -134,10 +135,48 @@ class DistributedStorageManager(
      * Handles permission update confirmations.
      * Used to track confirmation status for permission updates.
      */
-    fun handlePermissionUpdateConfirmation(confirmation: MeshGossipService.FilePermissionUpdateConfirmation) {
+    fun handlePermissionUpdateConfirmation(confirmation: MeshEcosystemMessage.FilePermissionUpdateConfirmationMessage) {
         val fileId = confirmation.fileId
         pendingPermissionConfirmations.computeIfAbsent(fileId) { mutableListOf() }.add(confirmation)
         // Optionally: update permission state or trigger next lifecycle step
+    }
+
+    /**
+     * Handles inbound chunk/file transfer events using connection pool.
+     * Called by MeshEcosystemListener.
+     */
+    fun handleIncomingChunkTransfer(senderId: Int, chunk: MeshEcosystemMessage.ChunkTransferMessage) {
+        scope.launch {
+            val connection = try {
+                connectionPool.acquireConnection(timeoutMs = RESPONSE_TIMEOUT_MS)
+            } catch (e: Exception) {
+                null
+            }
+            if (connection != null) {
+                try {
+                    val sharedStorageDir = File(context.filesDir, "shared_storage/${chunk.fileId}/${chunk.relativePath}")
+                    if (!sharedStorageDir.exists()) sharedStorageDir.mkdirs()
+                    val chunkFile = File(sharedStorageDir, "${chunk.chunkId}.chunk")
+                    FileOutputStream(chunkFile).use { it.write(chunk.chunkBytes) }
+                    addMeshChunk(
+                        MeshChunk(
+                            chunkId = chunk.chunkId,
+                            fileId = chunk.fileId,
+                            chunkIndex = chunk.chunkIndex,
+                            totalChunks = chunk.totalChunks,
+                            chunkSize = chunk.chunkBytes.size.toLong(),
+                            fileName = chunk.fileName,
+                            relativePath = chunk.relativePath,
+                            hash = chunk.hash
+                        )
+                    )
+                } finally {
+                    connectionPool.releaseConnection(connection)
+                }
+            } else {
+                betaLogger.log(LogLevel.ERROR, TAG, "No available connection for inbound chunk transfer")
+            }
+        }
     }
 
     // === CHUNKING ===
@@ -208,47 +247,6 @@ class DistributedStorageManager(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    // === MessagePack Serialization Helpers ===
-
-    private fun serializeChunkTransfer(chunk: MeshChunk, chunkBytes: ByteArray): ByteArray {
-        val packer: MessageBufferPacker = MessagePack.newDefaultBufferPacker()
-        packer.packString("ChunkTransfer")
-        packer.packString(chunk.chunkId)
-        packer.packString(chunk.fileId)
-        packer.packInt(chunk.chunkIndex)
-        packer.packInt(chunk.totalChunks)
-        packer.packString(chunk.fileName)
-        packer.packString(chunk.relativePath)
-        packer.packBinaryHeader(chunkBytes.size)
-        packer.writePayload(chunkBytes)
-        packer.packString(chunk.hash)
-        packer.close()
-        return packer.toByteArray()
-    }
-
-    private fun deserializeChunkTransfer(bytes: ByteArray): MeshGossipService.ChunkTransferMessage? {
-        val unpacker: MessageUnpacker = MessagePack.newDefaultUnpacker(bytes)
-        val type = unpacker.unpackString()
-        if (type != "ChunkTransfer") {
-            unpacker.close()
-            return null
-        }
-        val chunkId = unpacker.unpackString()
-        val fileId = unpacker.unpackString()
-        val chunkIndex = unpacker.unpackInt()
-        val totalChunks = unpacker.unpackInt()
-        val fileName = unpacker.unpackString()
-        val relativePath = unpacker.unpackString()
-        val chunkSize = unpacker.unpackBinaryHeader()
-        val chunkBytes = ByteArray(chunkSize)
-        unpacker.readPayload(chunkBytes)
-        val hash = unpacker.unpackString()
-        unpacker.close()
-        return MeshGossipService.ChunkTransferMessage(
-            chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash
-        )
-    }
-
     // === PUBLIC API ===
 
     suspend fun storeFile(
@@ -293,7 +291,17 @@ class DistributedStorageManager(
                 async {
                     val candidateNodes = findBestStorageNodesForChunk(chunk, fileId, desiredReplicas)
                     chunkReplicaTracker[chunk.chunkId] = mutableSetOf()
-                    val msgPackBytes = serializeChunkTransfer(chunk, readChunkBytes(file, chunk))
+                    val chunkBytes = readChunkBytes(file, chunk)
+                    val chunkMsg = MeshEcosystemMessage.ChunkTransferMessage(
+                        chunkId = chunk.chunkId,
+                        fileId = chunk.fileId,
+                        chunkIndex = chunk.chunkIndex,
+                        totalChunks = chunk.totalChunks,
+                        fileName = chunk.fileName,
+                        relativePath = chunk.relativePath,
+                        chunkBytes = chunkBytes,
+                        hash = chunk.hash
+                    )
                     candidateNodes.forEach { nodeId ->
                         val connection = try {
                             connectionPool.acquireConnection(timeoutMs = RESPONSE_TIMEOUT_MS)
@@ -302,7 +310,7 @@ class DistributedStorageManager(
                         }
                         if (connection != null) {
                             try {
-                                connection.meshNetworkInterface.sendChunkToNode(nodeId, chunk, msgPackBytes)
+                                connection.meshNetworkInterface.sendChunkToNode(nodeId, chunk, chunkMsg.toBytes())
                                 chunkReplicaTracker[chunk.chunkId]?.add(nodeId)
                                 betaLogger.log(LogLevel.INFO, TAG, "Chunk ${chunk.chunkId} stored on node $nodeId")
                             } finally {
@@ -392,8 +400,8 @@ class DistributedStorageManager(
                             for (nodeId in nodeIds) {
                                 val msgPackBytes = connection.meshNetworkInterface.requestChunkFromNode(nodeId, chunk.chunkId)
                                 if (msgPackBytes != null) {
-                                    val chunkMsg = deserializeChunkTransfer(msgPackBytes)
-                                    if (chunkMsg != null && chunkMsg.chunkId == chunk.chunkId) {
+                                    val chunkMsg = MeshEcosystemMessage.fromBytes(msgPackBytes)
+                                    if (chunkMsg is MeshEcosystemMessage.ChunkTransferMessage && chunkMsg.chunkId == chunk.chunkId) {
                                         retrievedChunks[chunk.chunkIndex] = chunkMsg.chunkBytes
                                         break
                                     }
@@ -442,46 +450,6 @@ class DistributedStorageManager(
     fun getMeshChunk(chunkId: String): MeshChunk? = storageDataStore.getMeshChunk(chunkId)
     fun getAllMeshChunks(): List<MeshChunk> = storageDataStore.getAllMeshChunks()
 
-    /**
-     * Handles inbound chunk/file transfer events using connection pool.
-     * Called by MeshEcosystemListener.
-     */
-    fun handleIncomingChunkTransfer(senderId: Int, chunk: MeshGossipService.ChunkTransferMessage) {
-        scope.launch {
-            val connection = try {
-                connectionPool.acquireConnection(timeoutMs = RESPONSE_TIMEOUT_MS)
-            } catch (e: Exception) {
-                null
-            }
-            if (connection != null) {
-                try {
-                    val sharedStorageDir = File(context.filesDir, "shared_storage/${chunk.fileId}/${chunk.relativePath}")
-                    if (!sharedStorageDir.exists()) sharedStorageDir.mkdirs()
-                    val chunkFile = File(sharedStorageDir, "${chunk.chunkId}.chunk")
-                    FileOutputStream(chunkFile).use { it.write(chunk.chunkBytes) }
-                    addMeshChunk(
-                        MeshChunk(
-                            chunkId = chunk.chunkId,
-                            fileId = chunk.fileId,
-                            chunkIndex = chunk.chunkIndex,
-                            totalChunks = chunk.totalChunks,
-                            chunkSize = chunk.chunkBytes.size.toLong(),
-                            fileName = chunk.fileName,
-                            relativePath = chunk.relativePath,
-                            hash = chunk.hash
-                        )
-                    )
-                } finally {
-                    connectionPool.releaseConnection(connection)
-                }
-            } else {
-                betaLogger.log(LogLevel.ERROR, TAG, "No available connection for inbound chunk transfer")
-            }
-        }
-    }
-
-    // ...existing code for permission updates, stats, monitoring, etc...
-
     data class StorageConfiguration(
         val defaultReplicationFactor: Int = 3,
         val encryptionEnabled: Boolean = true,
@@ -515,4 +483,6 @@ class DistributedStorageManager(
     )
 
     class StorageQuotaExceededException(message: String) : Exception(message)
+
+    // TODO: Implement findBestStorageNodesForChunk, queueForMeshDistribution, updateStorageStats, ReplicationTracker, StagedSyncManager, StorageQuotaManager, StorageEncryptionManager, StorageDataStore, etc.
 }

@@ -2,17 +2,19 @@ package com.ustadmobile.meshrabiya.service
 
 import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
-import com.ustadmobile.meshrabiya.service.MeshGossipService
-import com.ustadmobile.meshrabiya.vnet.MeshChunk
-import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
-import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
-import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
-import kotlinx.coroutines.*
-import java.util.concurrent.atomic.AtomicBoolean
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 import org.torproject.android.service.compute.IntelligentDistributedComputeService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
+import com.ustadmobile.meshrabiya.storage.StorageNodeResponse
+import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
+
 
 /**
  * Listens for mesh ecosystem events: chunk transfer, broadcast responses, permission updates, etc.
@@ -21,7 +23,6 @@ import org.torproject.android.service.compute.IntelligentDistributedComputeServi
  */
 class MeshEcosystemListener(
     private val meshNetworkInterface: MeshNetworkInterface,
-    private val meshGossipService: MeshGossipService,
     private val coreGossipBroadcastService: CoreGossipBroadcastService,
     connectionPoolSize: Int = MeshrabiyaConstants.getConnectionPoolSize()
 ) {
@@ -58,43 +59,48 @@ class MeshEcosystemListener(
         isStorageParticipationEnabled = enabled
     }
 
-    // TODO: Add similar enable/disable for compute participation if needed
-    // TODO: Add compute related broadcast listeners
+    // Register listeners for MeshEcosystemMessage types
     private fun registerBroadcastListeners() {
-        // StorageNodeResponse broadcast listener
-        coreGossipBroadcastService.registerListener("StorageNodeResponse") { senderId, bytes, type, msg ->
-            if (isStorageParticipationEnabled && type == "StorageNodeResponse" && msg is StorageNodeResponse) {
-                routeStorageNodeResponse(senderId, msg)
+        coreGossipBroadcastService.registerListener("StorageNodeResponse") { senderId, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (isStorageParticipationEnabled && msg is MeshEcosystemMessage.StorageNodeResponseMessage) {
+                routeStorageNodeResponse(senderId, msg.response)
             }
         }
-        // ChunkRetrievalResponse broadcast listener
-        coreGossipBroadcastService.registerListener("ChunkRetrievalResponse") { senderId, bytes, type, msg ->
-            if (isStorageParticipationEnabled && type == "ChunkRetrievalResponse" && msg is ChunkRetrievalResponse) {
-                routeChunkRetrievalResponse(senderId, msg)
+        coreGossipBroadcastService.registerListener("ChunkRetrievalResponse") { senderId, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (isStorageParticipationEnabled && msg is MeshEcosystemMessage.ChunkRetrievalResponseMessage) {
+                routeChunkRetrievalResponse(senderId, msg.response)
             }
         }
-        // ReplicaResponse broadcast listener
-        coreGossipBroadcastService.registerListener("ReplicaResponse") { senderId, bytes, type, msg ->
-            if (isStorageParticipationEnabled && type == "ReplicaResponse" && msg is ReplicaResponse) {
-                routeReplicaResponse(senderId, msg)
+        coreGossipBroadcastService.registerListener("ReplicaResponse") { senderId, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (isStorageParticipationEnabled && msg is MeshEcosystemMessage.ReplicaResponseMessage) {
+                routeReplicaResponse(senderId, msg.response)
             }
         }
-        // PermissionUpdateConfirmation broadcast listener
-        coreGossipBroadcastService.registerListener("FilePermissionUpdateConfirmation") { _, _, type, msg ->
-            if (isStorageParticipationEnabled && type == "FilePermissionUpdateConfirmation" && msg is MeshGossipService.FilePermissionUpdateConfirmation) {
+        coreGossipBroadcastService.registerListener("FilePermissionUpdateConfirmation") { _, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (isStorageParticipationEnabled && msg is MeshEcosystemMessage.FilePermissionUpdateConfirmationMessage) {
                 routePermissionUpdateConfirmation(msg)
             }
         }
-        // TaskDataAccessUpdate broadcast listener
-        coreGossipBroadcastService.registerListener("TaskDataAccessUpdateMessage") { _, _, type, msg ->
-            if (type == "TaskDataAccessUpdateMessage" && msg is MeshGossipService.TaskDataAccessUpdateMessage) {
+        coreGossipBroadcastService.registerListener("TaskDataAccessUpdateMessage") { _, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (msg is MeshEcosystemMessage.TaskDataAccessUpdateMessage) {
                 routeTaskDataAccessUpdate(msg)
             }
         }
-        // ChunkTransfer broadcast listener
-        coreGossipBroadcastService.registerListener("ChunkTransfer") { senderId, _, type, msg ->
-            if (isStorageParticipationEnabled && type == "ChunkTransfer" && msg is MeshGossipService.ChunkTransferMessage) {
+        coreGossipBroadcastService.registerListener("ChunkTransfer") { senderId, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (isStorageParticipationEnabled && msg is MeshEcosystemMessage.ChunkTransferMessage) {
                 onChunkTransfer(senderId, msg)
+            }
+        }
+        coreGossipBroadcastService.registerListener("EcosystemBroadcast") { senderId, bytes, type, _ ->
+            val msg = MeshEcosystemMessage.fromBytes(bytes)
+            if (msg is MeshEcosystemMessage.EcosystemBroadcastMessage) {
+                routeEcosystemBroadcast(senderId, msg)
             }
         }
     }
@@ -118,13 +124,13 @@ class MeshEcosystemListener(
         }
     }
 
-    private fun routePermissionUpdateConfirmation(confirmation: MeshGossipService.FilePermissionUpdateConfirmation) {
+    private fun routePermissionUpdateConfirmation(confirmation: MeshEcosystemMessage.FilePermissionUpdateConfirmationMessage) {
         if (isStorageNodeEnabled) {
             storageManager?.handlePermissionUpdateConfirmation(confirmation)
         }
     }
 
-    private fun routeTaskDataAccessUpdate(updateMsg: MeshGossipService.TaskDataAccessUpdateMessage) {
+    private fun routeTaskDataAccessUpdate(updateMsg: MeshEcosystemMessage.TaskDataAccessUpdateMessage) {
         computeService?.handleTaskDataAccessUpdate(updateMsg)
     }
 
@@ -133,7 +139,7 @@ class MeshEcosystemListener(
      * Both sender and receiver must acquire/release connections from the pool.
      * Only processes if storage node responsibilities are enabled.
      */
-    fun onChunkTransfer(senderId: Int, chunk: MeshGossipService.ChunkTransferMessage) {
+    fun onChunkTransfer(senderId: Int, chunk: MeshEcosystemMessage.ChunkTransferMessage) {
         scope.launch {
             val connection = try {
                 connectionPool.acquireConnection(timeoutMs = 5000)
@@ -150,6 +156,17 @@ class MeshEcosystemListener(
                 }
             }
         }
+    }
+
+    /**
+     * Handles inbound ecosystem broadcast messages.
+     */
+    private fun routeEcosystemBroadcast(senderId: Int, broadcastMsg: MeshEcosystemMessage.EcosystemBroadcastMessage) {
+        // Example: route based on broadcastMsg.messageType or payload
+        // Extend this method to handle specific broadcast types as needed
+        // For now, just log or pass to storageManager/computeService if relevant
+        // storageManager?.handleEcosystemBroadcast(senderId, broadcastMsg)
+        // computeService?.handleEcosystemBroadcast(senderId, broadcastMsg)
     }
 
     /**

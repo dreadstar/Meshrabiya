@@ -1,4 +1,3 @@
-
 package com.ustadmobile.meshrabiya.service.compute
 
 import kotlinx.coroutines.*
@@ -7,6 +6,13 @@ import org.torproject.android.service.compute.mesh.*
 import org.torproject.android.service.compute.scheduler.*
 import org.torproject.android.service.compute.executor.*
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
+import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
+import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
+import com.ustadmobile.meshrabiya.service.MeshGossipService
+import com.ustadmobile.meshrabiya.service.MeshGossipService.TaskDataAccessUpdateMessage
+import com.ustadmobile.meshrabiya.beta.BetaTestLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import android.content.Context
 import androidx.appcompat.app.AlertDialog
 import android.widget.ArrayAdapter
@@ -25,12 +31,12 @@ class IntelligentDistributedComputeService(
     private val resourceManager: ResourceManager,
     private val pythonExecutor: PythonExecutor,
     private val liteRTEngine: LiteRTEngine,
-    private val betaLogger: com.ustadmobile.meshrabiya.beta.BetaTestLogger? = null
+    private val betaLogger: BetaTestLogger? = null
 ) {
     // --- Event Handlers ---
     var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     var onTaskFailed: ((taskId: String, error: Throwable) -> Unit)? = null
-    private var meshEcosystemListener: com.ustadmobile.meshrabiya.service.MeshEcosystemListener? = null
+    private var meshEcosystemListener: MeshEcosystemListener? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val activeJobs = ConcurrentHashMap<String, DistributedJob>()
     private val nodeCapabilities = ConcurrentHashMap<String, NodeCapabilitySnapshot>()
@@ -38,28 +44,30 @@ class IntelligentDistributedComputeService(
     private val taskScheduler = IntelligentTaskScheduler()
     private val connectionPool = MeshConnectionPool(meshNetwork, poolSize = 8)
 
-    fun registerWithEcosystemListener(listener: com.ustadmobile.meshrabiya.service.MeshEcosystemListener) {
+    fun registerWithEcosystemListener(listener: MeshEcosystemListener) {
         meshEcosystemListener = listener
         listener.registerComputeService(this)
         registerEventHandlers(listener)
     }
 
-    private fun registerEventHandlers(listener: com.ustadmobile.meshrabiya.service.MeshEcosystemListener) {
-        listener.meshGossipService.registerTaskDataAccessUpdateListener { updateMsg ->
-            handleTaskDataAccessUpdate(updateMsg)
-        }
-        // Add other compute event handlers here as needed
+    private fun registerEventHandlers(listener: MeshEcosystemListener) {
+        // If MeshGossipService supports registering listeners for TaskDataAccessUpdate, do so here.
+        // Otherwise, this is a placeholder for future event handler registration.
+        // Example:
+        // listener.meshGossipService.registerTaskDataAccessUpdateListener { updateMsg ->
+        //     handleTaskDataAccessUpdate(updateMsg)
+        // }
     }
 
-    fun handleTaskDataAccessUpdate(updateMsg: com.ustadmobile.meshrabiya.service.MeshGossipService.TaskDataAccessUpdateMessage) {
-        betaLogger?.log(com.ustadmobile.meshrabiya.beta.LogLevel.INFO, "ComputeService", "Received TaskDataAccessUpdate: $updateMsg")
+    fun handleTaskDataAccessUpdate(updateMsg: TaskDataAccessUpdateMessage) {
+        betaLogger?.log(LogLevel.INFO, "ComputeService", "Received TaskDataAccessUpdate: $updateMsg")
         // TODO: Implement actual permission update and job trigger logic
     }
 
     fun processTaskRequest(localRequest: LocalComputeTaskRequest) {
         ClientTaskRequestTracker.add(localRequest) // Add to client-side request list
-        CoroutineScope(Dispatchers.IO).launch {
-            val responses = meshGossipService.broadcastComputeTaskRequestSync(
+        scope.launch {
+            val responses = meshNetwork.meshGossipService.broadcastComputeTaskRequestSync(
                 localRequest.mmcpRequest,
                 MeshrabiyaConstants.getTimeoutMs()
             )
@@ -176,7 +184,7 @@ class IntelligentDistributedComputeService(
                 connectionPool.releaseConnection(connection)
             }
         } else {
-            betaLogger?.log(com.ustadmobile.meshrabiya.beta.LogLevel.ERROR, "ComputeService", "No available connection for transfer")
+            betaLogger?.log(LogLevel.ERROR, "ComputeService", "No available connection for transfer")
             null
         }
     }
