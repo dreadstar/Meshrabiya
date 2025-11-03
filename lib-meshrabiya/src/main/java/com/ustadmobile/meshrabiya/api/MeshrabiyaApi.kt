@@ -43,6 +43,10 @@ interface MeshrabiyaApi {
     fun getNetworkInfo(): NetworkInfo
     fun getNodeInfo(nodeId: String): NodeInfo
 
+    // --- Proxy Controls ---
+    fun setProxy(host: String, port: Int)
+    fun setProxyActive(active: Boolean)
+
     // --- Gateway Controls ---
     fun setTorGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit)
     fun getTorGatewayStatus(): Boolean

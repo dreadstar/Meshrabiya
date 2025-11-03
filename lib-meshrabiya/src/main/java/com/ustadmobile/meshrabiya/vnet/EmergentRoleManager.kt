@@ -235,7 +235,7 @@ class EmergentRoleManager(
             roles.add(MeshRole.COMPUTE_NODE)
         }
         // --- WiFi AP/Station concurrency check for MESH_ROUTER role ---
-        val apStaSupported = WifiConcurrencyUtil.isApStaConcurrencySupported(context)
+        val apStaSupported = WifiConcurrencyUtil.isDualConnectivityAvailable(context)
         if (fitness > 0.6 && virtualNode.neighbors().size >= 2 && apStaSupported) {
             roles.add(MeshRole.MESH_ROUTER)
         } else {

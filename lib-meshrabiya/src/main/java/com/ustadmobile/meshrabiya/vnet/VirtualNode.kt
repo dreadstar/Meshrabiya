@@ -74,6 +74,28 @@ abstract class VirtualNode(
 
     val addressAsInt: Int = address.requireAddressAsInt()
 
+    // --- Proxy connection info ---
+    @Volatile
+    private var proxyHost: String? = null
+    @Volatile
+    private var proxyPort: Int? = null
+    @Volatile
+    private var proxyActive: Boolean = false
+
+    // --- Set proxy connection info ---
+    fun setProxy(host: String, port: Int) {
+        proxyHost = host
+        proxyPort = port
+        logger(Log.INFO, "$logPrefix Proxy set to $host:$port", null)
+    }
+
+    // --- Set proxy active/inactive ---
+    fun setProxyActive(active: Boolean) {
+        proxyActive = active
+        logger(Log.INFO, "$logPrefix Proxy active set to $active", null)
+    }
+
+
     //This executor is used for direct I/O activities
     protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
 
@@ -502,6 +524,17 @@ abstract class VirtualNode(
                 return
             }
 
+            // --- CONDITIONAL PROXY ROUTING ---
+            val currentRoles = emergentRoleManager.getCurrentMeshRoles()
+            if (proxyActive && currentRoles.contains(MeshRole.TOR_GATEWAY)) {
+                // Route internet traffic via proxy (Tor)
+                if (shouldRouteViaProxy(packet)) {
+                    routeViaProxy(packet)
+                    logger(Log.INFO, "$logPrefix Routed packet via proxy $proxyHost:$proxyPort", null)
+                    return
+                }
+            }
+
             if(packet.header.toAddr == addressAsInt) {
                 val listeningSocket = activeSockets[packet.header.toPort]
                 if(listeningSocket != null) {
@@ -684,6 +717,30 @@ abstract class VirtualNode(
             }
         } catch (e: Exception) {
             Log.e("VirtualNode", "Logging failed: ${e.message}, original message: $message", e)
+        }
+    }
+
+    // --- Helper: Should route via proxy ---
+    private fun shouldRouteViaProxy(packet: VirtualPacket): Boolean {
+        // Define logic for which packets should go via proxy (Tor)
+        // Example: packets destined for Internet (not mesh addresses)
+        // Here, you may want to check packet.header.toAddr or other fields
+        // For now, route all non-mesh traffic if proxy is active and TOR_GATEWAY role is present
+        return true
+    }
+
+    // --- Helper: Route via proxy ---
+    private fun routeViaProxy(packet: VirtualPacket) {
+        val host = proxyHost ?: return
+        val port = proxyPort ?: return
+        try {
+            val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port))
+            val socket = Socket(proxy)
+            // Example: send packet data via socket
+            socket.getOutputStream().write(packet.data)
+            socket.close()
+        } catch (e: Exception) {
+            logger(Log.ERROR, "$logPrefix Failed to route via proxy: ${e.message}", e)
         }
     }
 

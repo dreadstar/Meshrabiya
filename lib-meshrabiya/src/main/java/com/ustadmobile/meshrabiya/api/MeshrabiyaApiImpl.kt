@@ -46,6 +46,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var distributedStorageManager: DistributedStorageManager? = null
     private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
 
+     // --- Proxy Controls ---
+    fun setProxy(host: String, port: Int) {
+        myNode?.setProxy(host, port)
+    }
+
+    fun setProxyActive(active: Boolean) {
+        myNode?.setProxyActive(active)
+    }
+
     // --- Mesh Initialization ---
     override fun initMesh(context: Context) {
         val Context.dataStore by preferencesDataStore(name = "meshr_settings")
