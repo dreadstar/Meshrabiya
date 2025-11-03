@@ -254,6 +254,93 @@ Original Meshrabiya:          Enhanced Fork:
                               └─────────────────┘
 ```
 
+## Meshrabiya API: Features & Usage
+
+Meshrabiya exposes a unified API for mesh networking, distributed storage, and compute services. The API is designed for reliability, extensibility, and ease of integration in Android apps.
+
+### Key Features
+
+- **Mesh Node Management:** Create/configure virtual nodes, assign virtual IPs, manage roles and routing.
+- **Hotspot & Connectivity:** Create WiFi Direct/Local Only Hotspots, generate/parse connect links, connect peers.
+- **Socket Factories:** TCP/UDP socket factories for multi-hop mesh communication, compatible with OkHttp.
+- **Distributed Storage:** Enable/disable participation, allocate storage, manage drop folders, store/retrieve/stream/delete files.
+- **Distributed Compute:** Add/start/cancel tasks, query job types, participate in distributed service layers.
+- **Gateway & Proxy Integration:** Enable Tor/Internet gateway, route traffic via proxy, monitor gateway status.
+- **Event & State Management:** Register listeners for mesh state, peer count, file/service events, access real-time stats.
+- **Settings & Configuration:** Centralized runtime configuration via `MeshSettings`.
+
+### Sample Usage
+
+```kotlin
+// 1. Initialize the API singleton and mesh node
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "meshr_settings")
+val meshrabiyaApi: MeshrabiyaApi = MeshrabiyaApiImpl.getInstance()
+meshrabiyaApi.initMesh(applicationContext)
+
+// 2. Start mesh networking and create a hotspot
+meshrabiyaApi.startMesh { result ->
+    if (result.isSuccess) {
+        // Mesh started, hotspot active
+    }
+}
+
+// 3. Connect to another node using a connect link
+val connectLink = meshrabiyaApi.getConnectLink()
+val hotspotConfig = MeshrabiyaConnectLink.parseUri(connectLink).hotspotConfig
+if (hotspotConfig != null) {
+    // Connect as station (API method if exposed)
+    // myNode.connectAsStation(hotspotConfig)
+}
+
+// 4. Exchange data using TCP sockets
+val serverSocket = ServerSocket(port)
+val socketFactory = meshrabiyaApi.getSocketFactory()
+val clientSocket = socketFactory.createSocket(serverVirtualAddr, port)
+
+// 5. Exchange data using UDP sockets
+val datagramSocket = meshrabiyaApi.createBoundDatagramSocket(port)
+datagramSocket.send(...)
+
+// 6. Enable distributed storage participation
+meshrabiyaApi.setStorageParticipationEnabled(true) { result ->
+    if (result.isSuccess) {
+        // Storage participation enabled
+    }
+}
+
+// 7. Store and retrieve files
+meshrabiyaApi.storeFile(file) { result ->
+    result.onSuccess { fileId ->
+        // File stored, fileId available
+    }
+}
+meshrabiyaApi.retrieveFile(fileId) { result ->
+    result.onSuccess { file ->
+        // File retrieved
+    }
+}
+
+// 8. Enable Tor gateway and proxy routing
+meshrabiyaApi.setTorGatewayEnabled(true) { result -> /* ... */ }
+meshrabiyaApi.setProxy("127.0.0.1", 9050) // Set Tor SOCKS proxy
+meshrabiyaApi.setProxyActive(true)        // Activate proxy routing
+
+// 9. Register event listeners
+meshrabiyaApi.setOnMeshStateChanged { newState -> /* ... */ }
+meshrabiyaApi.setOnFileRetrieved { fileId, file -> /* ... */ }
+```
+
+**Best Practices:**
+- Always initialize the API singleton once per app lifecycle.
+- Use the canonical interface (`MeshrabiyaApi`) for all interactions.
+- Register listeners early for real-time updates.
+- Use provided socket factories for all mesh communications.
+- Manage storage and compute participation via API methods.
+- Use connect links for peer discovery and connection.
+- For gateway/proxy features, ensure correct port and host are set based on Orbot or other proxy services.
+
+See [MeshrabiyaApi.kt](Meshrabiya/lib-meshrabiya/src/main/java/com/ustadmobile/meshrabiya/api/MeshrabiyaApi.kt) and [MeshrabiyaApiImpl.kt](Meshrabiya/lib-meshrabiya/src/main/java/com/ustadmobile/meshrabiya/api/MeshrabiyaApiImpl.kt) for full API details.
+___
 ### 🔄 Upstream Compatibility
 
 - **API Compatibility**: Maintains backward compatibility with original Meshrabiya API
