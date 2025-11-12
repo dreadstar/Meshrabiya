@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 import android.util.Log
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-
+import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
 /**
  * Service Layer Coordinator - Central orchestrator for distributed services
  * Manages compute tasks, storage operations, and mesh network coordination
@@ -20,8 +20,8 @@ class ServiceLayerCoordinator(
     private val meshrabiyaAdapter: com.ustadmobile.meshrabiya.storage.MeshNetworkInterface? = null,
     // Optional beta logger - if not provided, attempt to obtain from MeshServiceCoordinator context
     private val betaLogger: BetaTestLogger? = try {
-        org.torproject.android.service.MeshServiceCoordinator.getInstance(org.torproject.android.OrbotApp.instance.applicationContext).let {
-            BetaTestLogger.getInstance(org.torproject.android.OrbotApp.instance.applicationContext)
+        com.ustadmobile.meshrabiya.service.MeshServiceCoordinator.getInstance(com.ustadmobile.meshrabiya.OrbotApp.instance.applicationContext).let {
+            BetaTestLogger.getInstance(com.ustadmobile.meshrabiya.OrbotApp.instance.applicationContext)
         }
     } catch (_: Exception) { null }
 ) {
@@ -37,14 +37,14 @@ class ServiceLayerCoordinator(
             quorumManager = mockQuorumManager(),
             resourceManager = mockResourceManager(),
             pythonExecutor = mockPythonExecutor(),
-            liteRTEngine = mockLiteRTEngine(),
+            // liteRTEngine = mockLiteRTEngine(),
             betaLogger = betaLogger
         )
     }
     // Use the coordinator-provided Meshrabiya MeshNetworkInterface. Fail fast if it's not available.
     private val meshrabiyaMeshAdapter: com.ustadmobile.meshrabiya.storage.MeshNetworkInterface
         get() = meshrabiyaAdapter ?: try {
-            org.torproject.android.service.MeshServiceCoordinator.getInstance(org.torproject.android.OrbotApp.instance.applicationContext)
+            com.ustadmobile.meshrabiya.service.MeshServiceCoordinator.getInstance(com.ustadmobile.meshrabiya.OrbotApp.instance.applicationContext)
                 .provideMeshNetworkInterface()
         } catch (e: Exception) {
             null
@@ -573,9 +573,9 @@ class ServiceLayerCoordinator(
         return MockPythonExecutor()
     }
     
-    private fun mockLiteRTEngine(): IntelligentDistributedComputeService.LiteRTEngine {
-        return MockLiteRTEngine()
-    }
+    // private fun mockLiteRTEngine(): IntelligentDistributedComputeService.LiteRTEngine {
+    //     return MockLiteRTEngine()
+    // }
 
     // --- Named mock implementations (previously returned as anonymous objects) ---
     private class SimpleGossipProtocol : IntelligentDistributedComputeService.EnhancedGossipProtocol {
@@ -609,15 +609,15 @@ class ServiceLayerCoordinator(
             )
     }
 
-    private class MockLiteRTEngine : IntelligentDistributedComputeService.LiteRTEngine {
-        override suspend fun executeTask(task: IntelligentDistributedComputeService.ComputeTask.LiteRTTask): IntelligentDistributedComputeService.TaskExecutionResult =
-            IntelligentDistributedComputeService.TaskExecutionResult.Success(
-                taskId = task.taskId,
-                result = mapOf("output" to byteArrayOf()),
-                executionTimeMs = 1000L,
-                nodeId = "mock_node"
-            )
-    }
+    // private class MockLiteRTEngine : IntelligentDistributedComputeService.LiteRTEngine {
+    //     override suspend fun executeTask(task: IntelligentDistributedComputeService.ComputeTask.LiteRTTask): IntelligentDistributedComputeService.TaskExecutionResult =
+    //         IntelligentDistributedComputeService.TaskExecutionResult.Success(
+    //             taskId = task.taskId,
+    //             result = mapOf("output" to byteArrayOf()),
+    //             executionTimeMs = 1000L,
+    //             nodeId = "mock_node"
+    //         )
+    // }
     
     // === TASK MANAGEMENT METHODS FOR TESTING ===
     

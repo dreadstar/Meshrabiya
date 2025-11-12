@@ -1,7 +1,7 @@
-package org.torproject.android.service.compute.scheduler
+package com.ustadmobile.meshrabiya.service.compute.scheduler
 
-import org.torproject.android.service.compute.model.*
-import org.torproject.android.service.compute.mesh.*
+import com.ustadmobile.meshrabiya.service.compute.model.*
+
 
 /**
  * Represents an execution plan for a distributed job in the mesh compute system.

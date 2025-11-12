@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
@@ -768,9 +768,9 @@ class DistributedStorageAgent(
     ): StorageResponse {
         return try {
             // Convert to Meshrabiya transport type and send via MeshNetworkInterface if available
-            val dfInfo = request.toDistributedFileInfo()
+            val dfInfo = request.toFileTransportDTO()
             // meshNetwork is required to be a Meshrabiya MeshNetworkInterface (constructor enforces it)
-            meshNetwork.sendStorageRequest(nodeId, dfInfo, com.ustadmobile.meshrabiya.storage.StorageOperation.REPLICATE)
+            meshNetwork.sendStorageRequest(nodeId, dfInfo, com.ustadmobile.meshrabiya.vnet.StorageOperation.REPLICATE)
             StorageResponse(
                 success = true,
                 fileId = request.fileId,
@@ -850,13 +850,15 @@ class DistributedStorageAgent(
     
     private suspend fun deleteFromNode(nodeId: String, fileId: String): Boolean {
         return try {
-            val df = com.ustadmobile.meshrabiya.storage.DistributedFileInfo(
+            val df = com.ustadmobile.meshrabiya.storage.DistributedStorageManager.FileTransportDTO(
                 path = fileId,
-                localReference = com.ustadmobile.meshrabiya.storage.LocalFileReference(fileId, "", ""),
-                replicationLevel = com.ustadmobile.meshrabiya.storage.ReplicationLevel.MINIMAL,
-                priority = com.ustadmobile.meshrabiya.storage.SyncPriority.NORMAL,
+                fileId = fileId,
+                replicationLevel = com.ustadmobile.meshrabiya.vnet.ReplicationLevel.MINIMAL,
+                priority = com.ustadmobile.meshrabiya.vnet.SyncPriority.NORMAL,
                 createdAt = System.currentTimeMillis(),
-                lastAccessed = 0L
+                lastAccessed = 0L,
+                meshReferences = emptyList(),
+                checksum = ""
             )
             meshNetwork.sendStorageRequest(nodeId, df, com.ustadmobile.meshrabiya.storage.StorageOperation.DELETE)
             true

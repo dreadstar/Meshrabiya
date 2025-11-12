@@ -21,16 +21,43 @@ import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.vnet.StorageNodeRequest
 import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
 import com.ustadmobile.meshrabiya.vnet.MeshChunk
-import com.ustadmobile.meshrabiya.vnet.FileReference
-import com.ustadmobile.meshrabiya.vnet.ReplicationLevel
-import com.ustadmobile.meshrabiya.vnet.SyncPriority
-import com.ustadmobile.meshrabiya.vnet.StorageOperation
 import com.ustadmobile.meshrabiya.storage.StorageDataStore
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import org.msgpack.core.MessagePack
 import org.msgpack.core.MessageBufferPacker
 import org.msgpack.core.MessageUnpacker
 import org.bouncycastle.openpgp.PGPPublicKey
+
+// === Storage Types ===
+
+/**
+ * File reference for tracking stored files in distributed storage.
+ */
+data class FileReference(
+    val id: String,        // File ID (SHA-256 hash)
+    val path: String,      // Original file path
+    val size: Long         // File size in bytes
+)
+
+/**
+ * Replication level for file storage across mesh network.
+ */
+enum class ReplicationLevel {
+    MINIMAL,    // 1 replica
+    STANDARD,   // 3 replicas (default)
+    HIGH,       // 5 replicas
+    CRITICAL    // 7 replicas
+}
+
+/**
+ * Priority level for sync operations.
+ */
+enum class SyncPriority {
+    LOW,        // Background sync only
+    NORMAL,     // Standard sync when battery allows
+    HIGH,       // Priority sync
+    CRITICAL    // Always sync immediately
+}
 
 class DistributedStorageManager(
     private val context: Context,
@@ -48,9 +75,47 @@ class DistributedStorageManager(
         private const val RETRY_DELAY_MS = 10000L
         private const val RESPONSE_TIMEOUT_MS = 5000L
         private const val MAX_RETRIES = 3
+        
+        @Volatile
+        private var instance: DistributedStorageManager? = null
+        
+        fun getInstance(context: Context): DistributedStorageManager {
+            return instance ?: synchronized(this) {
+                instance ?: throw IllegalStateException(
+                    "DistributedStorageManager not initialized. Must be initialized through VirtualNode or explicitly via initialize()."
+                )
+            }
+        }
+        
+        fun initialize(
+            context: Context,
+            meshNetworkInterface: MeshNetworkInterface,
+            meshGossipService: MeshGossipService,
+            storageConfig: StorageConfiguration,
+            connectionPool: MeshConnectionPool
+        ): DistributedStorageManager {
+            return instance ?: synchronized(this) {
+                instance ?: DistributedStorageManager(
+                    context,
+                    meshNetworkInterface,
+                    meshGossipService,
+                    storageConfig,
+                    connectionPool
+                ).also { instance = it }
+            }
+        }
     }
 
-    private val stagedSyncManager = StagedSyncManager(context, this, meshNetworkInterface)
+    private val stagedSyncManager = StagedSyncManager(
+        context = context,
+        meshNetwork = meshNetworkInterface,
+        onSyncComplete = { fileId, replicaCount -> 
+            betaLogger.log(LogLevel.DEBUG, TAG, "StagedSyncManager synced file: $fileId with $replicaCount replicas")
+        },
+        onSyncFailed = { fileId, error ->
+            betaLogger.log(LogLevel.ERROR, TAG, "StagedSyncManager sync failed for $fileId: $error")
+        }
+    )
     private val storageQuotaManager = StorageQuotaManager(context, storageConfig)
     private val encryptionManager = StorageEncryptionManager()
     private val betaLogger = BetaTestLogger.getInstance(context)
@@ -61,7 +126,7 @@ class DistributedStorageManager(
     val participationEnabled: StateFlow<Boolean> = _participationEnabled.asStateFlow()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val distributedFiles = ConcurrentHashMap<String, DistributedFileInfo>()
+    // Removed: distributedFiles - now using StagedSyncManager.syncedFiles
     private val replicationTracker = ReplicationTracker()
     private val chunkReplicaTracker = ConcurrentHashMap<String, MutableSet<String>>()
     private val storageDataStore: StorageDataStore = StorageDataStore.getInstance(context)
@@ -271,20 +336,20 @@ class DistributedStorageManager(
             "DistributedStorage",
             "Encryption complete for $path: ${data.size}B -> ${encryptedData.size}B in ${encryptDuration}ms"
         )
-        val localRef = stagedSyncManager.storeFile(path, encryptedData, priority)
-
-        if (localRef != null) {
-            betaLogger.log(LogLevel.DEBUG, "Storage", "File stored locally: $path")
-
-            val file = File(path)
-            val fileId = sha256File(file)
-            val chunkSize = MeshrabiyaConstants.getChunkSizeKb() * 1024
-            val chunks = chunkFile(file, fileId, chunkSize)
+        
+        // Store encrypted data to local file
+        val file = File(path)
+        file.parentFile?.mkdirs()
+        FileOutputStream(file).use { it.write(encryptedData) }
+        
+        val fileId = sha256File(file)
+        val chunkSize = MeshrabiyaConstants.getChunkSizeKb() * 1024
+        val chunks = chunkFile(file, fileId, chunkSize)
             val desiredReplicas = when (replicationLevel) {
-                ReplicationLevel.MINIMAL -> 1
-                ReplicationLevel.STANDARD -> 3
-                ReplicationLevel.HIGH -> 5
-                ReplicationLevel.CRITICAL -> 7
+                ReplicationLevel.MINIMAL -> MeshrabiyaConstants.getMinimalReplicaCount()
+                ReplicationLevel.STANDARD -> MeshrabiyaConstants.getStandardReplicaCount()
+                ReplicationLevel.HIGH -> MeshrabiyaConstants.getHighReplicaCount()
+                ReplicationLevel.CRITICAL -> MeshrabiyaConstants.getCriticalReplicaCount()
             }
             chunkReplicaTracker.clear()
             val jobs = chunks.map { chunk ->
@@ -324,30 +389,32 @@ class DistributedStorageManager(
             }
             jobs.forEach { it.await() }
 
-            val fileInfo = DistributedFileInfo(
-                path = path,
-                localReference = localRef,
-                replicationLevel = replicationLevel,
-                priority = priority,
-                createdAt = System.currentTimeMillis(),
-                lastAccessed = System.currentTimeMillis(),
-                meshReferences = chunkReplicaTracker.values.flatten().toList()
-            )
-            distributedFiles[path] = fileInfo
-
-            if (_participationEnabled.value) {
-                betaLogger.log(LogLevel.DEBUG, "Storage", "Queuing file for mesh distribution: $path")
-                queueForMeshDistribution(fileInfo)
+            // Register with StagedSyncManager for battery-aware sync orchestration
+            val targetReplicaCount = when (replicationLevel) {
+                ReplicationLevel.MINIMAL -> MeshrabiyaConstants.getMinimalReplicaCount()
+                ReplicationLevel.STANDARD -> MeshrabiyaConstants.getStandardReplicaCount()
+                ReplicationLevel.HIGH -> MeshrabiyaConstants.getHighReplicaCount()
+                ReplicationLevel.CRITICAL -> MeshrabiyaConstants.getCriticalReplicaCount()
             }
+            
+            stagedSyncManager.registerForSync(
+                filePath = path,
+                fileId = fileId,
+                size = data.size.toLong(),
+                priority = priority,
+                targetReplicaCount = targetReplicaCount
+            )
+            
+            // Update chunk and node tracking in StagedSyncManager
+            stagedSyncManager.updateChunkIds(path, chunks.map { it.chunkId })
+            stagedSyncManager.updateMeshNodeIds(path, chunkReplicaTracker.values.flatten().toList())
 
             updateStorageStats()
             betaLogger.log(LogLevel.DEBUG, "Storage", "Write operation completed: $path")
             onFileStored?.invoke(fileId, file)
-            FileReference(localRef.id, path, data.size.toLong())
-        } else {
-            betaLogger.log(LogLevel.ERROR, "Storage", "Failed to store file locally: $path")
-            null
-        }
+            
+            // Return FileReference for compatibility
+            FileReference(fileId, path, data.size.toLong())
     }
 
     private fun readChunkBytes(file: File, chunk: MeshChunk): ByteArray {
@@ -359,15 +426,19 @@ class DistributedStorageManager(
         return if (bytesRead < buffer.size) buffer.copyOf(bytesRead) else buffer
     }
 
-    suspend fun retrieveFile(fileRef: FileReference): ByteArray? = coroutineScope {
+    suspend fun retrieveFile(fileRef: FileReference): ByteArray? = coroutinescape {
         betaLogger.log(LogLevel.DEBUG, "Storage", "Read operation started: ${fileRef.path}")
 
-        val localData = stagedSyncManager.readFile(fileRef.path)
+        // Try reading from local file first
+        val file = File(fileRef.path)
+        val localData = if (file.exists()) file.readBytes() else null
+        
         if (localData != null) {
             betaLogger.log(LogLevel.DEBUG, "Storage", "File retrieved from local storage: ${fileRef.path}")
-            distributedFiles[fileRef.path]?.let { fileInfo ->
-                distributedFiles[fileRef.path] = fileInfo.copy(lastAccessed = System.currentTimeMillis())
-            }
+            
+            // Update last accessed time in StagedSyncManager
+            stagedSyncManager.updateLastAccessed(fileRef.path)
+            
             betaLogger.log(LogLevel.DEBUG, "DistributedStorage", "Starting decryption for local file: ${fileRef.path}, size=${localData.size}B")
             val decryptStartTime = System.currentTimeMillis()
             val decryptedData = encryptionManager.decrypt(localData)
@@ -432,18 +503,26 @@ class DistributedStorageManager(
     }
 
     private fun getFileChunks(fileId: String): List<MeshChunk> {
-        return distributedFiles[fileId]?.meshReferences?.mapIndexed { idx, _ ->
+        // Get file metadata from StagedSyncManager
+        val syncedFile = stagedSyncManager.getSyncedFileByFileId(fileId)
+        if (syncedFile == null) {
+            betaLogger.log(LogLevel.WARN, TAG, "No synced file found for fileId: $fileId")
+            return emptyList()
+        }
+        
+        // Use stored chunkIds from StagedSyncManager
+        return syncedFile.chunkIds.mapIndexed { idx, chunkId ->
             MeshChunk(
-                chunkId = "$fileId-chunk$idx",
+                chunkId = chunkId,
                 fileId = fileId,
                 chunkIndex = idx,
-                totalChunks = distributedFiles[fileId]?.meshReferences?.size ?: 0,
+                totalChunks = syncedFile.chunkIds.size,
                 chunkSize = MeshrabiyaConstants.getChunkSizeKb() * 1024L,
-                fileName = File(distributedFiles[fileId]?.path ?: "").name,
+                fileName = File(syncedFile.filePath).name,
                 relativePath = "",
-                hash = "$fileId-chunk$idx"
+                hash = chunkId
             )
-        } ?: emptyList()
+        }
     }
 
     fun addMeshChunk(chunk: MeshChunk) = storageDataStore.addMeshChunk(chunk)
@@ -472,17 +551,24 @@ class DistributedStorageManager(
         val replicationHealth: Float = 1.0f
     )
 
-    data class DistributedFileInfo(
+    // Removed: DistributedFileInfo - now using StagedSyncManager.SyncedFile
+    
+    /**
+     * DTO for network transport of file metadata.
+     * Used by interop layer for serialization only.
+     */
+    data class FileTransportDTO(
         val path: String,
-        val localReference: FileReference,
+        val fileId: String,
         val replicationLevel: ReplicationLevel,
         val priority: SyncPriority,
         val createdAt: Long,
         val lastAccessed: Long,
-        val meshReferences: List<String> = emptyList()
+        val meshReferences: List<String> = emptyList(),
+        val checksum: String = ""
     )
 
     class StorageQuotaExceededException(message: String) : Exception(message)
 
-    // TODO: Implement findBestStorageNodesForChunk, queueForMeshDistribution, updateStorageStats, ReplicationTracker, StagedSyncManager, StorageQuotaManager, StorageEncryptionManager, StorageDataStore, etc.
+    // TODO: Implement findBestStorageNodesForChunk, updateStorageStats, ReplicationTracker, StorageQuotaManager, StorageEncryptionManager, StorageDataStore, etc.
 }

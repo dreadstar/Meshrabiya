@@ -107,9 +107,12 @@ class OriginatingMessageManager(
     private val sendOriginatingMessageRunnable = Runnable {
         try {
             val neighborAddrs = originatorMessages.keys.toList()
-            // Calculate centrality score using MeshRoleManager if available
-            val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
-            val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
+            // Calculate centrality score using EmergentRoleManager
+            val centralityScore = try {
+                EmergentRoleManager.getInstance().calculateCentralityScore()
+            } catch (e: Exception) {
+                0f
+            }
             val originatingMessage = MmcpMessageFactory.createNodeAnnouncement(
                 messageId = nextMmcpMessageId(),
                 nodeId = localNodeAddress.toString(),
@@ -259,9 +262,12 @@ class OriginatingMessageManager(
 
 
     private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpNodeAnnouncement {
-        // Calculate centrality score using MeshRoleManager if available
-        val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
-        val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
+        // Calculate centrality score using EmergentRoleManager
+        val centralityScore = try {
+            EmergentRoleManager.getInstance().calculateCentralityScore()
+        } catch (e: Exception) {
+            0f
+        }
         
         // Get current mesh roles from EmergentRoleManager if available
         val meshRoles = (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.currentMeshRoles?.value 
@@ -366,20 +372,21 @@ class OriginatingMessageManager(
             // Multi-hop: update neighbor centrality info if available
             neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
             // Optionally, use neighborCount for richer mesh awareness
+            val centralityScore = try { EmergentRoleManager.getInstance().calculateCentralityScore() } catch (e: Exception) { 0f }
             logger(
                 Log.VERBOSE,
                 message = {
                     "$logPrefix update originator messages: " +
                             "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}; " +
                             "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}" +
-                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}" +
+                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: $centralityScore" +
                             ", multi-hop neighbor centrality: ${neighborCentralityInfo}"
                 }
             )
             _state.value = OriginatingMessageState(
                 pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
-            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}")
+            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: $centralityScore, multi-hop neighbor centrality: ${neighborCentralityInfo}")
         }
 
         if(isNewNeighbor) {

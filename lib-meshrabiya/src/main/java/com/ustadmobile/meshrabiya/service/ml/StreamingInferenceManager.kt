@@ -104,8 +104,9 @@ class StreamingInferenceManager(
                 // ML Kit services are usually available locally
                 true
             }
-            "ml-kit-custom", "litert" -> {
-                // Check if we have the model locally
+            "ml-kit-custom" -> {
+                // removed , "litert"
+                // Check if we have the model locally 
                 localMLManager.getAvailableServices().any { 
                     it.serviceId == serviceId && it.serviceType.name.lowercase().replace("_", "-") == serviceType
                 }

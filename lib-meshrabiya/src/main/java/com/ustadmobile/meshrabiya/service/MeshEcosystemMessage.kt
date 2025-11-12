@@ -11,6 +11,7 @@ import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
 import com.ustadmobile.meshrabiya.storage.StorageCapabilities
 import com.ustadmobile.meshrabiya.service.MeshGossipService.AccessType
 import com.ustadmobile.meshrabiya.storage.AccessPattern
+import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
 import org.msgpack.core.MessagePack
 import org.msgpack.core.MessageUnpacker
 import org.msgpack.core.MessageBufferPacker
@@ -144,6 +145,7 @@ sealed class MeshEcosystemMessage(
                     payload = unpacker.readPayload(unpacker.unpackBinaryHeader())
                 )
                  "ComputeTaskRequest" -> ComputeTaskRequestMessage.fromUnpacker(unpacker)
+                 "ComputeNodeResponse" -> ComputeNodeResponseMessage.fromUnpacker(unpacker)
                 else -> throw IllegalArgumentException("Unknown MeshEcosystemMessage type: $type")
             }
             unpacker.close()
@@ -372,6 +374,60 @@ data class ComputeTaskRequestMessage(
             val inputParams = Json.decodeFromString(MapSerializer(String.serializer(), AnySerializer), inputParamsJson)
             val metadata = Json.decodeFromString(MapSerializer(String.serializer(), AnySerializer), metadataJson)
             return ComputeTaskRequestMessage(taskId, serviceId, inputParams, metadata)
+        }
+    }
+}
+
+/**
+ * ComputeNodeResponseMessage: Response from a node when it receives a compute task request.
+ * Includes ML Kit capabilities and node performance metrics for task assignment decisions.
+ */
+data class ComputeNodeResponseMessage(
+    val requestId: String,
+    val response: ComputeNodeResponse
+) : MeshEcosystemMessage("ComputeNodeResponse") {
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(requestId)
+        // Pack response fields
+        packer.packInt(response.nodeAddress)
+        packer.packBoolean(response.available)
+        packer.packLong(response.estimatedLatencyMs)
+        packer.packFloat(response.currentLoad)
+        // Pack ML Kit capabilities
+        packer.packArrayHeader(response.mlKitFeatures.size)
+        response.mlKitFeatures.forEach { packer.packString(it) }
+        packer.packBoolean(response.mlKitCustomSupport)
+        packer.packString(response.requestId)
+        packer.packLong(response.timestamp)
+        packer.close()
+        return packer.toByteArray()
+    }
+    
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): ComputeNodeResponseMessage {
+            val requestId = unpacker.unpackString()
+            val nodeAddress = unpacker.unpackInt()
+            val available = unpacker.unpackBoolean()
+            val estimatedLatencyMs = unpacker.unpackLong()
+            val currentLoad = unpacker.unpackFloat()
+            val mlKitFeatures = List(unpacker.unpackArrayHeader()) { unpacker.unpackString() }
+            val mlKitCustomSupport = unpacker.unpackBoolean()
+            val responseRequestId = unpacker.unpackString()
+            val timestamp = unpacker.unpackLong()
+            
+            val computeResponse = ComputeNodeResponse(
+                nodeAddress = nodeAddress,
+                available = available,
+                estimatedLatencyMs = estimatedLatencyMs,
+                currentLoad = currentLoad,
+                mlKitFeatures = mlKitFeatures,
+                mlKitCustomSupport = mlKitCustomSupport,
+                requestId = responseRequestId,
+                timestamp = timestamp
+            )
+            return ComputeNodeResponseMessage(requestId, computeResponse)
         }
     }
 }

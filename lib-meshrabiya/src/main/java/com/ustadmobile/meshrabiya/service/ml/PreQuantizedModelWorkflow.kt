@@ -62,76 +62,76 @@ import com.ustadmobile.meshrabiya.model.ExecutionProfile
  * Service library would contain multiple versions of the same model
  * with different quantization levels for different device capabilities
  */
-class PreQuantizedModelService {
+// class PreQuantizedModelService {
     
-    companion object {
-        /**
-         * Service library entries for the same logical service
-         * but with different quantization levels
-         */
-        fun createQuantizedServiceVariants(): List<ServiceAnnouncement> {
-            return listOf(
-                // High-end devices: Full precision
-                ServiceAnnouncement(
-                    serviceId = "sentiment-analyzer-fp32",
-                    serviceType = ServiceAnnouncement.ServiceType.LITERT,
-                    version = "1.0.0",
-                    sizeKB = 200 * 1024, // 200MB
-                    capabilities = listOf("sentiment-analysis", "high-accuracy"),
-                    resourceRequirements = ResourceRequirements(
-                        minMemoryMB = 6000,
-                        minStorageMB = 250 * 1024 // Extra space for runtime
-                    ),
-                    executionProfile = ExecutionProfile(
-                        profileName = "fp32",
-                        cpuCores = 4,
-                        gpuEnabled = true,
-                        memoryMB = 6000,
-                        storageMB = 250 * 1024
-                    )
-                ),
-                // Mid-range devices: Float16 quantization
-                ServiceAnnouncement(
-                    serviceId = "sentiment-analyzer-fp16",
-                    serviceType = ServiceAnnouncement.ServiceType.LITERT,
-                    version = "1.0.0",
-                    sizeKB = 100 * 1024, // 100MB (50% smaller)
-                    capabilities = listOf("sentiment-analysis", "medium-accuracy"),
-                    resourceRequirements = ResourceRequirements(
-                        minMemoryMB = 3000,
-                        minStorageMB = 120 * 1024
-                    ),
-                    executionProfile = ExecutionProfile(
-                        profileName = "fp16",
-                        cpuCores = 2,
-                        gpuEnabled = true,
-                        memoryMB = 3000,
-                        storageMB = 120 * 1024
-                    )
-                ),
-                // Low-end devices: Int8 quantization
-                ServiceAnnouncement(
-                    serviceId = "sentiment-analyzer-int8",
-                    serviceType = ServiceAnnouncement.ServiceType.LITERT,
-                    version = "1.0.0",
-                    sizeKB = 50 * 1024, // 50MB (75% smaller)
-                    capabilities = listOf("sentiment-analysis", "mobile-optimized"),
-                    resourceRequirements = ResourceRequirements(
-                        minMemoryMB = 1500,
-                        minStorageMB = 60 * 1024
-                    ),
-                    executionProfile = ExecutionProfile(
-                        profileName = "int8",
-                        cpuCores = 1,
-                        gpuEnabled = false,
-                        memoryMB = 1500,
-                        storageMB = 60 * 1024
-                    )
-                )
-            )
-        }
-    }
-}
+//     companion object {
+//         /**
+//          * Service library entries for the same logical service
+//          * but with different quantization levels
+//          */
+//         fun createQuantizedServiceVariants(): List<ServiceAnnouncement> {
+//             return listOf(
+//                 // High-end devices: Full precision
+//                 ServiceAnnouncement(
+//                     serviceId = "sentiment-analyzer-fp32",
+//                     serviceType = ServiceAnnouncement.ServiceType.LITERT,
+//                     version = "1.0.0",
+//                     sizeKB = 200 * 1024, // 200MB
+//                     capabilities = listOf("sentiment-analysis", "high-accuracy"),
+//                     resourceRequirements = ResourceRequirements(
+//                         minMemoryMB = 6000,
+//                         minStorageMB = 250 * 1024 // Extra space for runtime
+//                     ),
+//                     executionProfile = ExecutionProfile(
+//                         profileName = "fp32",
+//                         cpuCores = 4,
+//                         gpuEnabled = true,
+//                         memoryMB = 6000,
+//                         storageMB = 250 * 1024
+//                     )
+//                 ),
+//                 // Mid-range devices: Float16 quantization
+//                 ServiceAnnouncement(
+//                     serviceId = "sentiment-analyzer-fp16",
+//                     serviceType = ServiceAnnouncement.ServiceType.LITERT,
+//                     version = "1.0.0",
+//                     sizeKB = 100 * 1024, // 100MB (50% smaller)
+//                     capabilities = listOf("sentiment-analysis", "medium-accuracy"),
+//                     resourceRequirements = ResourceRequirements(
+//                         minMemoryMB = 3000,
+//                         minStorageMB = 120 * 1024
+//                     ),
+//                     executionProfile = ExecutionProfile(
+//                         profileName = "fp16",
+//                         cpuCores = 2,
+//                         gpuEnabled = true,
+//                         memoryMB = 3000,
+//                         storageMB = 120 * 1024
+//                     )
+//                 ),
+//                 // Low-end devices: Int8 quantization
+//                 ServiceAnnouncement(
+//                     serviceId = "sentiment-analyzer-int8",
+//                     serviceType = ServiceAnnouncement.ServiceType.LITERT,
+//                     version = "1.0.0",
+//                     sizeKB = 50 * 1024, // 50MB (75% smaller)
+//                     capabilities = listOf("sentiment-analysis", "mobile-optimized"),
+//                     resourceRequirements = ResourceRequirements(
+//                         minMemoryMB = 1500,
+//                         minStorageMB = 60 * 1024
+//                     ),
+//                     executionProfile = ExecutionProfile(
+//                         profileName = "int8",
+//                         cpuCores = 1,
+//                         gpuEnabled = false,
+//                         memoryMB = 1500,
+//                         storageMB = 60 * 1024
+//                     )
+//                 )
+//             )
+//         }
+//     }
+// }
 
 // ============================================================================
 // RUNTIME MODEL SELECTION (What Actually Runs on Android)

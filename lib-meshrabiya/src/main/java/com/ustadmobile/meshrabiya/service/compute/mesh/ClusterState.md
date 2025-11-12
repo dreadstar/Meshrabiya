@@ -1,6 +1,6 @@
-package org.torproject.android.service.compute.mesh
+package com.ustadmobile.meshrabiya.service.compute.mesh
 
-import org.torproject.android.service.compute.model.*
+import com.ustadmobile.meshrabiya.service.compute.model.*
 
 /**
  * Represents the intelligence snapshot of the mesh network at a given time.
@@ -51,7 +51,7 @@ data class NodeSpecialization(
     val hasNPUAcceleration: Boolean,
     val hasPythonOptimizations: Boolean,
     val supportedPythonLibraries: Set<PythonLibrary>,
-    val supportedLiteRTModels: Set<String>,
+    // val supportedLiteRTModels: Set<String>,
     val specializedCapabilities: Set<SpecializedCapability>,
     val storageCapabilityGB: Float
 )

@@ -15,20 +15,19 @@ class EmergentRoleManagerNewNodeTest {
 
     private lateinit var mockVirtualNode: VirtualNode
     private lateinit var mockContext: Context
-    private lateinit var mockMeshRoleManager: MeshRoleManager
     private lateinit var emergentRoleManager: EmergentRoleManager
 
     @Before
     fun setup() {
         mockVirtualNode = mock(VirtualNode::class.java)
         mockContext = mock(Context::class.java)
-        mockMeshRoleManager = mock(MeshRoleManager::class.java)
         
         // Setup basic virtual node behavior
         whenever(mockVirtualNode.neighbors()).thenReturn(emptyList())
-        whenever(mockMeshRoleManager.userAllowsTorProxy).thenReturn(true)
         
-        emergentRoleManager = EmergentRoleManager(mockVirtualNode, mockContext, mockMeshRoleManager)
+        emergentRoleManager = EmergentRoleManager(mockVirtualNode, mockContext).apply {
+            userAllowsTorProxy = true
+        }
     }
 
     @Test

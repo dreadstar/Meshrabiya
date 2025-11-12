@@ -1,212 +1,256 @@
 package com.ustadmobile.meshrabiya.service
 
-import android.content.Context
-import com.ustadmobile.meshrabiya.vnet.*
-import com.ustadmobile.meshrabiya.storage.MeshChunk
+import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
+import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import kotlinx.coroutines.*
-import java.security.MessageDigest
-import java.util.concurrent.ScheduledExecutorService
-import com.ustadmobile.meshrabiya.MeshrabiyaConstants
-import com.ustadmobile.meshrabiya.mmcp.MmcpComputeTaskRequest
-import com.ustadmobile.meshrabiya.storage.StorageNodeRequest
-import com.ustadmobile.meshrabiya.storage.StorageNodeResponse
-import com.ustadmobile.meshrabiya.storage.StorageCapabilities
-import com.ustadmobile.meshrabiya.storage.AccessPattern
+import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 
 /**
- * MeshGossipService: Handles mesh-wide gossip messaging for storage, compute, and ecosystem events.
- * Uses MeshEcosystemMessage for all mesh-wide ecosystem events.
+ * MeshGossipService: Generic request-response correlation service for mesh-wide messaging.
+ * 
+ * Refactored to use constructor injection with VirtualNode parameter for UDP broadcast access.
+ * 
+ * This service provides:
+ * - Request ID generation
+ * - Response collection with timeouts
+ * - Generic handler registration for correlated responses
+ * - UDP broadcast capability via VirtualNode's OriginatingMessageManager
+ * 
+ * Architecture:
+ * - Instantiated by VirtualNode with `this` reference (constructor injection)
+ * - Uses virtualNode.originatingMessageManager.neighbors() for socket access
+ * - CoreGossipBroadcastService uses this service for broadcasts
+ * - MeshEcosystemListener routes messages to domain managers
+ * - Domain managers (DistributedStorageManager, ComputeService) prepare their own messages
+ * - Singleton instance available via getInstance() for backward compatibility
  */
-class MeshGossipService private constructor(
-    val virtualNode: VirtualNode,
-    val meshRoleManager: MeshRoleManager,
-    val context: Context,
-    val scheduledExecutorService: ScheduledExecutorService,
-    val originatingMessageManager: OriginatingMessageManager,
-    val coreGossipBroadcastService: CoreGossipBroadcastService
+class MeshGossipService(
+    private val virtualNode: VirtualNode
 ) {
-
-    private val emergentRoleManager = EmergentRoleManager.getInstance(context, virtualNode, meshRoleManager)
-    private val androidVirtualNode = AndroidVirtualNode.getInstance(context, scheduledExecutorService)
-    private val meshNetworkInterface: MeshNetworkInterface = MeshNetworkInterface.getInstance(context)
 
     companion object {
         @Volatile
         private var instance: MeshGossipService? = null
 
-        fun getInstance(
-            virtualNode: VirtualNode,
-            meshRoleManager: MeshRoleManager,
-            context: Context,
-            scheduledExecutorService: ScheduledExecutorService,
-            originatingMessageManager: OriginatingMessageManager,
-            coreGossipBroadcastService: CoreGossipBroadcastService
-        ): MeshGossipService {
+        /**
+         * Get the singleton instance of MeshGossipService.
+         * Must be initialized by VirtualNode before use.
+         */
+        fun getInstance(): MeshGossipService {
+            return instance ?: throw IllegalStateException(
+                "MeshGossipService not initialized. VirtualNode must call initialize() first."
+            )
+        }
+
+        /**
+         * Initialize the singleton instance with a VirtualNode.
+         * Called by VirtualNode during instantiation.
+         */
+        internal fun initialize(virtualNode: VirtualNode): MeshGossipService {
             return instance ?: synchronized(this) {
-                instance ?: MeshGossipService(
-                    virtualNode,
-                    meshRoleManager,
-                    context,
-                    scheduledExecutorService,
-                    originatingMessageManager,
-                    coreGossipBroadcastService
-                ).also { instance = it }
+                instance ?: MeshGossipService(virtualNode).also { instance = it }
             }
+        }
+
+        /**
+         * Clear the singleton instance (for testing).
+         */
+        internal fun clearInstance() {
+            instance = null
         }
     }
 
-    // === Gossip-based Storage Node Discovery ===
-    suspend fun broadcastStorageNodeRequestSync(request: StorageNodeRequest, timeoutMs: Long): List<StorageNodeResponse> {
-        val responses = mutableListOf<StorageNodeResponse>()
-        val listener: (Int, MeshEcosystemMessage) -> Unit = { senderId, msg ->
-            if (msg is MeshEcosystemMessage.StorageNodeResponseMessage) {
-                responses.add(msg.response)
-            }
-        }
-        coreGossipBroadcastService.registerListener("StorageNodeResponse", listener)
-        coreGossipBroadcastService.sendBroadcast(MeshEcosystemMessage.StorageNodeRequestMessage(request))
-        delay(timeoutMs)
-        coreGossipBroadcastService.unregisterListener("StorageNodeResponse", listener)
-        return responses
-    }
+    // Generic pending request tracking - keyed by requestId, value is collector
+    private val pendingRequests = ConcurrentHashMap<String, ResponseCollector<Any>>()
+    
+    private val logger: MNetLogger
+        get() = virtualNode.logger
 
-    // === Gossip-based Chunk Location Discovery ===
-    suspend fun broadcastChunkRetrievalRequestSync(fileId: String, timeoutMs: Long): List<ChunkRetrievalResponse> {
-        val responses = mutableListOf<ChunkRetrievalResponse>()
-        val listener: (Int, MeshEcosystemMessage) -> Unit = { senderId, msg ->
-            if (msg is MeshEcosystemMessage.ChunkRetrievalResponseMessage) {
-                responses.add(msg.response)
-            }
-        }
-        coreGossipBroadcastService.registerListener("ChunkRetrievalResponse", listener)
-        coreGossipBroadcastService.sendBroadcast(
-            MeshEcosystemMessage.ChunkRetrievalQueryMessage(
-                com.ustadmobile.meshrabiya.vnet.ChunkRetrievalQuery(fileId)
-            )
-        )
-        delay(timeoutMs)
-        coreGossipBroadcastService.unregisterListener("ChunkRetrievalResponse", listener)
-        return responses
-    }
-
-    // === Gossip-based Replica Query ===
-    suspend fun queryFileReplicasSync(fileId: String, timeoutMs: Long): List<String> {
-        val replicaNodes = mutableListOf<String>()
-        val listener: (Int, MeshEcosystemMessage) -> Unit = { senderId, msg ->
-            if (msg is MeshEcosystemMessage.ReplicaResponseMessage) {
-                replicaNodes.add(msg.response.nodeId)
-            }
-        }
-        coreGossipBroadcastService.registerListener("ReplicaResponse", listener)
-        coreGossipBroadcastService.sendBroadcast(
-            MeshEcosystemMessage.ReplicaQueryMessage(
-                com.ustadmobile.meshrabiya.vnet.ReplicaQuery(fileId)
-            )
-        )
-        delay(timeoutMs)
-        coreGossipBroadcastService.unregisterListener("ReplicaResponse", listener)
-        return replicaNodes
-    }
-
-    // === Gossip-based Storage Advertisement ===
-    suspend fun broadcastStorageAdvertisement(capabilities: StorageCapabilities) {
-        coreGossipBroadcastService.sendBroadcast(
-            MeshEcosystemMessage.StorageCapabilitiesMessage(capabilities)
-        )
-    }
-
-    // === Gossip-based Compute Task Request ===
-    suspend fun broadcastComputeTaskRequestSync(
-        request: MmcpComputeTaskRequest,
-        timeoutMs: Long
-    ): List<ComputeNodeResponse> {
-        val responses = mutableListOf<ComputeNodeResponse>()
-        val listener: (Int, MeshEcosystemMessage) -> Unit = { senderId, msg ->
-            if (msg is ComputeNodeResponseMessage) {
-                responses.add(msg.response)
-            }
-        }
-        coreGossipBroadcastService.registerListener("ComputeNodeResponse", listener)
-        // For MMCP, use its own serialization if not a MeshEcosystemMessage
-        coreGossipBroadcastService.sendBroadcast(request.toMeshEcosystemMessage())
-        delay(timeoutMs)
-        coreGossipBroadcastService.unregisterListener("ComputeNodeResponse", listener)
-        return responses
-    }
-
-    // === Gossip-based Chunk Transfer ===
-    suspend fun sendChunkViaGossip(
-        destinationNodeId: String,
-        chunk: MeshChunk,
-        chunkBytes: ByteArray
-    ): Boolean {
-        val hash = sha256(chunkBytes)
-        val chunkMsg = MeshEcosystemMessage.ChunkTransferMessage(
-            chunkId = chunk.chunkId,
-            fileId = chunk.fileId,
-            chunkIndex = chunk.chunkIndex,
-            totalChunks = chunk.totalChunks,
-            fileName = chunk.fileName,
-            relativePath = chunk.relativePath,
-            chunkBytes = chunkBytes,
-            hash = hash
-        )
-        androidVirtualNode.sendToNode(destinationNodeId.toInt(), chunkMsg.toBytes())
-        return true
-    }
-
-    // === Permission Update Message Types ===
-    enum class AccessType { ADDED, REMOVED }
-
-    // === Gossip-based Permission Update Broadcast ===
-    suspend fun broadcastFilePermissionUpdate(msg: MeshEcosystemMessage.FilePermissionUpdateMessage) {
-        coreGossipBroadcastService.sendBroadcast(msg)
-    }
-
-    // === Gossip-based Permission Update Confirmation ===
-    fun sendPermissionUpdateConfirmation(
-        destinationNodeId: String,
-        confirmation: MeshEcosystemMessage.FilePermissionUpdateConfirmationMessage
+    /**
+     * Helper class to collect multiple responses for a single request with timeout.
+     * Generic to support any response type.
+     */
+    class ResponseCollector<T>(
+        val requestId: String,
+        val timeoutMs: Long
     ) {
-        androidVirtualNode.sendToNode(destinationNodeId.toInt(), confirmation.toBytes())
+        private val responses = mutableListOf<T>()
+        private val deferred = CompletableDeferred<List<T>>()
+        private var timeoutJob: Job? = null
+
+        fun addResponse(response: T) {
+            synchronized(responses) {
+                responses.add(response)
+            }
+        }
+
+        suspend fun awaitResponses(scope: CoroutineScope): List<T> {
+            timeoutJob = scope.launch {
+                delay(timeoutMs)
+                complete()
+            }
+            return deferred.await()
+        }
+
+        fun complete() {
+            synchronized(responses) {
+                if (!deferred.isCompleted) {
+                    deferred.complete(responses.toList())
+                    timeoutJob?.cancel()
+                }
+            }
+        }
+
+        fun cancel() {
+            timeoutJob?.cancel()
+            if (!deferred.isCompleted) {
+                deferred.cancel()
+            }
+        }
     }
 
-    // === Gossip-based Task Data Access Update Broadcast ===
-    suspend fun broadcastTaskDataAccessUpdate(msg: MeshEcosystemMessage.TaskDataAccessUpdateMessage) {
-        coreGossipBroadcastService.sendBroadcast(msg)
+    // === Generic Request-Response Correlation API ===
+
+    /**
+     * Register a pending request and return a collector for responses.
+     * Caller is responsible for sending the actual broadcast message via CoreGossipBroadcastService.
+     * 
+     * Example usage in DistributedStorageManager:
+     * ```
+     * val requestId = meshGossipService.generateRequestId()
+     * val collector = meshGossipService.registerPendingRequest<StorageNodeResponse>(requestId, timeoutMs)
+     * val message = MeshEcosystemMessage.StorageNodeRequestMessage(request, requestId)
+     * coreGossipBroadcastService.sendBroadcast(message)
+     * return collector.awaitResponses(coroutineScope)
+     * ```
+     */
+    fun <T> registerPendingRequest(requestId: String, timeoutMs: Long): ResponseCollector<T> {
+        val collector = ResponseCollector<T>(requestId, timeoutMs)
+        @Suppress("UNCHECKED_CAST")
+        pendingRequests[requestId] = collector as ResponseCollector<Any>
+        return collector
     }
 
-    // === Gossip-based Ecosystem Broadcast ===
-    suspend fun broadcastEcosystemBroadcast(
-        broadcastId: String,
-        senderId: String,
-        messageType: String,
-        payload: ByteArray
-    ) {
-        val msg = MeshEcosystemMessage.EcosystemBroadcastMessage(
-            broadcastId = broadcastId,
-            senderId = senderId,
-            messageType = messageType,
-            payload = payload
-        )
-        coreGossipBroadcastService.sendBroadcast(msg)
+    /**
+     * Handle an incoming response for a pending request.
+     * Called by MeshEcosystemListener or domain managers when they receive correlated responses.
+     * 
+     * Example: When MeshEcosystemListener receives a StorageNodeResponse, it calls:
+     * ```
+     * meshGossipService.handleResponse(requestId, response)
+     * ```
+     */
+    fun <T> handleResponse(requestId: String, response: T) {
+        @Suppress("UNCHECKED_CAST")
+        (pendingRequests[requestId] as? ResponseCollector<T>)?.addResponse(response)
     }
 
-    // === Utility: SHA-256 Hash ===
-    private fun sha256(data: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val hashBytes = digest.digest(data)
-        return hashBytes.joinToString("") { "%02x".format(it) }
+    /**
+     * Complete a pending request (stops waiting for more responses).
+     * Automatically called by ResponseCollector timeout, but can be called manually.
+     */
+    fun completePendingRequest(requestId: String) {
+        pendingRequests[requestId]?.complete()
+        pendingRequests.remove(requestId)
     }
-}
 
-// --- ComputeNodeResponseMessage stub ---
-// If you have a MeshEcosystemMessage subclass for ComputeNodeResponse, use it.
-// Otherwise, define it here or import from the correct location.
-data class ComputeNodeResponse(val nodeId: String, val result: String)
-class ComputeNodeResponseMessage(val response: ComputeNodeResponse) : MeshEcosystemMessage("ComputeNodeResponse") {
-    override fun toBytes(): ByteArray {
-        // Implement serialization as needed
-        return ByteArray(0)
+    /**
+     * Remove a pending request (cleanup after completion or cancellation).
+     */
+    fun removePendingRequest(requestId: String) {
+        pendingRequests.remove(requestId)
+    }
+
+    /**
+     * Check if a request is pending.
+     */
+    fun hasPendingRequest(requestId: String): Boolean {
+        return pendingRequests.containsKey(requestId)
+    }
+
+    /**
+     * Get count of pending requests (useful for diagnostics/monitoring).
+     */
+    fun pendingRequestCount(): Int = pendingRequests.size
+
+    /**
+     * Generate a unique request ID using UUID.
+     */
+    fun generateRequestId(): String = UUID.randomUUID().toString()
+
+    /**
+     * Broadcast a message payload to all direct neighbors via UDP.
+     * 
+     * Uses VirtualNode's OriginatingMessageManager to access neighbor sockets.
+     * Creates VirtualPacket with proper header (ecosystem gossip port, node addresses).
+     * 
+     * @param payload The serialized message bytes to broadcast
+     * @return Number of neighbors the message was sent to
+     */
+    fun broadcastMessage(payload: ByteArray): Int {
+        val neighbors = virtualNode.originatingMessageManager.neighbors()
+        
+        if (neighbors.isEmpty()) {
+            logger.w("broadcastMessage: No neighbors available for broadcast")
+            return 0
+        }
+        
+        val ecosystemPort = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getEcosystemGossipPort()
+        val fromAddr = virtualNode.address
+        var successCount = 0
+        
+        logger.d("broadcastMessage: Broadcasting ${payload.size} bytes to ${neighbors.size} neighbors")
+        
+        neighbors.forEach { (neighborAddr, lastMsg) ->
+            try {
+                // Create buffer with space for header
+                val buffer = ByteArray(VirtualPacketHeader.HEADER_SIZE + payload.size)
+                
+                // Copy payload after header space
+                System.arraycopy(payload, 0, buffer, VirtualPacketHeader.HEADER_SIZE, payload.size)
+                
+                // Create header
+                val header = VirtualPacketHeader(
+                    toAddr = neighborAddr,
+                    toPort = ecosystemPort,
+                    fromAddr = fromAddr,
+                    fromPort = ecosystemPort,
+                    lastHopAddr = fromAddr,
+                    hopCount = 1,
+                    maxHops = 1, // Direct neighbor only
+                    payloadSize = payload.size
+                )
+                
+                // Create packet
+                val packet = VirtualPacket.fromHeaderAndPayloadData(
+                    header = header,
+                    data = buffer,
+                    payloadOffset = VirtualPacketHeader.HEADER_SIZE
+                )
+                
+                // Send via neighbor's socket
+                lastMsg.receivedFromSocket.send(packet)
+                successCount++
+                
+                logger.v("broadcastMessage: Sent to neighbor ${neighborAddr.addressToDotNotation()}")
+            } catch (e: Exception) {
+                logger.e("broadcastMessage: Failed to send to neighbor ${neighborAddr.addressToDotNotation()}", e)
+            }
+        }
+        
+        logger.d("broadcastMessage: Successfully sent to $successCount/${neighbors.size} neighbors")
+        return successCount
+    }
+
+    /**
+     * Cleanup method to cancel all pending requests (call on shutdown).
+     */
+    fun shutdown() {
+        pendingRequests.values.forEach { it.cancel() }
+        pendingRequests.clear()
     }
 }

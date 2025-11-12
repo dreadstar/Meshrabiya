@@ -5,6 +5,7 @@ plugins {
     id("com.android.library") version "8.12.2"
     id("org.jetbrains.kotlin.android") version "2.2.10"
     id("jacoco")
+    // KAPT plugin fully removed: no annotation processors used
 }
 
 android {

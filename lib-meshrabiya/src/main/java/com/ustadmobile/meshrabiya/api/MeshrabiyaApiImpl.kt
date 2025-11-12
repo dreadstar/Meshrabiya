@@ -4,17 +4,18 @@ import java.io.File
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
-import com.ustadmobile.meshrabiya.storage.MeshFile
+import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.service.compute.ComputeTask
-import com.ustadmobile.meshrabiya.service.compute.ExecutionPlan
-import com.ustadmobile.meshrabiya.service.compute.JobType
+import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
+import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
-import com.ustadmobile.meshrabiya.mesh.MeshState
-import com.ustadmobile.meshrabiya.mesh.NetworkInfo
-import com.ustadmobile.meshrabiya.mesh.NodeInfo
+import com.ustadmobile.meshrabiya.model.MeshState
+import com.ustadmobile.meshrabiya.model.NetworkInfo
+import com.ustadmobile.meshrabiya.model.NodeInfo
+import com.ustadmobile.meshrabiya.model.ApiResult
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
@@ -22,7 +23,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
-import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
  * Production-ready implementation of MeshrabiyaApi.
@@ -47,11 +50,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
 
      // --- Proxy Controls ---
-    fun setProxy(host: String, port: Int) {
+    override fun setProxy(host: String, port: Int) {
         myNode?.setProxy(host, port)
     }
 
-    fun setProxyActive(active: Boolean) {
+    override fun setProxyActive(active: Boolean) {
         myNode?.setProxyActive(active)
     }
 
@@ -320,7 +323,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Service Bundle & Gateway Controls ---
-    override fun announceService(serviceAnnouncement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
+    override fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
         try {
             myNode?.announceService(serviceAnnouncement, signedBundle)
             callback(Result.success(Unit))
@@ -336,8 +339,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             callback(Result.failure(e))
         }
     }
-    private var onGatewayTraffic: ((packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean)? = null
-    override fun setOnGatewayTraffic(handler: (packet: com.ustadmobile.meshrabiya.vnet.VirtualPacket) -> Boolean) {
+    private var onGatewayTraffic: ((packet: VirtualPacket) -> Boolean)? = null
+    override fun setOnGatewayTraffic(handler: (packet: VirtualPacket) -> Boolean) {
         onGatewayTraffic = handler
     }
     override fun getMeshTrafficRouterStatus(): String {
@@ -346,13 +349,13 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Event/Callback Integration ---
-    private var onMeshStateChanged: ((com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit)? = null
+    private var onMeshStateChanged: ((MeshState) -> Unit)? = null
     private var onPeerCountChanged: ((Int) -> Unit)? = null
     private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
-    private var onServiceAnnounced: ((String, com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit)? = null
+    private var onServiceAnnounced: ((String, ServiceAnnouncement) -> Unit)? = null
     private var onGossipMessage: ((Int, ByteArray) -> Unit)? = null
 
-    override fun setOnMeshStateChanged(handler: (newState: com.ustadmobile.meshrabiya.mesh.MeshState) -> Unit) {
+    override fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit) {
         onMeshStateChanged = handler
     }
     override fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit) {
@@ -361,7 +364,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit) {
         onServiceBundleReceived = handler
     }
-    override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: com.ustadmobile.meshrabiya.model.ServiceAnnouncement) -> Unit) {
+    override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit) {
         onServiceAnnounced = handler
     }
     override fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit) {

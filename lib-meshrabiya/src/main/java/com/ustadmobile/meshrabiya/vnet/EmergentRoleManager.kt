@@ -8,6 +8,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
@@ -24,8 +28,11 @@ import kotlin.time.Duration.Companion.minutes
 import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.model.ExecutionProfile
-import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.util.WifiConcurrencyUtil
+import com.ustadmobile.meshrabiya.beta.ConnectivityMonitor
+import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
+import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
+import java.util.ArrayDeque
 
 data class NodeCapabilitySnapshot(
     val nodeId: String,
@@ -92,18 +99,42 @@ data class RoleTransitionPlanWithPriority(
     val priority: RoleTransitionPriority
 )
 
+/**
+ * FitnessScore represents a node's fitness for mesh routing roles (Gateway, Router, Bridge).
+ * This measures network position and connectivity quality, not device hardware capabilities.
+ * Use NodeCapabilitySnapshot for hardware resource metrics (CPU, RAM, storage).
+ */
+data class FitnessScore(
+    val signalStrength: Int,      // 0-100: WiFi/Bluetooth connection quality
+    val batteryLevel: Float,       // 0-1: Current battery level
+    val clientCount: Int           // Number of mesh neighbors
+)
+
 enum class GatewayMode { NONE, CLEARNET_GATEWAY, TOR_GATEWAY, I2P_GATEWAY }
 
 class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
-    private val meshRoleManager: MeshRoleManager,
     private val meshTrafficRouter: Any? = null,
     private val distributedStorageManager: Any? = null,
     private val deviceCapabilityManager: DeviceCapabilityManager? = null,
     private val adaptivePowerManager: com.ustadmobile.meshrabiya.service.power.AdaptivePowerManager? = null
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
+
+    private val connectivityMonitor = try { ConnectivityMonitor(context) } catch (e: Exception) { null }
+
+    // Battery monitoring cache (updated periodically from DeviceCapabilityManager)
+    @Volatile
+    private var cachedBatteryLevel: Float = 0.5f // 0-1 normalized, default to middle
+    private var lastBatteryCheck: Long = 0L
+    private val BATTERY_CACHE_DURATION_MS = 30_000L // 30 seconds cache
+
+    // Coroutine scope for battery monitoring and async operations
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var batteryMonitoringJob: Job? = null
+
+    var userAllowsTorProxy: Boolean = false
 
     private val hardwareManager: DeviceCapabilityManager by lazy {
         deviceCapabilityManager ?: AndroidDeviceCapabilityManager(context, logger ?: BetaTestLogger.getInstance(context))
@@ -153,10 +184,23 @@ class EmergentRoleManager(
         @Volatile
         private var instance: EmergentRoleManager? = null
 
-        fun getInstance(
+        /**
+         * Get the singleton instance of EmergentRoleManager.
+         * Must call initialize() first or an exception will be thrown.
+         */
+        fun getInstance(): EmergentRoleManager {
+            return instance ?: throw IllegalStateException(
+                "EmergentRoleManager not initialized. Call initialize() first."
+            )
+        }
+
+        /**
+         * Initialize the singleton instance of EmergentRoleManager.
+         * This should be called once during application startup, typically from AndroidVirtualNode.
+         */
+        fun initialize(
             context: Context,
             virtualNode: VirtualNode,
-            meshRoleManager: MeshRoleManager,
             meshTrafficRouter: Any? = null,
             distributedStorageManager: Any? = null,
             deviceCapabilityManager: DeviceCapabilityManager? = null,
@@ -166,7 +210,6 @@ class EmergentRoleManager(
                 instance ?: EmergentRoleManager(
                     virtualNode,
                     context,
-                    meshRoleManager,
                     meshTrafficRouter,
                     distributedStorageManager,
                     deviceCapabilityManager,
@@ -177,6 +220,26 @@ class EmergentRoleManager(
 
         fun resetInstance() {
             instance = null
+        }
+    }
+
+    init {
+        try {
+            connectivityMonitor?.startMonitoring()
+            safeLog(LogLevel.DEBUG, "Started connectivity monitoring")
+        } catch (e: Exception) {
+            // Ignore errors in test environment
+            safeLog(LogLevel.DEBUG, "ConnectivityMonitor initialization skipped: ${e.message}")
+        }
+        
+        // Initialize battery cache with first reading
+        scope.launch {
+            try {
+                updateBatteryLevel()
+                safeLog(LogLevel.DEBUG, "Initial battery level cached: $cachedBatteryLevel")
+            } catch (e: Exception) {
+                safeLog(LogLevel.DEBUG, "Failed to initialize battery cache: ${e.message}")
+            }
         }
     }
 
@@ -261,8 +324,8 @@ class EmergentRoleManager(
             return preferredGateways.first()
         }
         return when {
-            !meshRoleManager.userAllowsTorProxy && node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY
-            meshRoleManager.userAllowsTorProxy -> MeshRole.TOR_GATEWAY
+            !this.userAllowsTorProxy && node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY
+            this.userAllowsTorProxy -> MeshRole.TOR_GATEWAY
             node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY
             else -> MeshRole.TOR_GATEWAY
         }
@@ -331,6 +394,12 @@ class EmergentRoleManager(
                 storageOffered = maxOf(snapshot.resources.storageOffered, storageOffered)
             )
             val enhancedSnapshot = snapshot.copy(resources = enhancedResources)
+            
+            // Update ML capability snapshot for local node
+            captureLocalMLSnapshot()?.let { mlSnapshot ->
+                updateMLMeshCapabilities(mlSnapshot)
+            }
+            
             logger?.log(LogLevel.INFO, "EmergentRoleManager",
                 "Hardware capabilities: CPU=${(enhancedSnapshot.resources.availableCPU * 100).toInt()}% available, " +
                 "Battery=${enhancedSnapshot.batteryInfo.level}%, " +
@@ -340,21 +409,29 @@ class EmergentRoleManager(
             enhancedSnapshot
         } catch (e: Exception) {
             logger?.log(LogLevel.BASIC, "EmergentRoleManager",
-                "Hardware metrics unavailable, using fallback: ${e.message}")
-            val fitnessScore = meshRoleManager.calculateFitnessScore()
+                "Hardware metrics unavailable, using fallback with fitness data: ${e.message}")
+            
+            // Get real network fitness data instead of hardcoded values
+            val fitnessScore = try {
+                calculateFitnessScore()
+            } catch (fe: Exception) {
+                logger?.log(LogLevel.DEBUG, "EmergentRoleManager", "Fitness calculation failed: ${fe.message}")
+                FitnessScore(signalStrength = 0, batteryLevel = 0.5f, clientCount = 0)
+            }
+            
             val storageOffered = calculateAvailableStorage()
             val resources = ResourceCapabilities(
                 availableCPU = 0.5f,
                 availableRAM = Runtime.getRuntime().freeMemory(),
                 availableBandwidth = 10_000_000L,
                 storageOffered = storageOffered,
-                batteryLevel = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
+                batteryLevel = (fitnessScore.batteryLevel * 100).toInt(),  // Use real battery from fitness
                 thermalThrottling = false,
-                powerState = if (fitnessScore.batteryLevel > 0.7f) PowerState.BATTERY_HIGH else PowerState.BATTERY_MEDIUM,
+                powerState = PowerState.BATTERY_MEDIUM,
                 networkInterfaces = emptySet()
             )
             val batteryInfo = BatteryInfo(
-                level = fitnessScore.batteryLevel.toInt().coerceIn(0, 100),
+                level = (fitnessScore.batteryLevel * 100).toInt(),  // Use real battery from fitness
                 isCharging = false,
                 estimatedTimeRemaining = null,
                 temperatureCelsius = 25,
@@ -366,7 +443,7 @@ class EmergentRoleManager(
                 resources = resources,
                 batteryInfo = batteryInfo,
                 thermalState = ThermalState.COOL,
-                networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
+                networkQuality = 0.8f,
                 stability = 0.8f
             )
         }
@@ -394,10 +471,241 @@ class EmergentRoleManager(
         return getCurrentCapabilities().thermalState.name.lowercase()
     }
 
-    fun calculateFitnessScore(): Float {
-        val node = getCurrentCapabilities()
-        return calculateNormalizedFitness(node)
+    /**
+     * Calculate this node's fitness for mesh routing roles (Gateway, Router, Bridge).
+     * Returns FitnessScore with network position metrics.
+     * For normalized 0.0-1.0 capability score, use calculateNormalizedFitness().
+     */
+    fun calculateFitnessScore(): FitnessScore {
+        val wifiState = (virtualNode as? HasNodeState)?.currentNodeState?.wifiState ?: MeshrabiyaWifiState()
+        val bluetoothState = (virtualNode as? HasNodeState)?.currentNodeState?.bluetoothState ?: MeshrabiyaBluetoothState()
+        val isConnected = connectivityMonitor?.isConnected?.value ?: true
+
+        // Use the virtual node's fitness score if available, otherwise calculate based on connection state
+        val virtualNodeFitness = try {
+            virtualNode.getCurrentFitnessScore()
+        } catch (e: Exception) {
+            null
+        }
+
+        val signalStrength = virtualNodeFitness ?: when {
+            wifiState.connectConfig != null -> 100
+            bluetoothState.deviceName != null -> 50
+            else -> 0
+        }
+
+        // Use cached battery fitness level (updated periodically by monitoring loop)
+        // Falls back to blocking call if cache is stale - this is intentional for accuracy
+        val batteryLevel = runBlocking { getBatteryFitnessLevel() }
+        val clientCount = virtualNode.neighbors().size
+
+        return FitnessScore(
+            signalStrength = signalStrength,
+            batteryLevel = batteryLevel,
+            clientCount = clientCount,
+        )
     }
+
+    /**
+     * Updates cached battery level from DeviceCapabilityManager.
+     * Called periodically by hardware monitoring loop and on-demand when cache expires.
+     * 
+     * Converts BatteryInfo.level (0-100 Int) to FitnessScore.batteryLevel (0.0-1.0 Float).
+     * 
+     * Battery fitness thresholds:
+     * - 80-100%: Excellent fitness (1.0) - sustained routing capable
+     * - 50-79%:  Good fitness (0.5-0.8) - normal operation
+     * - 20-49%:  Fair fitness (0.2-0.5) - reduced routing priority
+     * - 0-19%:   Poor fitness (0.0-0.2) - avoid routing, preserve battery
+     * 
+     * Charging state bonus: +0.1 fitness if charging (allows low-battery nodes to participate)
+     */
+    private suspend fun updateBatteryLevel() {
+        try {
+            val batteryInfo = hardwareManager.getBatteryInfo()
+            val levelPct = batteryInfo.level // 0-100 Int
+            
+            // Convert to normalized fitness score (0.0-1.0)
+            var fitness = when {
+                levelPct >= 80 -> 1.0f
+                levelPct >= 50 -> 0.5f + ((levelPct - 50) / 30.0f) * 0.3f // 0.5-0.8 range
+                levelPct >= 20 -> 0.2f + ((levelPct - 20) / 30.0f) * 0.3f // 0.2-0.5 range
+                else -> (levelPct / 20.0f) * 0.2f // 0.0-0.2 range
+            }
+            
+            // Charging bonus: increase fitness by 0.1 if plugged in
+            if (batteryInfo.isCharging) {
+                fitness = (fitness + 0.1f).coerceIn(0.0f, 1.0f)
+            }
+            
+            cachedBatteryLevel = fitness
+            lastBatteryCheck = System.currentTimeMillis()
+            
+            logger?.log(
+                LogLevel.DETAILED,
+                "EmergentRoleManager",
+                "Battery fitness updated: level=${levelPct}%, fitness=${fitness}, charging=${batteryInfo.isCharging}"
+            )
+        } catch (e: Exception) {
+            logger?.log(
+                LogLevel.BASIC,
+                "EmergentRoleManager",
+                "Failed to update battery level: ${e.message}, using cached=${cachedBatteryLevel}"
+            )
+            // Keep cached value, don't reset to default
+        }
+    }
+
+    /**
+     * Gets current battery fitness level with cache expiration check.
+     * Returns cached value if fresh (< 30s old), otherwise triggers update.
+     */
+    private suspend fun getBatteryFitnessLevel(): Float {
+        val now = System.currentTimeMillis()
+        if (now - lastBatteryCheck > BATTERY_CACHE_DURATION_MS) {
+            updateBatteryLevel()
+        }
+        return cachedBatteryLevel
+    }
+
+    // ===== ML Capability Detection =====
+    
+    /**
+     * ML mesh intelligence tracking across all nodes.
+     * Includes node ML capabilities and service assignments.
+     */
+    private val _mlMeshIntelligence = MutableStateFlow(MLMeshIntelligence())
+    val mlMeshIntelligence: StateFlow<MLMeshIntelligence> = _mlMeshIntelligence.asStateFlow()
+    
+    /**
+     * Detects ML Kit capabilities of the local device.
+     * Integrated into standard capability detection for compute task distribution.
+     * 
+     * Note: LiteRT, GPU, NNAPI, and LLM support deferred to future implementation.
+     */
+    private fun detectLocalMLCapabilities(): MLCapabilities {
+        val memoryMB = try {
+            hardwareManager.getCurrentCapabilities().resources.memoryMB
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to get memory for ML detection: ${e.message}")
+            0
+        }
+        
+        return MLCapabilities(
+            mlKitFeatures = detectMLKitFeatures(memoryMB),
+            mlKitCustomSupport = memoryMB > 3000
+        )
+    }
+    
+    /**
+     * Detect available ML Kit features based on memory constraints.
+     * 
+     * Memory requirements:
+     * - text-recognition: Always available
+     * - face-detection: Requires >2GB RAM
+     * - object-detection: Requires >4GB RAM
+     * - translation: Requires >4GB RAM
+     */
+    private fun detectMLKitFeatures(memoryMB: Int): List<String> {
+        val features = mutableListOf<String>()
+        
+        // Basic ML Kit features - always available
+        features.add("text-recognition")
+        
+        // Medium ML Kit features - need reasonable memory
+        if (memoryMB > 2000) {
+            features.add("face-detection")
+        }
+        
+        // Advanced ML Kit features - need good memory
+        if (memoryMB > 4000) {
+            features.add("object-detection")
+            features.add("translation")
+        }
+        
+        return features
+    }
+    
+    /**
+     * Get local ML capabilities for including in compute task responses.
+     * Called by compute nodes when responding to task requests.
+     * 
+     * @return Pair of (mlKitFeatures: List<String>, mlKitCustomSupport: Boolean)
+     */
+    fun getLocalMLCapabilitiesForResponse(): Pair<List<String>, Boolean> {
+        val localSnapshot = captureLocalMLSnapshot()
+        return if (localSnapshot != null) {
+            Pair(
+                localSnapshot.mlCapabilities.mlKitFeatures,
+                localSnapshot.mlCapabilities.mlKitCustomSupport
+            )
+        } else {
+            Pair(emptyList(), false)
+        }
+    }
+    
+    /**
+     * Update ML mesh intelligence with local or remote node capabilities.
+     * 
+     * @param snapshot ML capability snapshot for a node
+     */
+    private fun updateMLMeshCapabilities(snapshot: MLCapabilitySnapshot) {
+        val current = _mlMeshIntelligence.value
+        val updatedCapabilities = current.nodeCapabilities.toMutableMap()
+        updatedCapabilities[snapshot.nodeAddress] = snapshot
+        
+        val mlCapableCount = updatedCapabilities.values.count { 
+            it.mlCapabilities.deviceClass != MLDeviceClass.CONSUMER 
+        }
+        
+        _mlMeshIntelligence.value = current.copy(
+            nodeCapabilities = updatedCapabilities,
+            totalMLCapableNodes = mlCapableCount,
+            timestamp = System.currentTimeMillis()
+        )
+        
+        safeLog(
+            LogLevel.DEBUG,
+            "Updated ML mesh capabilities for node ${snapshot.nodeAddress}: " +
+            "class=${snapshot.mlCapabilities.deviceClass}, " +
+            "total_ml_nodes=${mlCapableCount}"
+        )
+    }
+    
+    /**
+     * Get local ML capabilities for inclusion in compute task response generation.
+     * Returns mlKitFeatures list and mlKitCustomSupport flag.
+     * 
+     * @return Pair of (List<String> mlKitFeatures, Boolean mlKitCustomSupport)
+     */
+    fun getLocalMLCapabilitiesForResponse(): Pair<List<String>, Boolean> {
+        val caps = detectLocalMLCapabilities()
+        return Pair(caps.mlKitFeatures, caps.mlKitCustomSupport)
+    }
+    
+    /**
+     * Create ML capability snapshot for local node.
+     * Called during capability updates to track ML server eligibility.
+     */
+    private fun captureLocalMLSnapshot(): MLCapabilitySnapshot? {
+        return try {
+            val resourceCaps = hardwareManager.getCurrentCapabilities().resources
+            val mlCapabilities = detectLocalMLCapabilities()
+            
+            MLCapabilitySnapshot(
+                nodeAddress = virtualNode.addressAsInt,
+                memoryMB = resourceCaps.memoryMB,
+                storageMB = resourceCaps.storageOffered.toInt(),
+                cpuCores = Runtime.getRuntime().availableProcessors(),
+                mlCapabilities = mlCapabilities
+            )
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to capture local ML snapshot: ${e.message}")
+            null
+        }
+    }
+    
+    // ===== End ML Capability Detection =====
 
     /**
      * Returns true if this node has the file with the given fileId (i.e., is a replica).
@@ -416,33 +724,36 @@ class EmergentRoleManager(
             safeLog(LogLevel.ERROR, "Error checking hasFile($fileId): ${e.message}")
             false
         }
-    }
-
-    fun updateMeshIntelligence(intelligence: MeshIntelligence) {
-        _meshIntelligence.value = intelligence
-        safeLog(LogLevel.DEBUG, "Updated mesh intelligence: $intelligence")
-    }
-
-    fun processNodeAnnouncement(nodeId: String, meshRoles: Set<MeshRole>) {
-        val current = _meshIntelligence.value
-        val activeGateways = if (meshRoles.any { it in setOf(MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY, MeshRole.I2P_GATEWAY) }) {
-            current.activeGateways + 1
-        } else {
-            current.activeGateways
+    /**
+     * Update ML mesh intelligence with local or remote node capabilities.
+     * Tracks ML Kit capable nodes for compute task distribution.
+     * 
+     * @param snapshot ML capability snapshot for a node
+     */
+    private fun updateMLMeshCapabilities(snapshot: MLCapabilitySnapshot) {
+        val current = _mlMeshIntelligence.value
+        val updatedCapabilities = current.nodeCapabilities.toMutableMap()
+        updatedCapabilities[snapshot.nodeAddress] = snapshot
+        
+        // Count nodes with ML Kit features (not MESH_PARTICIPANT only)
+        val mlCapableCount = updatedCapabilities.values.count { 
+            it.mlCapabilities.mlKitFeatures.isNotEmpty()
         }
-        val activeStorageNodes = if (MeshRole.STORAGE_NODE in meshRoles) {
-            current.activeStorageNodes + 1
-        } else {
-            current.activeStorageNodes
-        }
-        val activeComputeNodes = if (MeshRole.COMPUTE_NODE in meshRoles) {
-            current.activeComputeNodes + 1
-        } else {
-            current.activeComputeNodes
-        }
-        val totalNodes = virtualNode.neighbors().size + 1
-        val updated = current.copy(
-            totalNodes = totalNodes,
+        
+        _mlMeshIntelligence.value = current.copy(
+            nodeCapabilities = updatedCapabilities,
+            totalMLCapableNodes = mlCapableCount,
+            timestamp = System.currentTimeMillis()
+        )
+        
+        safeLog(
+            LogLevel.DEBUG,
+            "Updated ML mesh capabilities for node ${snapshot.nodeAddress}: " +
+            "mlkit_features=${snapshot.mlCapabilities.mlKitFeatures.size}, " +
+            "custom_support=${snapshot.mlCapabilities.mlKitCustomSupport}, " +
+            "total_ml_nodes=${mlCapableCount}"
+        )
+    }       totalNodes = totalNodes,
             activeGateways = activeGateways.coerceAtMost(totalNodes),
             activeStorageNodes = activeStorageNodes.coerceAtMost(totalNodes),
             activeComputeNodes = activeComputeNodes.coerceAtMost(totalNodes),
@@ -639,12 +950,50 @@ class EmergentRoleManager(
             if (plan.addRoles.isNotEmpty() || plan.removeRoles.isNotEmpty()) {
                 applyTransitionPlan(plan)
             }
-            meshRoleManager.updateRole()
         } catch (e: Exception) {
             safeLog(LogLevel.ERROR, "Error updating roles: ${e.message}")
         } finally {
             _isRoleTransitionInProgress.value = false
         }
+    }
+
+    /**
+     * Calculate centrality score using BFS algorithm on the network topology.
+     * Returns a score representing how central this node is in the mesh network.
+     */
+    fun calculateCentralityScore(): Float {
+        val topology = (virtualNode.getOriginatingMessageManager() as? com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager)?.getTopologyMap() ?: return 0f
+        val myAddr = virtualNode.addressAsInt
+
+        // BFS for hops and centrality
+        val visited = mutableSetOf<Int>()
+        val queue = ArrayDeque<Pair<Int, Int>>() // Pair<address, hops>
+        queue.add(myAddr to 0)
+        visited.add(myAddr)
+        var totalHops = 0
+        var maxHops = 0
+        var reachable = 0
+        
+        while (queue.isNotEmpty()) {
+            val (current, hops) = queue.removeFirst()
+            if (hops > 0) {
+                totalHops += hops
+                maxHops = maxOf(maxHops, hops)
+                reachable++
+            }
+            for (neighbor in topology[current] ?: emptySet()) {
+                if (neighbor !in visited) {
+                    visited.add(neighbor)
+                    queue.add(neighbor to hops + 1)
+                }
+            }
+        }
+        
+        val avgHops = if (reachable > 0) totalHops.toFloat() / reachable else 0f
+        val degree = topology[myAddr]?.size ?: 0
+        val centralityScore = degree + (if (avgHops > 0) 1f / avgHops else 0f)
+
+        return centralityScore
     }
 
     fun getCurrentMeshRoles(): Set<MeshRole> = _currentMeshRoles.value
@@ -660,6 +1009,21 @@ class EmergentRoleManager(
         try {
             hardwareManager.startMonitoring(30000L)
             safeLog(LogLevel.INFO, "Started hardware monitoring for role optimization")
+            
+            // Start periodic battery monitoring
+            if (batteryMonitoringJob?.isActive != true) {
+                batteryMonitoringJob = scope.launch {
+                    while (isActive) {
+                        try {
+                            updateBatteryLevel()
+                            delay(BATTERY_CACHE_DURATION_MS)
+                        } catch (e: Exception) {
+                            safeLog(LogLevel.BASIC, "Battery monitoring error: ${e.message}")
+                        }
+                    }
+                }
+                safeLog(LogLevel.INFO, "Started battery monitoring loop")
+            }
         } catch (e: Exception) {
             safeLog(LogLevel.BASIC, "Failed to start hardware monitoring: ${e.message}")
         }
@@ -770,6 +1134,21 @@ class EmergentRoleManager(
             safeLog(LogLevel.INFO, "Stopped hardware monitoring")
         } catch (e: Exception) {
             safeLog(LogLevel.BASIC, "Failed to stop hardware monitoring: ${e.message}")
+        }
+        
+        try {
+            connectivityMonitor?.stopMonitoring()
+            safeLog(LogLevel.DEBUG, "Stopped connectivity monitoring")
+        } catch (e: Exception) {
+            safeLog(LogLevel.DEBUG, "Failed to stop connectivity monitoring: ${e.message}")
+        }
+        
+        try {
+            batteryMonitoringJob?.cancel()
+            batteryMonitoringJob = null
+            safeLog(LogLevel.DEBUG, "Stopped battery monitoring")
+        } catch (e: Exception) {
+            safeLog(LogLevel.DEBUG, "Failed to stop battery monitoring: ${e.message}")
         }
     }
 

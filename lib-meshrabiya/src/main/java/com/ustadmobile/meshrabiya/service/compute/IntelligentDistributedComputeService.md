@@ -1,11 +1,11 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 // Intelligent Distributed Compute Service
 // Integrates Python execution and LiteRT inference with mesh intelligence
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import org.torproject.android.service.storage.StorageDropFolderManager
+import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.*
 

@@ -1,29 +1,28 @@
+package com.ustadmobile.meshrabiya.service.compute
+
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
-
-package org.torproject.android.service.compute
-
 import kotlin.math.*
 import java.util.concurrent.ConcurrentHashMap
 
 // Exact imports for all referenced types
-import org.torproject.android.service.compute.mesh.ClusterState.NodeCapabilitySnapshot
-import org.torproject.android.service.compute.scheduler.ComputeTask
-import org.torproject.android.service.compute.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.service.compute.mesh.ClusterState.NodeCapabilitySnapshot
+import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceRequirements
 // DistributedJob: Not found in code, only in .md. Should be added to model if missing.
-import org.torproject.android.service.compute.model.StorageOperation
-import org.torproject.android.service.compute.mesh.ClusterState.MeshIntelligence
-import org.torproject.android.service.compute.scheduler.DependencyGraph
-import org.torproject.android.service.compute.model.LibraryEntry.PythonLibrary
-import org.torproject.android.service.compute.model.ResourceRequirements.OutputSchema
-import org.torproject.android.service.compute.model.ResourceRequirements.OutputFormat
-import org.torproject.android.service.compute.model.LibraryEntry.LiteRTConfig
-import org.torproject.android.service.compute.model.LibraryEntry.InferenceConfig
-import org.torproject.android.service.compute.model.LibraryEntry.Precision
-import org.torproject.android.service.compute.model.JobTypes.JobType
-import org.torproject.android.service.compute.model.JobTypes.SpecializedCapability
-import org.torproject.android.service.compute.scheduler.ExecutionPlan
-import org.torproject.android.service.compute.mesh.ClusterState.ResourceAllocation
-import org.torproject.android.service.compute.model.JobTypes.AggregationStrategy
+import com.ustadmobile.meshrabiya.service.compute.model.StorageOperation
+import com.ustadmobile.meshrabiya.service.compute.mesh.ClusterState.MeshIntelligence
+import com.ustadmobile.meshrabiya.service.compute.scheduler.DependencyGraph
+import com.ustadmobile.meshrabiya.service.compute.model.LibraryEntry.PythonLibrary
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceRequirements.OutputSchema
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceRequirements.OutputFormat
+// import com.ustadmobile.meshrabiya.service.compute.model.LibraryEntry.LiteRTConfig
+import com.ustadmobile.meshrabiya.service.compute.model.LibraryEntry.InferenceConfig
+import com.ustadmobile.meshrabiya.service.compute.model.LibraryEntry.Precision
+import com.ustadmobile.meshrabiya.service.compute.model.JobTypes.JobType
+import com.ustadmobile.meshrabiya.service.compute.model.JobTypes.SpecializedCapability
+import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+import com.ustadmobile.meshrabiya.service.compute.mesh.ClusterState.ResourceAllocation
+import com.ustadmobile.meshrabiya.service.compute.model.JobTypes.AggregationStrategy
 
 class IntelligentTaskScheduler {
 	// Calculates resource score for a node and a task
@@ -161,20 +160,20 @@ class IntelligentTaskScheduler {
 	fun calculateSpecializationScore(node: NodeCapabilitySnapshot, task: ComputeTask, intelligence: MeshIntelligence): Float {
 		val specialization = intelligence.specializations[node.nodeId] ?: return 0.5f
 		return when (task) {
-			is ComputeTask.LiteRTTask -> {
-				if (specialization.hasNPUAcceleration) 1.0f
-				else if (specialization.hasGPUAcceleration) 0.8f
-				else 0.6f
-			}
+			// is ComputeTask.LiteRTTask -> {
+			// 	if (specialization.hasNPUAcceleration) 1.0f
+			// 	else if (specialization.hasGPUAcceleration) 0.8f
+			// 	else 0.6f
+			// }
 			is ComputeTask.PythonTask -> {
 				if (specialization.hasPythonOptimizations) 0.9f
 				else 0.7f
 			}
 			is ComputeTask.HybridTask -> 0.8f
-			is ComputeTask.DistributedStorageTask -> {
-				if (specialization.specializedCapabilities.contains(SpecializedCapability.DISTRIBUTED_STORAGE)) 1.0f
-				else 0.5f
-			}
+			// is ComputeTask.DistributedStorageTask -> {
+			// 	if (specialization.specializedCapabilities.contains(SpecializedCapability.DISTRIBUTED_STORAGE)) 1.0f
+			// 	else 0.5f
+			// }
 		}
 	}
 
@@ -221,30 +220,30 @@ class IntelligentTaskScheduler {
 				),
 				outputSchema = OutputSchema(OutputFormat.TENSOR, 1024 * 1024, mapOf())
 			))
-			repeat(minOf(4, availableGPUNodes)) { index ->
-				tasks.add(ComputeTask.LiteRTTask(
-					taskId = "${job.jobId}_inference_$index",
-					modelId = "mobilenet_v3_quantized",
-					inputTensors = listOf(),
-					modelConfig = LiteRTConfig(
-						useGPU = true,
-						useNNAPI = true,
-						numThreads = 2
-					),
-					estimatedExecutionMs = 150L,
-					resourceRequirements = ResourceRequirements(
-						minRAMMB = 256,
-						preferredRAMMB = 512,
-						cpuIntensity = CPUIntensity.LIGHT,
-						requiresGPU = true
-					),
-					dependencies = listOf("${job.jobId}_preprocess"),
-					inferenceConfig = InferenceConfig(
-						batchSize = 1,
-						precision = Precision.QUANTIZED
-					)
-				))
-			}
+			// repeat(minOf(4, availableGPUNodes)) { index ->
+			// 	tasks.add(ComputeTask.LiteRTTask(
+			// 		taskId = "${job.jobId}_inference_$index",
+			// 		modelId = "mobilenet_v3_quantized",
+			// 		inputTensors = listOf(),
+			// 		modelConfig = LiteRTConfig(
+			// 			useGPU = true,
+			// 			useNNAPI = true,
+			// 			numThreads = 2
+			// 		),
+			// 		estimatedExecutionMs = 150L,
+			// 		resourceRequirements = ResourceRequirements(
+			// 			minRAMMB = 256,
+			// 			preferredRAMMB = 512,
+			// 			cpuIntensity = CPUIntensity.LIGHT,
+			// 			requiresGPU = true
+			// 		),
+			// 		dependencies = listOf("${job.jobId}_preprocess"),
+			// 		inferenceConfig = InferenceConfig(
+			// 			batchSize = 1,
+			// 			precision = Precision.QUANTIZED
+			// 		)
+			// 	))
+			// }
 		}
 		return tasks
 	}
@@ -326,18 +325,18 @@ class IntelligentTaskScheduler {
 					specialization?.supportedPythonLibraries?.contains(lib) == true
 				}
 			}
-			is ComputeTask.LiteRTTask -> {
-				specialization?.supportedLiteRTModels?.contains(task.modelId) == true
-			}
+			// is ComputeTask.LiteRTTask -> {
+			// 	specialization?.supportedLiteRTModels?.contains(task.modelId) == true
+			// }
 			is ComputeTask.HybridTask -> {
-				isNodeCompatibleWithTask(node, task.liteRTInference, specialization) &&
+				// isNodeCompatibleWithTask(node, task.liteRTInference, specialization) &&
 				(task.pythonPreprocessing?.let { isNodeCompatibleWithTask(node, it, specialization) } != false) &&
 				(task.pythonPostprocessing?.let { isNodeCompatibleWithTask(node, it, specialization) } != false)
 			}
-			is ComputeTask.DistributedStorageTask -> {
-				specialization?.specializedCapabilities?.contains(SpecializedCapability.DISTRIBUTED_STORAGE) == true &&
-				node.resourceCapabilities.storageGB >= task.resourceRequirements.minStorageGB
-			}
+			// is ComputeTask.DistributedStorageTask -> {
+			// 	specialization?.specializedCapabilities?.contains(SpecializedCapability.DISTRIBUTED_STORAGE) == true &&
+			// 	node.resourceCapabilities.storageGB >= task.resourceRequirements.minStorageGB
+			// }
 		}
 	}
 

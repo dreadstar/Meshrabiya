@@ -73,6 +73,12 @@ abstract class VirtualNode(
 ): VirtualRouter, Closeable, HasNodeState {
 
     val addressAsInt: Int = address.requireAddressAsInt()
+    
+    /**
+     * Provides context for service initialization.
+     * Must be implemented by platform-specific subclasses (e.g., AndroidVirtualNode).
+     */
+    protected abstract fun getContext(): android.content.Context?
 
     // --- Proxy connection info ---
     @Volatile
@@ -188,43 +194,81 @@ abstract class VirtualNode(
     private val activeSockets: MutableMap<Int, VirtualDatagramSocketImpl> = ConcurrentHashMap()
 
     // === New Service Instantiations ===
-    private val scheduledExecutorService = Executors.newScheduledThreadPool(2)
-    private val originatingMessageManager: OriginatingMessageManager = OriginatingMessageManager(
-        localNodeInetAddr = address,
-        logger = logger,
-        scheduledExecutor = scheduledExecutorService,
-        nextMmcpMessageId = { nextMmcpMessageId() }
-    )
-    private val emergentRoleManager: EmergentRoleManager = EmergentRoleManager.getInstance(
-        context = appContext,
-        virtualNode = this,
-        meshRoleManager = null
-    )
-    private val meshNetworkInterface: MeshNetworkInterface = MeshNetworkInterface.getInstance(appContext)
-
-    private val coreGossipBroadcastService: CoreGossipBroadcastService = CoreGossipBroadcastService(
-        virtualNode = this
-    )
-
-    private val meshGossipService: MeshGossipService = MeshGossipService.getInstance(
-        virtualNode = this,
-        meshRoleManager = null,
-        context = appContext,
-        scheduledExecutorService = scheduledExecutorService,
-        originatingMessageManager = originatingMessageManager,
-        coreGossipBroadcastService = coreGossipBroadcastService
-    )
-
-    private val distributedStorageManager: DistributedStorageManager = DistributedStorageManager.getInstance(appContext)
-
-    private val intelligentDistributedComputeService: IntelligentDistributedComputeService =
-        IntelligentDistributedComputeService.getInstance(appContext)
-
-    private val meshEcosystemListener: MeshEcosystemListener = MeshEcosystemListener(
-        meshNetworkInterface = meshNetworkInterface,
-        coreGossipBroadcastService = coreGossipBroadcastService,
-        connectionPoolSize = MeshrabiyaConstants.getConnectionPoolSize()
-    )
+    protected val scheduledExecutorService = Executors.newScheduledThreadPool(2)
+    
+    // Core mesh services instantiated with proper dependency injection
+    protected val meshGossipService: MeshGossipService = MeshGossipService.initialize(this)
+    
+    protected val coreGossipBroadcastService: CoreGossipBroadcastService = 
+        CoreGossipBroadcastService(meshGossipService)
+    
+    // MeshNetworkInterface implementation - bridge to VirtualNode capabilities
+    protected val meshNetworkInterface: MeshNetworkInterface = 
+        VirtualNode_MeshNetworkInterface(this)
+    
+    // MeshEcosystemListener depends on meshNetworkInterface and meshGossipService
+    protected val meshEcosystemListener: MeshEcosystemListener = 
+        MeshEcosystemListener(meshNetworkInterface, meshGossipService)
+    
+    // EmergentRoleManager initialized lazily with context from subclass
+    protected val emergentRoleManager: EmergentRoleManager by lazy {
+        val context = getContext() 
+            ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
+        EmergentRoleManager(this, context)
+    }
+    
+    // IntelligentDistributedComputeService initialized lazily with all dependencies
+    protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
+        IntelligentDistributedComputeService(
+            meshNetwork = meshNetworkInterface,
+            resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
+            pythonExecutor = createPythonExecutor(),
+            // liteRTEngine = createLiteRTEngine(),
+            emergentRoleManager = emergentRoleManager,
+            betaLogger = com.ustadmobile.meshrabiya.beta.BetaTestLogger.getInstance(
+                getContext() ?: throw IllegalStateException("Context required")
+            )
+        )
+    }
+    
+    // Storage service requires additional dependencies (Context, etc.)
+    // Will be initialized later via initialize() method when dependencies are available
+    protected var distributedStorageManager: DistributedStorageManager? = null
+    
+    /**
+     * Creates PythonExecutor instance. Can be overridden by subclasses.
+     */
+    protected open fun createPythonExecutor(): com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor {
+        return object : com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor {
+            override suspend fun executeTask(
+                task: com.ustadmobile.meshrabiya.service.compute.model.ComputeTask.PythonTask
+            ): com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult {
+                // Simple stub implementation - override in subclass for real functionality
+                return com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult.Failed(
+                    taskId = task.taskId,
+                    error = "PythonExecutor not implemented"
+                )
+            }
+        }
+    }
+    
+    /**
+     * Creates LiteRTEngine instance. Can be overridden by subclasses.
+     */
+    // protected open fun createLiteRTEngine(): com.ustadmobile.meshrabiya.service.compute.executor.LiteRTEngine {
+    //     return object : com.ustadmobile.meshrabiya.service.compute.executor.LiteRTEngine {
+    //         override suspend fun executeTask(
+    //             task: com.ustadmobile.meshrabiya.service.compute.model.ComputeTask.LiteRTTask
+    //         ): com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult {
+    //             // Simple stub implementation - override in subclass for real functionality
+    //             return com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult.Failed(
+    //                 taskId = task.taskId,
+    //                 error = "LiteRTEngine not implemented"
+    //             )
+    //         }
+    //     }
+    // }
+    
 
     init {
         _state.update { prev ->
@@ -680,8 +724,6 @@ abstract class VirtualNode(
 
     internal fun getOriginatingMessageManager() = originatingMessageManager
 
-    internal open fun getMeshRoleManager(): MeshRoleManager? = null
-
     protected fun safeLog(
         level: LogLevel,
         category: String,
@@ -746,7 +788,7 @@ abstract class VirtualNode(
 
     fun getMeshGossipService(): MeshGossipService = meshGossipService
     fun getCoreGossipBroadcastService(): CoreGossipBroadcastService = coreGossipBroadcastService
-    fun getDistributedStorageManager(): DistributedStorageManager = distributedStorageManager
+    fun getDistributedStorageManager(): DistributedStorageManager? = distributedStorageManager
     fun getIntelligentDistributedComputeService(): IntelligentDistributedComputeService = intelligentDistributedComputeService
     fun getMeshEcosystemListener(): MeshEcosystemListener = meshEcosystemListener
     fun getMeshNetworkInterface(): MeshNetworkInterface = meshNetworkInterface

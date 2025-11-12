@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 /**
  * LocalDeviceServiceLibrary

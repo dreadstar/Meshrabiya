@@ -89,6 +89,7 @@ class GatewayProtocolIntegrationTest {
         betaTestLogger.setLogLevel(LogLevel.DETAILED)
         // Use simple test doubles for VirtualNode and MeshRoleManager
         virtualNode = object : VirtualNode() {
+            override fun getContext(): android.content.Context? = null  // Return null in tests
             override val meshrabiyaWifiManager: com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager = object : com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager {
                 override val state: kotlinx.coroutines.flow.Flow<com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState> = kotlinx.coroutines.flow.MutableStateFlow(com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState())
                 override val is5GhzSupported: Boolean = true
@@ -107,9 +108,10 @@ class GatewayProtocolIntegrationTest {
         emergentRoleManager = EmergentRoleManager(
             virtualNode = virtualNode,
             context = context,
-            meshRoleManager = MeshRoleManager(virtualNode, context),
             deviceCapabilityManager = mockDeviceCapabilityManager()
-        )
+        ).apply {
+            userAllowsTorProxy = true
+        }
         announcementCount = java.util.concurrent.atomic.AtomicInteger(0)
         routingSuccessCount = java.util.concurrent.atomic.AtomicInteger(0)
         routingFailureCount = java.util.concurrent.atomic.AtomicInteger(0)

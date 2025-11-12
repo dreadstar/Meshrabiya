@@ -1,6 +1,6 @@
-package org.torproject.android.service.compute.scheduler
+package com.ustadmobile.meshrabiya.service.compute.scheduler
 
-import org.torproject.android.service.compute.model.*
+import com.ustadmobile.meshrabiya.service.compute.model.*
 
 /**
  * Sealed class representing a compute task in the distributed mesh system.
@@ -29,16 +29,16 @@ sealed class ComputeTask {
     /**
      * LiteRT compute task.
      */
-    data class LiteRTTask(
-        override val taskId: String,
-        val modelId: String,
-        val inputTensors: List<ByteArray>,
-        val modelConfig: LiteRTConfig,
-        override val estimatedExecutionMs: Long,
-        override val resourceRequirements: ResourceRequirements,
-        override val dependencies: List<String> = emptyList(),
-        val inferenceConfig: InferenceConfig
-    ) : ComputeTask()
+    // data class LiteRTTask(
+    //     override val taskId: String,
+    //     val modelId: String,
+    //     val inputTensors: List<ByteArray>,
+    //     val modelConfig: LiteRTConfig,
+    //     override val estimatedExecutionMs: Long,
+    //     override val resourceRequirements: ResourceRequirements,
+    //     override val dependencies: List<String> = emptyList(),
+    //     val inferenceConfig: InferenceConfig
+    // ) : ComputeTask()
 
     /**
      * Hybrid compute task (Python preprocessing, LiteRT inference, Python postprocessing).
@@ -46,25 +46,12 @@ sealed class ComputeTask {
     data class HybridTask(
         override val taskId: String,
         val pythonPreprocessing: PythonTask?,
-        val liteRTInference: LiteRTTask,
+        // val liteRTInference: LiteRTTask,
         val pythonPostprocessing: PythonTask?,
         override val estimatedExecutionMs: Long,
         override val resourceRequirements: ResourceRequirements,
         override val dependencies: List<String> = emptyList()
     ) : ComputeTask()
 
-    /**
-     * Distributed storage task.
-     */
-    data class DistributedStorageTask(
-        override val taskId: String,
-        val operation: StorageOperation,
-        val fileId: String,
-        val data: ByteArray?,
-        val replicationFactor: Int,
-        override val estimatedExecutionMs: Long,
-        override val resourceRequirements: ResourceRequirements,
-        override val dependencies: List<String> = emptyList(),
-        val destinationPath: String? = null
-    ) : ComputeTask()
+    
 }

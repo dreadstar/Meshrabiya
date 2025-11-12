@@ -2,7 +2,7 @@ plugins {
     id 'com.android.library' version '8.12.2'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.serialization'
-    id 'kotlin-kapt' // <-- REQUIRED for Room annotation processing
+    // id 'kotlin-kapt' // <-- REQUIRED for Room annotation processing
     id 'maven-publish'
     id 'jacoco'
 }
@@ -88,8 +88,8 @@ dependencies {
     testImplementation "androidx.test:core:1.5.0"
     testImplementation "org.jetbrains.kotlin:kotlin-test:1.9.0"
     implementation 'org.msgpack:msgpack-core:0.8.22'
-    implementation "androidx.room:room-runtime:2.6.1"
-    kapt "androidx.room:room-compiler:2.6.1" // <-- Room annotation processor
+    // implementation "androidx.room:room-runtime:2.6.1"
+    // kapt "androidx.room:room-compiler:2.6.1" // <-- Room annotation processor
 }
 
 // Configure JaCoCo test coverage for Meshrabiya module

@@ -42,6 +42,11 @@ class AndroidVirtualNode(
     json = json,
     config = config,
 ) {
+    
+    /**
+     * Provides context for service initialization (EmergentRoleManager, IntelligentDistributedComputeService).
+     */
+    override fun getContext(): Context = appContext
 
     private val bluetoothManager: BluetoothManager by lazy {
         appContext.getSystemService(BluetoothManager::class.java)

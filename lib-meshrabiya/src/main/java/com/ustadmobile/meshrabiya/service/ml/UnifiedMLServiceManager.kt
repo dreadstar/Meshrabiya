@@ -4,8 +4,8 @@ import android.content.Context
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.google.ai.edge.litert.CompiledModel
-import com.google.ai.edge.litert.Accelerator
+// import com.google.ai.edge.litert.CompiledModel
+// import com.google.ai.edge.litert.Accelerator
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -37,7 +37,7 @@ class UnifiedMLServiceManager(
     private val mlKitCustomServices = ConcurrentHashMap<String, MLKitCustomWrapper>()
     
     // Tier 3: Direct LiteRT Services (TensorFlow Lite models)
-    private val literTServices = ConcurrentHashMap<String, LiteRTWrapper>()
+    // private val literTServices = ConcurrentHashMap<String, LiteRTWrapper>()
     
     private val isInitialized = CompletableDeferred<Boolean>()
     
@@ -49,7 +49,7 @@ class UnifiedMLServiceManager(
             try {
                 initializeMLKitNativeServices()
                 initializeMLKitCustomServices()
-                initializeLiteRTServices()
+                // initializeLiteRTServices()
                 
                 isInitialized.complete(true)
                 Log.i(TAG, "ML services initialized successfully")
@@ -96,9 +96,9 @@ class UnifiedMLServiceManager(
         }
         
         // Add LiteRT services
-        literTServices.forEach { (serviceId, wrapper) ->
-            services.add(wrapper.getServiceAnnouncement())
-        }
+        // literTServices.forEach { (serviceId, wrapper) ->
+        //     services.add(wrapper.getServiceAnnouncement())
+        // }
         
         return services
     }
@@ -142,30 +142,30 @@ class UnifiedMLServiceManager(
         Log.i(TAG, "Initialized ${mlKitCustomServices.size} ML Kit custom services")
     }
     
-    private fun initializeLiteRTServices() {
-        // Tier 3: Direct TensorFlow Lite models
-        if (!deviceCapabilities.hasLiteRT) return
+    // private fun initializeLiteRTServices() {
+    //     // Tier 3: Direct TensorFlow Lite models
+    //     if (!deviceCapabilities.hasLiteRT) return
         
-        // Lightweight models for all LiteRT-capable devices
-        if (deviceCapabilities.memoryMB > 1000) {
-            literTServices["sentiment-analyzer"] = 
-                LiteRTWrapper(context, "models/sentiment_analysis.tflite", createCompiledModelOptions())
-        }
+    //     // Lightweight models for all LiteRT-capable devices
+    //     if (deviceCapabilities.memoryMB > 1000) {
+    //         literTServices["sentiment-analyzer"] = 
+    //             LiteRTWrapper(context, "models/sentiment_analysis.tflite", createCompiledModelOptions())
+    //     }
         
-        // Medium models for capable devices
-        if (deviceCapabilities.memoryMB > 3000) {
-            literTServices["named-entity-recognizer"] =
-                LiteRTWrapper(context, "models/ner_model.tflite", createCompiledModelOptions())
-        }
+    //     // Medium models for capable devices
+    //     if (deviceCapabilities.memoryMB > 3000) {
+    //         literTServices["named-entity-recognizer"] =
+    //             LiteRTWrapper(context, "models/ner_model.tflite", createCompiledModelOptions())
+    //     }
         
-        // Large models for powerhouse devices
-        if (deviceCapabilities.memoryMB > 6000) {
-            literTServices["document-summarizer"] =
-                LiteRTWrapper(context, "models/summarization_large.tflite", createCompiledModelOptions())
-        }
+    //     // Large models for powerhouse devices
+    //     if (deviceCapabilities.memoryMB > 6000) {
+    //         literTServices["document-summarizer"] =
+    //             LiteRTWrapper(context, "models/summarization_large.tflite", createCompiledModelOptions())
+    //     }
         
-        Log.i(TAG, "Initialized ${literTServices.size} LiteRT services")
-    }
+    //     Log.i(TAG, "Initialized ${literTServices.size} LiteRT services")
+    // }
     
     private fun createCompiledModelOptions(): CompiledModel.Options {
         // Choose accelerator based on device capabilities
@@ -195,14 +195,14 @@ class UnifiedMLServiceManager(
         }
     }
     
-    private suspend fun processLiteRT(serviceId: String, input: MLServiceInput): MLServiceResult {
-        val wrapper = literTServices[serviceId]
-            ?: return MLServiceResult.error("LiteRT service not available: $serviceId")
+    // private suspend fun processLiteRT(serviceId: String, input: MLServiceInput): MLServiceResult {
+    //     val wrapper = literTServices[serviceId]
+    //         ?: return MLServiceResult.error("LiteRT service not available: $serviceId")
         
-        return withContext(Dispatchers.Default) {
-            wrapper.process(input)
-        }
-    }
+    //     return withContext(Dispatchers.Default) {
+    //         wrapper.process(input)
+    //     }
+    // }
 }
 
 // Base interface for ML service wrappers
@@ -390,93 +390,93 @@ class CustomObjectDetectionWrapper(private val modelPath: String) : MLServiceWra
 }
 
 // Tier 3: Direct LiteRT Implementation
-class LiteRTWrapper(
-    private val context: Context,
-    private val modelPath: String,
-    private val options: CompiledModel.Options
-) : MLServiceWrapper {
+// class LiteRTWrapper(
+//     private val context: Context,
+//     private val modelPath: String,
+//     private val options: CompiledModel.Options
+// ) : MLServiceWrapper {
 
-    companion object { private const val TAG = "LiteRTWrapper" }
+//     companion object { private const val TAG = "LiteRTWrapper" }
 
-    private var compiledModel: CompiledModel? = null
+//     private var compiledModel: CompiledModel? = null
 
-    override suspend fun process(input: MLServiceInput): MLServiceResult {
-        return try {
-            val model = compiledModel ?: loadModel()
+//     override suspend fun process(input: MLServiceInput): MLServiceResult {
+//         return try {
+//             val model = compiledModel ?: loadModel()
 
-            // Perform inference using LiteRT buffer-based API
-            val result = performInference(model, input)
+//             // Perform inference using LiteRT buffer-based API
+//             val result = performInference(model, input)
 
-            MLServiceResult.success(mapOf<String, Any>("result" to result))
-        } catch (e: Exception) {
-            Log.e(TAG, "LiteRT inference failed", e)
-            MLServiceResult.error("LiteRT inference failed: ${e.message}")
-        }
-    }
+//             MLServiceResult.success(mapOf<String, Any>("result" to result))
+//         } catch (e: Exception) {
+//             Log.e(TAG, "LiteRT inference failed", e)
+//             MLServiceResult.error("LiteRT inference failed: ${e.message}")
+//         }
+//     }
 
-    private fun loadModel(): CompiledModel {
-        try {
-            // Load model from assets
-            val modelFile = context.assets.open(modelPath)
-            val modelBytes = modelFile.readBytes()
-            modelFile.close()
+//     private fun loadModel(): CompiledModel {
+//         try {
+//             // Load model from assets
+//             val modelFile = context.assets.open(modelPath)
+//             val modelBytes = modelFile.readBytes()
+//             modelFile.close()
 
-            val created = LitertCompiledModelFactory.tryCreateFromBytes(modelBytes, options)
-            if (created == null) {
-                throw IllegalStateException("Failed to create CompiledModel - no compatible factory available")
-            }
-            this.compiledModel = created
-            return created
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load LiteRT model: $modelPath", e)
-            throw e
-        }
-    }
+//             val created = LitertCompiledModelFactory.tryCreateFromBytes(modelBytes, options)
+//             if (created == null) {
+//                 throw IllegalStateException("Failed to create CompiledModel - no compatible factory available")
+//             }
+//             this.compiledModel = created
+//             return created
+//         } catch (e: Exception) {
+//             Log.e(TAG, "Failed to load LiteRT model: $modelPath", e)
+//             throw e
+//         }
+//     }
 
-    private fun performInference(model: CompiledModel, input: MLServiceInput): Any {
-        // Create input and output buffers
-        val inputBuffers = model.createInputBuffers()
-        val outputBuffers = model.createOutputBuffers()
+//     private fun performInference(model: CompiledModel, input: MLServiceInput): Any {
+//         // Create input and output buffers
+//         val inputBuffers = model.createInputBuffers()
+//         val outputBuffers = model.createOutputBuffers()
 
-        try {
-            // Simplified placeholder implementation
-            return "inference_result_placeholder"
-        } finally {
-            inputBuffers.forEach { it.close() }
-            outputBuffers.forEach { it.close() }
-        }
-    }
+//         try {
+//             // Simplified placeholder implementation
+//             return "inference_result_placeholder"
+//         } finally {
+//             inputBuffers.forEach { it.close() }
+//             outputBuffers.forEach { it.close() }
+//         }
+//     }
 
-    fun cleanup() {
-        try {
-            compiledModel?.close()
-            compiledModel = null
-        } catch (e: Exception) {
-            Log.w(TAG, "Error cleaning up LiteRT model", e)
-        }
-    }
+//     fun cleanup() {
+//         try {
+//             compiledModel?.close()
+//             compiledModel = null
+//         } catch (e: Exception) {
+//             Log.w(TAG, "Error cleaning up LiteRT model", e)
+//         }
+//     }
 
-    override fun getServiceAnnouncement(): ServiceAnnouncement {
-        return ServiceAnnouncement(
-            serviceId = modelPath.substringAfterLast("/").substringBeforeLast("."),
-            serviceType = ServiceAnnouncement.ServiceType.LITERT,
-            version = "1.0.0",
-            sizeKB = 25 * 1024, // Estimated model size
-            capabilities = listOf("custom-inference", "tensorflow-lite"),
-            resourceRequirements = ResourceRequirements(
-                minMemoryMB = 1000,
-                minStorageMB = 25 * 1024
-            ),
-            executionProfile = ExecutionProfile(
-                profileName = modelPath.substringAfterLast("/").substringBeforeLast("."),
-                cpuCores = 1,
-                gpuEnabled = false,
-                memoryMB = 500,
-                storageMB = 25 * 1024
-            )
-        )
-    }
-}
+//     override fun getServiceAnnouncement(): ServiceAnnouncement {
+//         return ServiceAnnouncement(
+//             serviceId = modelPath.substringAfterLast("/").substringBeforeLast("."),
+//             serviceType = ServiceAnnouncement.ServiceType.LITERT,
+//             version = "1.0.0",
+//             sizeKB = 25 * 1024, // Estimated model size
+//             capabilities = listOf("custom-inference", "tensorflow-lite"),
+//             resourceRequirements = ResourceRequirements(
+//                 minMemoryMB = 1000,
+//                 minStorageMB = 25 * 1024
+//             ),
+//             executionProfile = ExecutionProfile(
+//                 profileName = modelPath.substringAfterLast("/").substringBeforeLast("."),
+//                 cpuCores = 1,
+//                 gpuEnabled = false,
+//                 memoryMB = 500,
+//                 storageMB = 25 * 1024
+//             )
+//         )
+//     }
+// }
 
 // Data classes for ML service I/O
 // ...existing code...

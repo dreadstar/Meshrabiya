@@ -1,3 +1,31 @@
+# MeshRoleManager - DEPRECATED/ARCHIVED
+
+**Status:** This file is archived for reference only and should NOT be used in active development.
+
+**Date Archived:** January 10, 2025
+
+**Reason for Deprecation:**
+MeshRoleManager was an early attempt at role management for mesh networks, created before EmergentRoleManager was designed. It has been superseded by EmergentRoleManager, which provides:
+- Hardware-aware role assignment with battery, thermal, and capability monitoring
+- Advanced mesh intelligence with multi-role support
+- Power constraint management
+- Gateway capability announcements
+- Graceful role transitions
+
+**Migration Path:**
+- All MeshRoleManager functionality has been migrated to EmergentRoleManager
+- `calculateCentralityScore()` BFS algorithm is now an instance method in EmergentRoleManager
+- `userAllowsTorProxy` is now a direct property on EmergentRoleManager
+- NodeRole enum (MESH_NODE, CLIENT, BRIDGE) replaced by MeshRole enum (MESH_PARTICIPANT, TOR_GATEWAY, CLEARNET_GATEWAY, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, COORDINATOR)
+
+**Preserved for Reference:**
+This code is preserved to maintain the BFS centrality calculation algorithm and legacy patterns that might be useful for future development or debugging.
+
+---
+
+## Original Code
+
+```kotlin
 package com.ustadmobile.meshrabiya.vnet
 
 import android.location.Location
@@ -197,3 +225,7 @@ fun MeshRoleManager.getNeighborFitnessInfo(): Map<String, Pair<Int, Byte>> {
 }
 
 // TODO: Add methods for updating neighbor scores, handling role transitions, etc. 
+```
+
+---
+**End of archived code** 

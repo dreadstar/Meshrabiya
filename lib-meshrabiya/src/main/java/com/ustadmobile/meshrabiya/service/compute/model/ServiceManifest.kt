@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute.model
+package com.ustadmobile.meshrabiya.service.compute.model
 
 /**
  * Represents the manifest for a distributed compute service.
@@ -24,7 +24,7 @@ data class ServiceManifest(
  */
 enum class ServiceType {
     PYTHON,
-    LITERT,
+    // LITERT,
     HYBRID,
     JAVA,
     NDK,

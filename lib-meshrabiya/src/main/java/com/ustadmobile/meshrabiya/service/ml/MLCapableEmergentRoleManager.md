@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
+
+// TODO Evalute if any of this functionality should be refactored into EmergentRoleManager
+
 /**
  * Enhanced EmergentRoleManager with ML Server capabilities
  * Automatically assigns ML serving roles based on device capabilities and mesh topology
@@ -155,22 +158,22 @@ class MLCapableEmergentRoleManager(
         }
         
         // LiteRT Services - need high memory + storage + preferably GPU
-        val literTCapableNodes = capabilities.toList().filter { (_, caps) ->
-            caps.hasLiteRT && caps.memoryMB > 4000 && caps.storageMB > 1000
-        }.sortedWith(
-            compareByDescending<Pair<Int, DeviceCapabilities>> { it.second.memoryMB }
-                .thenByDescending { it.second.hasGPUAcceleration }
-                .thenByDescending { it.second.storageMB }
-        )
+        // val literTCapableNodes = capabilities.toList().filter { (_, caps) ->
+        //     caps.hasLiteRT && caps.memoryMB > 4000 && caps.storageMB > 1000
+        // }.sortedWith(
+        //     compareByDescending<Pair<Int, DeviceCapabilities>> { it.second.memoryMB }
+        //         .thenByDescending { it.second.hasGPUAcceleration }
+        //         .thenByDescending { it.second.storageMB }
+        // )
         
-        if (literTCapableNodes.isNotEmpty()) {
-            assignments["litert"] = MLServerAssignment(
-                serviceType = "litert",
-                primaryServerId = literTCapableNodes[0].first,
-                backupServerIds = literTCapableNodes.drop(1).take(2).map { it.first },
-                loadBalance = false // LiteRT models are larger, less suitable for load balancing
-            )
-        }
+        // if (literTCapableNodes.isNotEmpty()) {
+        //     assignments["litert"] = MLServerAssignment(
+        //         serviceType = "litert",
+        //         primaryServerId = literTCapableNodes[0].first,
+        //         backupServerIds = literTCapableNodes.drop(1).take(2).map { it.first },
+        //         loadBalance = false // LiteRT models are larger, less suitable for load balancing
+        //     )
+        // }
         
         // Specialized assignments for specific model types
         val highEndNodes = capabilities.toList().filter { (_, caps) ->

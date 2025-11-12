@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute.model
+package com.ustadmobile.meshrabiya.service.compute.model
 
 /**
  * Resource requirements for a distributed compute service or task.

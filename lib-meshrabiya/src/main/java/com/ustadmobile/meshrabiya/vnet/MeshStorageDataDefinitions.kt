@@ -13,7 +13,7 @@ data class MeshChunk(
     val fileName: String,
     val relativePath: String,
     val hash: String,
-    val storedAt: Long = System.currentTimeMillis()
+    val storedAt: Long = System.currentTimeMillis(),
     // Permission-related fields
     val recipientKeyIds: List<Long> = emptyList(), // PGPPublicKey.keyID values
     val sessionKeys: Map<Long, ByteArray> = emptyMap() // keyID -> encrypted session key

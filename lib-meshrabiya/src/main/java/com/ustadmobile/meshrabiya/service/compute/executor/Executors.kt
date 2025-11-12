@@ -1,7 +1,7 @@
-package org.torproject.android.service.compute.executor
+package com.ustadmobile.meshrabiya.service.compute.executor
 
-import org.torproject.android.service.compute.scheduler.*
-import org.torproject.android.service.compute.model.*
+import com.ustadmobile.meshrabiya.service.compute.scheduler.*
+import com.ustadmobile.meshrabiya.service.compute.model.*
 
 /**
  * Interface for executing Python compute tasks.
@@ -13,9 +13,9 @@ interface PythonExecutor {
 /**
  * Interface for executing LiteRT compute tasks.
  */
-interface LiteRTEngine {
-    suspend fun executeTask(task: ComputeTask.LiteRTTask): TaskExecutionResult
-}
+// interface LiteRTEngine {
+//     suspend fun executeTask(task: ComputeTask.LiteRTTask): TaskExecutionResult
+// }
 
 /**
  * Request for executing a compute task remotely.

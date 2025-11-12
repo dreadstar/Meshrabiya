@@ -48,6 +48,19 @@ object MeshrabiyaConstants {
     fun getNoChunking(): Boolean = prefs?.getBoolean("no_chunking", false) ?: false
     fun setNoChunking(noChunking: Boolean) = prefs?.edit()?.putBoolean("no_chunking", noChunking)?.apply()
 
+    // Replication configuration for distributed storage
+    fun getMinimalReplicaCount(): Int = prefs?.getInt("minimal_replica_count", 1) ?: 1
+    fun setMinimalReplicaCount(count: Int) = prefs?.edit()?.putInt("minimal_replica_count", count)?.apply()
+
+    fun getStandardReplicaCount(): Int = prefs?.getInt("standard_replica_count", 3) ?: 3
+    fun setStandardReplicaCount(count: Int) = prefs?.edit()?.putInt("standard_replica_count", count)?.apply()
+
+    fun getHighReplicaCount(): Int = prefs?.getInt("high_replica_count", 5) ?: 5
+    fun setHighReplicaCount(count: Int) = prefs?.edit()?.putInt("high_replica_count", count)?.apply()
+
+    fun getCriticalReplicaCount(): Int = prefs?.getInt("critical_replica_count", 7) ?: 7
+    fun setCriticalReplicaCount(count: Int) = prefs?.edit()?.putInt("critical_replica_count", count)?.apply()
+
 
     private const val DEFAULT_ECOSYSTEM_GOSSIP_PORT = 8647
     fun getEcosystemGossipPort(): Int {

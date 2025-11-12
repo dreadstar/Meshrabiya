@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute.model
+package com.ustadmobile.meshrabiya.service.compute.model
 
 /**
  * Enum representing the type of distributed job.
@@ -63,11 +63,11 @@ enum class PythonLibrary {
 /**
  * Configuration for LiteRT model execution.
  */
-data class LiteRTConfig(
-    val useGPU: Boolean = false,
-    val useNNAPI: Boolean = false,
-    val numThreads: Int = 1
-)
+// data class LiteRTConfig(
+//     val useGPU: Boolean = false,
+//     val useNNAPI: Boolean = false,
+//     val numThreads: Int = 1
+// )
 
 /**
  * Configuration for inference execution.

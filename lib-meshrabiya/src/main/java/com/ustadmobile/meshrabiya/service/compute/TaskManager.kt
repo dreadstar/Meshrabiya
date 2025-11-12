@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 import java.util.UUID
 import kotlinx.coroutines.*
@@ -13,9 +13,9 @@ import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageOp
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.RetentionPolicy
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageRequest
-import org.torproject.android.service.MeshServiceCoordinator
-import org.torproject.android.OrbotApp
-import org.torproject.android.service.storage.StorageDropFolderManager
+import com.ustadmobile.meshrabiya.service.MeshServiceCoordinator
+import com.ustadmobile.meshrabiya.OrbotApp
+import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import kotlinx.serialization.json.Json
 
 /**
@@ -251,11 +251,7 @@ object TaskManager {
         if (fileBytes != null) {
             val dropFolderManager = StorageDropFolderManager.getInstance(context)
             val dropFolderPath = dropFolderManager.getSelectedFolderPath() ?: destinationFolder
-            val distributedStorageManager = DistributedStorageManager(
-                context,
-                getMeshNetworkInterface(),
-                getStorageConfiguration()
-            )
+            val distributedStorageManager = DistributedStorageManager.getInstance(context)
             val sandboxPolicy = StorageAccessPolicy(
                 allowedOperations = setOf(StorageOperation.WRITE, StorageOperation.READ),
                 retentionPolicy = RetentionPolicy.PERSISTENT,

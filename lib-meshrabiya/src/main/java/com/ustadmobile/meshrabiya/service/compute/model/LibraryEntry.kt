@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute.model
+package com.ustadmobile.meshrabiya.service.compute.model
 
 /**
  * Represents a search result for a service in the mesh ecosystem.
@@ -53,16 +53,16 @@ sealed class LibraryEntry {
     /**
      * LiteRT service entry.
      */
-    data class LiteRTServiceEntry(
-        override val serviceId: String,
-        val modelId: String,
-        val modelConfig: LiteRTConfig,
-        override val manifest: ServiceManifest,
-        override val executionProfile: ExecutionProfile,
-        override val inputs: List<ServiceInput>,
-        override val outputs: List<ServiceOutput>,
-        override val capabilities: Set<ServiceCapability>
-    ) : LibraryEntry()
+    // data class LiteRTServiceEntry(
+    //     override val serviceId: String,
+    //     val modelId: String,
+    //     val modelConfig: LiteRTConfig,
+    //     override val manifest: ServiceManifest,
+    //     override val executionProfile: ExecutionProfile,
+    //     override val inputs: List<ServiceInput>,
+    //     override val outputs: List<ServiceOutput>,
+    //     override val capabilities: Set<ServiceCapability>
+    // ) : LibraryEntry()
 
     /**
      * Hybrid service entry.
@@ -70,7 +70,7 @@ sealed class LibraryEntry {
     data class HybridServiceEntry(
         override val serviceId: String,
         val pythonPreprocessing: PythonServiceEntry?,
-        val liteRTInference: LiteRTServiceEntry,
+        // val liteRTInference: LiteRTServiceEntry,
         val pythonPostprocessing: PythonServiceEntry?,
         override val manifest: ServiceManifest,
         override val executionProfile: ExecutionProfile,
@@ -138,11 +138,11 @@ enum class PythonLibrary {
 /**
  * Configuration for LiteRT model execution.
  */
-data class LiteRTConfig(
-    val useGPU: Boolean = false,
-    val useNNAPI: Boolean = false,
-    val numThreads: Int = 1
-)
+// data class LiteRTConfig(
+//     val useGPU: Boolean = false,
+//     val useNNAPI: Boolean = false,
+//     val numThreads: Int = 1
+// )
 
 /**
  * Configuration for inference execution.

@@ -558,7 +558,7 @@ class AndroidVirtualNode(
         val startTime = System.currentTimeMillis()
         return try {
             val possibleClasses = listOf(
-                "org.torproject.android.service.mesh.MeshTrafficRouter",
+                "com.ustadmobile.meshrabiya.service.mesh.MeshTrafficRouter",
                 "com.ustadmobile.orbotmeshrabiyaintegration.interfaces.MeshTrafficRouter",
                 "com.ustadmobile.meshrabiya.routing.MeshTrafficRouter"
             )

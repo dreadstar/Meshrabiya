@@ -34,7 +34,7 @@ class MobileServiceSandbox(
         private const val TAG = "MobileServiceSandbox"
         
         // Lightweight approach - leverage Android's existing security model
-        private const val SERVICE_PROCESS_NAME = "org.torproject.android:service_execution"
+        private const val SERVICE_PROCESS_NAME = "com.ustadmobile.meshrabiya:service_execution"
         private const val MAX_SERVICE_MEMORY_MB = 256
         private const val SERVICE_EXECUTION_TIMEOUT_MS = 30_000L
     }

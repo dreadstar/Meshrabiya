@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 // Shared lightweight support types used across compute code.
 data class ResourceRequirements(
@@ -19,11 +19,11 @@ enum class PythonLibrary {
     MATPLOTLIB, SCIPY, REQUESTS, JSON, BASE64
 }
 
-data class LiteRTConfig(
-    val useGPU: Boolean = false,
-    val useNNAPI: Boolean = false,
-    val numThreads: Int = 2
-)
+// data class LiteRTConfig(
+//     val useGPU: Boolean = false,
+//     val useNNAPI: Boolean = false,
+//     val numThreads: Int = 2
+// )
 
 data class InferenceConfig(
     val batchSize: Int = 1,

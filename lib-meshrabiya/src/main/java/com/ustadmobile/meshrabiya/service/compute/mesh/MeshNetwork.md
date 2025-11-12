@@ -1,6 +1,6 @@
-package org.torproject.android.service.compute.mesh
+package com.ustadmobile.meshrabiya.service.compute.mesh
 
-import org.torproject.android.service.compute.model.*
+import com.ustadmobile.meshrabiya.service.compute.model.*
 import com.ustadmobile.meshrabiya.storage.DistributedFileInfo
 import com.ustadmobile.meshrabiya.storage.FileReference
 

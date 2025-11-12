@@ -1,4 +1,4 @@
-package org.torproject.android.service.compute
+package com.ustadmobile.meshrabiya.service.compute
 
 // Conversion helpers between Meshrabiya model types and app compute support types.
 // These provide a guarded, best-effort mapping so the app and Meshrabiya can interoperate
@@ -7,12 +7,11 @@ package org.torproject.android.service.compute
 import com.ustadmobile.meshrabiya.model.ResourceRequirements as UMRR
 import com.ustadmobile.meshrabiya.model.ServiceAnnouncement as UMServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ExecutionProfile as UMExecutionProfile
-import org.torproject.android.service.compute.ServicePackageManager as SPM
-import com.ustadmobile.meshrabiya.storage.DistributedFileInfo as UMDistributedFileInfo
-import com.ustadmobile.meshrabiya.storage.LocalFileReference as UMLocalFileReference
-import com.ustadmobile.meshrabiya.storage.ReplicationLevel as UMReplicationLevel
-import com.ustadmobile.meshrabiya.storage.SyncPriority as UMSyncPriority
-import org.torproject.android.service.compute.IntelligentDistributedComputeService
+import com.ustadmobile.meshrabiya.service.compute.ServicePackageManager as SPM
+import com.ustadmobile.meshrabiya.storage.DistributedStorageManager.FileTransportDTO as UMFileTransportDTO
+import com.ustadmobile.meshrabiya.vnet.ReplicationLevel as UMReplicationLevel
+import com.ustadmobile.meshrabiya.vnet.SyncPriority as UMSyncPriority
+import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
 import java.io.File
 
 /**
@@ -67,23 +66,21 @@ fun ResourceRequirements.toMeshrabiya(): UMRR {
 }
 
 /**
- * Map Meshrabiya DistributedFileInfo -> app FileMetadata / SharedFileMetadata
+ * Map Meshrabiya FileTransportDTO -> app FileMetadata / SharedFileMetadata
  */
-fun UMDistributedFileInfo.toAppFileMetadata(): DistributedStorageAgent.FileMetadata {
-    val localRef = this.localReference
+fun UMFileTransportDTO.toAppFileMetadata(): DistributedStorageAgent.FileMetadata {
     val replicationFactor = when (this.replicationLevel) {
         UMReplicationLevel.MINIMAL -> 1
         UMReplicationLevel.STANDARD -> 3
         UMReplicationLevel.HIGH -> 5
         UMReplicationLevel.CRITICAL -> 7
-        else -> 1
     }
 
     return DistributedStorageAgent.FileMetadata(
-        fileId = localRef.id,
+        fileId = this.fileId,
         originalName = this.path.substringAfterLast('/'),
-        sizeBytes = 0L, // size not provided by DistributedFileInfo; unknown
-        checksumMD5 = localRef.checksum,
+        sizeBytes = 0L, // size not provided in transport DTO
+        checksumMD5 = this.checksum,
         storedTimestamp = this.createdAt,
         accessCount = 0L,
         lastAccessTimestamp = this.lastAccessed,
@@ -93,16 +90,10 @@ fun UMDistributedFileInfo.toAppFileMetadata(): DistributedStorageAgent.FileMetad
 }
 
 /**
- * Map app StorageRequest -> Meshrabiya DistributedFileInfo (transport-friendly)
- * This creates a lightweight DistributedFileInfo that can be sent to other nodes
+ * Map app StorageRequest -> Meshrabiya FileTransportDTO (transport-friendly)
+ * This creates a lightweight DTO that can be sent to other nodes
  */
-fun DistributedStorageAgent.StorageRequest.toDistributedFileInfo(): UMDistributedFileInfo {
-    val localRef = UMLocalFileReference(
-        id = this.fileId,
-        localPath = "",
-        checksum = ""
-    )
-
+fun DistributedStorageAgent.StorageRequest.toFileTransportDTO(): UMFileTransportDTO {
     val replLevel = when (this.replicationFactor) {
         1 -> UMReplicationLevel.MINIMAL
         3 -> UMReplicationLevel.STANDARD
@@ -118,36 +109,32 @@ fun DistributedStorageAgent.StorageRequest.toDistributedFileInfo(): UMDistribute
         DistributedStorageAgent.StoragePriority.CRITICAL -> UMSyncPriority.CRITICAL
     }
 
-    return UMDistributedFileInfo(
+    return UMFileTransportDTO(
         path = this.fileName,
-        localReference = localRef,
+        fileId = this.fileId,
         replicationLevel = replLevel,
         priority = priority,
         createdAt = System.currentTimeMillis(),
         lastAccessed = 0L,
-        meshReferences = this.tags.toList()
+        meshReferences = this.tags.toList(),
+        checksum = ""
     )
 }
 
 /**
- * Convert a TaskExecutionRequest into a Meshrabiya DistributedFileInfo for transport.
+ * Convert a TaskExecutionRequest into a Meshrabiya FileTransportDTO for transport.
  * The caller should provide the localPath where the request payload has been written.
  */
-fun IntelligentDistributedComputeService.TaskExecutionRequest.toDistributedFileInfo(localPath: String): UMDistributedFileInfo {
-    val localRef = UMLocalFileReference(
-        id = this.taskId,
-        localPath = localPath,
-        checksum = ""
-    )
-
-    return UMDistributedFileInfo(
+fun IntelligentDistributedComputeService.TaskExecutionRequest.toFileTransportDTO(localPath: String): UMFileTransportDTO {
+    return UMFileTransportDTO(
         path = "compute/requests/${this.taskId}",
-        localReference = localRef,
+        fileId = this.taskId,
         replicationLevel = UMReplicationLevel.STANDARD,
         priority = UMSyncPriority.NORMAL,
         createdAt = System.currentTimeMillis(),
         lastAccessed = 0L,
-        meshReferences = emptyList()
+        meshReferences = emptyList(),
+        checksum = ""
     )
 }
 

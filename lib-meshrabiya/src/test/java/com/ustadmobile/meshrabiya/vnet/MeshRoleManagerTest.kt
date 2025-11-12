@@ -19,6 +19,7 @@ class MeshRoleManagerTest {
     fun setup() {
         context = org.mockito.Mockito.mock(Context::class.java)
         virtualNode = object : VirtualNode(port = 12345) {
+            override fun getContext(): Context? = null  // Return null in tests to avoid service initialization
             override val meshrabiyaWifiManager = object : com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager {
                 override val state = emptyFlow<MeshrabiyaWifiState>()
                 override val is5GhzSupported: Boolean = true
@@ -60,6 +61,7 @@ class MeshRoleManagerTest {
     @Test
     fun testRoleUpdateWithLowFitness() {
         val lowFitnessNode = object : VirtualNode(port = 12345) {
+            override fun getContext(): Context? = null  // Return null in tests
             override val meshrabiyaWifiManager = object : com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager {
                 override val state = emptyFlow<MeshrabiyaWifiState>()
                 override val is5GhzSupported: Boolean = true
@@ -90,6 +92,7 @@ class MeshRoleManagerTest {
     @Test
     fun testRoleUpdateWithBridgeFitness() {
         val bridgeFitnessNode = object : VirtualNode(port = 12345) {
+            override fun getContext(): Context? = null  // Return null in tests
             override val meshrabiyaWifiManager = object : com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManager {
                 override val state = emptyFlow<MeshrabiyaWifiState>()
                 override val is5GhzSupported: Boolean = true
