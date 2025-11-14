@@ -6,8 +6,11 @@ import kotlinx.coroutines.flow.Flow
 import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+// UNUSED SCHEDULER IMPORTS - Commented 2025-11-12
+// Scheduler infrastructure not used in Phase 3-4 ML-capable compute implementation
+// Phase 3-4 uses direct broadcast-response pattern (processTaskRequest → node selection)
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import com.ustadmobile.meshrabiya.model.MeshState
 import com.ustadmobile.meshrabiya.model.NetworkInfo
@@ -86,8 +89,14 @@ interface MeshrabiyaApi {
     fun addTask(requestParams: Map<String, Any>): ApiResult
     fun startTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit)
-    fun getTaskStatus(taskId: String): ExecutionPlan?
-    fun getAllTasks(): List<ComputeTask>
+    
+    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // These methods reference scheduler types (ExecutionPlan, ComputeTask) that are unused in Phase 3-4
+    // Phase 3-4 uses IntelligentDistributedComputeService.processTaskRequest() with direct node selection
+    // If scheduler needed in future, uncomment these and restore ExecutionPlan/ComputeTask imports
+    // fun getTaskStatus(taskId: String): ExecutionPlan?
+    // fun getAllTasks(): List<ComputeTask>
+    
     fun getJobTypes(): List<JobType>
 
     // --- Event Registration ---
@@ -95,7 +104,11 @@ interface MeshrabiyaApi {
     fun setOnFileStored(handler: (fileId: String, file: File) -> Unit)
     fun setOnPermissionUpdated(handler: (fileId: String, success: Boolean) -> Unit)
     fun setOnOperationFailed(handler: (operation: String, error: Throwable) -> Unit)
-    fun setOnTaskCompleted(handler: (taskId: String, result: ExecutionPlan) -> Unit)
+    
+    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // This callback uses ExecutionPlan type from unused scheduler infrastructure
+    // fun setOnTaskCompleted(handler: (taskId: String, result: ExecutionPlan) -> Unit)
+    
     fun setOnFileShared(handler: (fileId: String, recipientId: String) -> Unit)
     fun setOnFileAddedToDropFolder(handler: (fileId: String, file: File) -> Unit)
 

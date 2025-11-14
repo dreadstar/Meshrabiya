@@ -146,6 +146,9 @@ sealed class MeshEcosystemMessage(
                 )
                  "ComputeTaskRequest" -> ComputeTaskRequestMessage.fromUnpacker(unpacker)
                  "ComputeNodeResponse" -> ComputeNodeResponseMessage.fromUnpacker(unpacker)
+                 "TaskCompleted" -> TaskCompletedMessage.fromUnpacker(unpacker)
+                 "TaskScheduled" -> TaskScheduledMessage.fromUnpacker(unpacker)
+                 "TaskAssignment" -> TaskAssignmentMessage.fromUnpacker(unpacker)
                 else -> throw IllegalArgumentException("Unknown MeshEcosystemMessage type: $type")
             }
             unpacker.close()
@@ -431,3 +434,291 @@ data class ComputeNodeResponseMessage(
         }
     }
 }
+
+/**
+ * TaskCompletedMessage: Notification that a distributed task has completed execution.
+ * Includes execution statistics, error information if failed, and result storage references.
+ * 
+ * Phase 1: Task Execution Layer - Task completion notification protocol
+ */
+data class TaskCompletedMessage(
+    val taskId: String,
+    val executorNodeId: String,
+    val status: String,  // "SUCCESS", "FAILED", "TIMEOUT"
+    val executionStats: ExecutionStats,
+    val executionError: ExecutionError? = null,
+    val resultStorageRefs: List<String> = emptyList(),
+    val timestamp: Long = System.currentTimeMillis()
+) : MeshEcosystemMessage("TaskCompleted") {
+    
+    data class ExecutionStats(
+        val executionTimeMs: Long,
+        val cpuTimeMs: Long,
+        val memoryPeakBytes: Long,
+        val diskReadBytes: Long,
+        val diskWriteBytes: Long,
+        val networkSentBytes: Long = 0L,
+        val networkRecvBytes: Long = 0L
+    )
+    
+    data class ExecutionError(
+        val errorType: String,  // Maps to ExecutionErrorType
+        val errorMessage: String,
+        val errorCode: Int = 0,
+        val stackTrace: String? = null
+    )
+    
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(taskId)
+        packer.packString(executorNodeId)
+        packer.packString(status)
+        
+        // Pack execution stats
+        packer.packLong(executionStats.executionTimeMs)
+        packer.packLong(executionStats.cpuTimeMs)
+        packer.packLong(executionStats.memoryPeakBytes)
+        packer.packLong(executionStats.diskReadBytes)
+        packer.packLong(executionStats.diskWriteBytes)
+        packer.packLong(executionStats.networkSentBytes)
+        packer.packLong(executionStats.networkRecvBytes)
+        
+        // Pack execution error (nullable)
+        if (executionError != null) {
+            packer.packBoolean(true)
+            packer.packString(executionError.errorType)
+            packer.packString(executionError.errorMessage)
+            packer.packInt(executionError.errorCode)
+            packer.packString(executionError.stackTrace ?: "")
+        } else {
+            packer.packBoolean(false)
+        }
+        
+        // Pack result storage references
+        packer.packArrayHeader(resultStorageRefs.size)
+        resultStorageRefs.forEach { packer.packString(it) }
+        
+        packer.packLong(timestamp)
+        packer.close()
+        return packer.toByteArray()
+    }
+    
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): TaskCompletedMessage {
+            val taskId = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackString()
+            val status = unpacker.unpackString()
+            
+            // Unpack execution stats
+            val executionStats = ExecutionStats(
+                executionTimeMs = unpacker.unpackLong(),
+                cpuTimeMs = unpacker.unpackLong(),
+                memoryPeakBytes = unpacker.unpackLong(),
+                diskReadBytes = unpacker.unpackLong(),
+                diskWriteBytes = unpacker.unpackLong(),
+                networkSentBytes = unpacker.unpackLong(),
+                networkRecvBytes = unpacker.unpackLong()
+            )
+            
+            // Unpack execution error (nullable)
+            val executionError = if (unpacker.unpackBoolean()) {
+                ExecutionError(
+                    errorType = unpacker.unpackString(),
+                    errorMessage = unpacker.unpackString(),
+                    errorCode = unpacker.unpackInt(),
+                    stackTrace = unpacker.unpackString().takeIf { it.isNotEmpty() }
+                )
+            } else null
+            
+            // Unpack result storage references
+            val resultStorageRefs = List(unpacker.unpackArrayHeader()) {
+                unpacker.unpackString()
+            }
+            
+            val timestamp = unpacker.unpackLong()
+            
+            return TaskCompletedMessage(
+                taskId, executorNodeId, status, executionStats, 
+                executionError, resultStorageRefs, timestamp
+            )
+        }
+    }
+}
+
+/**
+ * TaskScheduledMessage: Notification that a task has been scheduled for execution on a specific node.
+ * Sent from orchestrator/scheduler to executor node and requester for task tracking.
+ * 
+ * Phase 1: Message Protocol Extensions - Task scheduling notification
+ */
+data class TaskScheduledMessage(
+    val taskId: String,
+    val executorNodeId: String,
+    val requesterNodeId: String,
+    val scheduledAt: Long = System.currentTimeMillis(),
+    val estimatedStartTime: Long? = null,
+    val taskPriority: String = "NORMAL",  // BACKGROUND, NORMAL, HIGH, CRITICAL
+    val resourceAllocation: Map<String, Any> = emptyMap()
+) : MeshEcosystemMessage("TaskScheduled") {
+    
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(taskId)
+        packer.packString(executorNodeId)
+        packer.packString(requesterNodeId)
+        packer.packLong(scheduledAt)
+        
+        // Pack estimatedStartTime (nullable)
+        if (estimatedStartTime != null) {
+            packer.packBoolean(true)
+            packer.packLong(estimatedStartTime)
+        } else {
+            packer.packBoolean(false)
+        }
+        
+        packer.packString(taskPriority)
+        
+        // Pack resource allocation as JSON
+        val resourceJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceAllocation)
+        packer.packString(resourceJson)
+        
+        packer.close()
+        return packer.toByteArray()
+    }
+    
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): TaskScheduledMessage {
+            val taskId = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackString()
+            val requesterNodeId = unpacker.unpackString()
+            val scheduledAt = unpacker.unpackLong()
+            
+            // Unpack estimatedStartTime (nullable)
+            val estimatedStartTime = if (unpacker.unpackBoolean()) {
+                unpacker.unpackLong()
+            } else null
+            
+            val taskPriority = unpacker.unpackString()
+            
+            // Unpack resource allocation from JSON
+            val resourceJson = unpacker.unpackString()
+            val resourceAllocation = Json.decodeFromString(
+                MapSerializer(String.serializer(), AnySerializer), 
+                resourceJson
+            )
+            
+            return TaskScheduledMessage(
+                taskId, executorNodeId, requesterNodeId,
+                scheduledAt, estimatedStartTime, taskPriority, resourceAllocation
+            )
+        }
+    }
+}
+
+/**
+ * TaskAssignmentMessage: Complete task assignment sent from scheduler to executor node.
+ * Includes all parameters needed for task execution: execution context, resource limits, input files.
+ * 
+ * Phase 1: Message Protocol Extensions - Comprehensive task assignment
+ */
+data class TaskAssignmentMessage(
+    val taskId: String,
+    val executorNodeId: String,
+    val requesterNodeId: String,
+    val taskType: String,  // PYTHON, JAVA, JVM, JAVASCRIPT, ML_NATIVE, WORKFLOW
+    val jobType: String,   // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
+    val executionContext: Map<String, Any>,  // Includes working directory, environment vars, etc.
+    val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
+    val inputFiles: List<Map<String, String>>,  // List of {fileId, storageRef, accessScope}
+    val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
+    val priority: String = "NORMAL",
+    val assignedAt: Long = System.currentTimeMillis()
+) : MeshEcosystemMessage("TaskAssignment") {
+    
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(taskId)
+        packer.packString(executorNodeId)
+        packer.packString(requesterNodeId)
+        packer.packString(taskType)
+        packer.packString(jobType)
+        
+        // Pack execution context as JSON
+        val contextJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), executionContext)
+        packer.packString(contextJson)
+        
+        // Pack resource limits as JSON
+        val limitsJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceLimits)
+        packer.packString(limitsJson)
+        
+        // Pack input files array
+        packer.packArrayHeader(inputFiles.size)
+        inputFiles.forEach { fileMap ->
+            val fileJson = Json.encodeToString(MapSerializer(String.serializer(), String.serializer()), fileMap)
+            packer.packString(fileJson)
+        }
+        
+        // Pack output requirements as JSON
+        val outputJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), outputRequirements)
+        packer.packString(outputJson)
+        
+        packer.packString(priority)
+        packer.packLong(assignedAt)
+        
+        packer.close()
+        return packer.toByteArray()
+    }
+    
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): TaskAssignmentMessage {
+            val taskId = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackString()
+            val requesterNodeId = unpacker.unpackString()
+            val taskType = unpacker.unpackString()
+            val jobType = unpacker.unpackString()
+            
+            // Unpack execution context from JSON
+            val contextJson = unpacker.unpackString()
+            val executionContext = Json.decodeFromString(
+                MapSerializer(String.serializer(), AnySerializer),
+                contextJson
+            )
+            
+            // Unpack resource limits from JSON
+            val limitsJson = unpacker.unpackString()
+            val resourceLimits = Json.decodeFromString(
+                MapSerializer(String.serializer(), AnySerializer),
+                limitsJson
+            )
+            
+            // Unpack input files array
+            val inputFiles = List(unpacker.unpackArrayHeader()) {
+                val fileJson = unpacker.unpackString()
+                Json.decodeFromString(
+                    MapSerializer(String.serializer(), String.serializer()),
+                    fileJson
+                )
+            }
+            
+            // Unpack output requirements from JSON
+            val outputJson = unpacker.unpackString()
+            val outputRequirements = Json.decodeFromString(
+                MapSerializer(String.serializer(), AnySerializer),
+                outputJson
+            )
+            
+            val priority = unpacker.unpackString()
+            val assignedAt = unpacker.unpackLong()
+            
+            return TaskAssignmentMessage(
+                taskId, executorNodeId, requesterNodeId, taskType, jobType,
+                executionContext, resourceLimits, inputFiles, outputRequirements,
+                priority, assignedAt
+            )
+        }
+    }
+}
+

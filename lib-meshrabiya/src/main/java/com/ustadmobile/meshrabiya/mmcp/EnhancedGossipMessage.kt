@@ -6,7 +6,9 @@ import java.security.PublicKey
 import java.util.*
 import kotlin.time.Duration
 import java.net.NetworkInterface
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+// UNUSED SCHEDULER IMPORT - Commented 2025-11-12
+// This file defines its own ExecutionPlan at line 745, doesn't need scheduler import
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 /**
  * Base gossip message structure supporting all mesh network features
  */
@@ -264,22 +266,7 @@ data class StoragePayload(
     override val payloadType = "STORAGE"
 }
 
-/**
- * Quorum sensing and coordination
- */
-data class QuorumPayload(
-    val quorumId: String,
-    val action: QuorumAction,
-    val proposingNodeId: String,
-    val memberNodes: Set<String>,
-    val quorumType: QuorumType,
-    val roleAssignments: Map<String, MeshRole>,
-    val consensus: ConsensusState?,
-    val votingRound: Int,
-    val decisionDeadline: Long
-) : GossipPayload() {
-    override val payloadType = "QUORUM"
-}
+
 
 // Supporting Data Classes
 

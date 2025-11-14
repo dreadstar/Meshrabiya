@@ -27,6 +27,8 @@ import org.msgpack.core.MessagePack
 import org.msgpack.core.MessageBufferPacker
 import org.msgpack.core.MessageUnpacker
 import org.bouncycastle.openpgp.PGPPublicKey
+import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
+import kotlinx.serialization.Serializable
 
 // === Storage Types ===
 
@@ -58,6 +60,24 @@ enum class SyncPriority {
     HIGH,       // Priority sync
     CRITICAL    // Always sync immediately
 }
+
+/**
+ * File metadata with permission information
+ * 
+ * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN.md Section 2.4
+ */
+@Serializable
+data class FileMetadata(
+    val fileId: String,
+    val path: String,
+    val sizeBytes: Long,
+    val owner: String,              // Task requester node public key
+    val recipients: List<String>,   // Authorized nodes
+    val accessScope: AccessScope,
+    val createdAt: Long,
+    val lastAccessedBy: String? = null,
+    val encryptionKeyId: String? = null
+)
 
 class DistributedStorageManager(
     private val context: Context,
@@ -119,6 +139,9 @@ class DistributedStorageManager(
     private val storageQuotaManager = StorageQuotaManager(context, storageConfig)
     private val encryptionManager = StorageEncryptionManager()
     private val betaLogger = BetaTestLogger.getInstance(context)
+    
+    // In-memory metadata store (TODO: Persist to disk for production)
+    private val fileMetadataStore = ConcurrentHashMap<String, FileMetadata>()
 
     private val _storageStats = MutableStateFlow(StorageStats())
     val storageStats: StateFlow<StorageStats> = _storageStats.asStateFlow()
@@ -314,11 +337,27 @@ class DistributedStorageManager(
 
     // === PUBLIC API ===
 
+    /**
+     * Store file with permission parameters
+     * 
+     * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN.md Section 2.2
+     * 
+     * @param path File path
+     * @param data File data (will be encrypted)
+     * @param priority Sync priority level
+     * @param replicationLevel Number of replicas across mesh
+     * @param accessScope Permission model (TASK_ISOLATED, SERVICE_SHARED, MESH_GLOBAL)
+     * @param owner Task requester node public key (null = local node)
+     * @param recipients Authorized nodes that can access the file (null = owner only)
+     */
     suspend fun storeFile(
         path: String,
         data: ByteArray,
         priority: SyncPriority = SyncPriority.NORMAL,
-        replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD
+        replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
+        accessScope: AccessScope = AccessScope.TASK_ISOLATED,
+        owner: String? = null,
+        recipients: List<String>? = null
     ): FileReference? = coroutineScope {
         betaLogger.log(LogLevel.DEBUG, "Storage", "Write operation started: $path (${data.size} bytes)")
 
@@ -327,9 +366,29 @@ class DistributedStorageManager(
             throw StorageQuotaExceededException("Insufficient storage quota")
         }
 
+        // === NEW: Prepare permission metadata ===
+        val effectiveOwner = owner ?: meshNetworkInterface.getLocalNodeId()
+        val effectiveRecipients = when (accessScope) {
+            AccessScope.TASK_ISOLATED -> recipients ?: listOf(effectiveOwner)
+            AccessScope.SERVICE_SHARED -> recipients ?: emptyList() // Service members loaded separately
+            AccessScope.MESH_GLOBAL -> emptyList() // Public access (no specific recipients)
+        }
+        
+        betaLogger.log(
+            LogLevel.DEBUG,
+            "DistributedStorage",
+            "Starting file storage: $path, size=${data.size}B, owner=$effectiveOwner, " +
+            "accessScope=$accessScope, recipients=${effectiveRecipients.size}"
+        )
+
+        // === NEW: Hybrid encryption with per-recipient key encryption ===
         betaLogger.log(LogLevel.DEBUG, "DistributedStorage", "Starting encryption for file: $path, size=${data.size}B")
         val encryptStartTime = System.currentTimeMillis()
-        val encryptedData = encryptionManager.encrypt(data)
+        val encryptedData = encryptionManager.encryptWithRecipients(
+            data = data,
+            owner = effectiveOwner,
+            recipients = effectiveRecipients
+        )
         val encryptDuration = System.currentTimeMillis() - encryptStartTime
         betaLogger.log(
             LogLevel.DEBUG,
@@ -408,6 +467,24 @@ class DistributedStorageManager(
             // Update chunk and node tracking in StagedSyncManager
             stagedSyncManager.updateChunkIds(path, chunks.map { it.chunkId })
             stagedSyncManager.updateMeshNodeIds(path, chunkReplicaTracker.values.flatten().toList())
+
+            // === NEW: Store metadata with permissions ===
+            val fileMetadata = FileMetadata(
+                fileId = fileId,
+                path = path,
+                sizeBytes = data.size.toLong(),
+                owner = effectiveOwner,
+                recipients = effectiveRecipients,
+                accessScope = accessScope,
+                createdAt = System.currentTimeMillis()
+            )
+            fileMetadataStore[fileId] = fileMetadata
+            betaLogger.log(
+                LogLevel.DEBUG,
+                "DistributedStorage",
+                "File metadata stored for $fileId: owner=$effectiveOwner, " +
+                "accessScope=$accessScope, recipients=${effectiveRecipients.size}"
+            )
 
             updateStorageStats()
             betaLogger.log(LogLevel.DEBUG, "Storage", "Write operation completed: $path")
@@ -552,6 +629,16 @@ class DistributedStorageManager(
     )
 
     // Removed: DistributedFileInfo - now using StagedSyncManager.SyncedFile
+    
+    /**
+     * Get file metadata by fileId
+     * 
+     * @param fileId File ID (SHA-256 hash)
+     * @return FileMetadata if exists, null otherwise
+     */
+    fun getFileMetadata(fileId: String): FileMetadata? {
+        return fileMetadataStore[fileId]
+    }
     
     /**
      * DTO for network transport of file metadata.

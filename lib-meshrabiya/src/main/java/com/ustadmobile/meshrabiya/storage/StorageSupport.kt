@@ -118,6 +118,75 @@ class StorageEncryptionManager {
         }
     }
 
+    /**
+     * Hybrid encryption with per-recipient key encryption
+     * 
+     * Implements the encryption design from STORAGE_ENCRYPTION+PLAN.md:
+     * 1. Generate random symmetric key (chunk key) for this file
+     * 2. Encrypt file data with chunk key using AES-256
+     * 3. Encrypt chunk key for each recipient using their derived key
+     * 4. Bundle: [encrypted data length][encrypted data][recipient count][per-recipient encrypted keys]
+     * 
+     * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN.md Section 2.3
+     * 
+     * @param data Raw file data to encrypt
+     * @param owner Task requester node ID
+     * @param recipients List of authorized node IDs
+     * @return Bundled encrypted data with per-recipient keys
+     */
+    fun encryptWithRecipients(
+        data: ByteArray,
+        owner: String,
+        recipients: List<String>
+    ): ByteArray {
+        // 1. Generate random symmetric key for this chunk
+        val chunkKey = ByteArray(AES_KEY_SIZE)
+        SecureRandom().nextBytes(chunkKey)
+        
+        // 2. Encrypt data with chunk key
+        val cipher = Cipher.getInstance(AES_TRANSFORMATION)
+        val iv = ByteArray(IV_SIZE)
+        SecureRandom().nextBytes(iv)
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(chunkKey, "AES"), IvParameterSpec(iv))
+        val encryptedData = cipher.doFinal(data)
+        val encryptedDataWithIv = iv + encryptedData
+        
+        // 3. Encrypt chunk key for each recipient (using deterministic key derivation)
+        val encryptedKeys = recipients.map { recipientId ->
+            val recipientKeyId = recipientId.hashCode().toLong()
+            val recipientKey = deriveKeyForRecipient(recipientKeyId)
+            val keyIv = ByteArray(IV_SIZE)
+            SecureRandom().nextBytes(keyIv)
+            val keyCipher = Cipher.getInstance(AES_TRANSFORMATION)
+            keyCipher.init(Cipher.ENCRYPT_MODE, recipientKey, IvParameterSpec(keyIv))
+            val encryptedKey = keyCipher.doFinal(chunkKey)
+            keyIv + encryptedKey
+        }
+        
+        // 4. Bundle: [encrypted data length (4 bytes)][encrypted data][recipient count (4 bytes)][recipient ID length][recipient ID][encrypted key]...
+        val buffer = java.nio.ByteBuffer.allocate(
+            4 + encryptedDataWithIv.size + 
+            4 + recipients.sumOf { 4 + it.toByteArray().size + encryptedKeys[recipients.indexOf(it)].size }
+        )
+        
+        // Write encrypted data
+        buffer.putInt(encryptedDataWithIv.size)
+        buffer.put(encryptedDataWithIv)
+        
+        // Write recipient count
+        buffer.putInt(recipients.size)
+        
+        // Write per-recipient encrypted keys
+        recipients.forEachIndexed { index, recipientId ->
+            val recipientIdBytes = recipientId.toByteArray()
+            buffer.putInt(recipientIdBytes.size)
+            buffer.put(recipientIdBytes)
+            buffer.put(encryptedKeys[index])
+        }
+        
+        return buffer.array()
+    }
+
     private fun generateSecretKey(): SecretKey {
         val keyBytes = ByteArray(AES_KEY_SIZE)
         SecureRandom().nextBytes(keyBytes)

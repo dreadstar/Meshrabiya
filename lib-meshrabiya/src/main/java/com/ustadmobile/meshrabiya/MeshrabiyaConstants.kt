@@ -80,4 +80,8 @@ object MeshrabiyaConstants {
     fun setConnectionPoolSize(size: Int) {
         prefs?.edit()?.putInt("connection_pool_size", size)?.apply()
     }
+
+    // Phase 1: Task completion retry constants
+    const val TASK_COMPLETION_RETRY_PERIOD_MS = 30000L  // 30 seconds
+    const val TASK_COMPLETION_RETRY_INTERVAL_MS = 5000L // 5 seconds
 }

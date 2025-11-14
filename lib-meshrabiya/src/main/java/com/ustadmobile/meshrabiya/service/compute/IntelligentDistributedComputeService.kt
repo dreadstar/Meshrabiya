@@ -18,7 +18,8 @@ import androidx.appcompat.app.AlertDialog
 import android.widget.ArrayAdapter
 // import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import java.util.concurrent.ConcurrentHashMap
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+// UNUSED SCHEDULER IMPORT - Commented 2025-11-12
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 
 /**
  * Main service class for intelligent distributed compute.
@@ -36,7 +37,8 @@ class IntelligentDistributedComputeService(
     private val betaLogger: BetaTestLogger? = null
 ) {
     // --- Event Handlers ---
-    var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
+    // UNUSED SCHEDULER CALLBACK - Commented 2025-11-12
+    // var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     var onTaskFailed: ((taskId: String, error: Throwable) -> Unit)? = null
     private var meshEcosystemListener: MeshEcosystemListener? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())

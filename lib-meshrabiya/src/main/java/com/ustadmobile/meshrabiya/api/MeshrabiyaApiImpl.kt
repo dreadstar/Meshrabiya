@@ -8,8 +8,10 @@ import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
-import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
+// UNUSED SCHEDULER IMPORTS - Commented 2025-11-12
+// Scheduler infrastructure not used in Phase 3-4 ML-capable compute implementation
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
 import com.ustadmobile.meshrabiya.model.MeshState
@@ -267,13 +269,18 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit) {
         intelligentDistributedComputeService?.cancelTask(taskId, callback)
     }
-    override fun getTaskStatus(taskId: String): ExecutionPlan? = intelligentDistributedComputeService?.getTaskStatus(taskId)
-    override fun getAllTasks(): List<ComputeTask> = intelligentDistributedComputeService?.getAllTasks() ?: emptyList()
-    override fun getJobTypes(): List<JobType> = intelligentDistributedComputeService?.getJobTypes() ?: emptyList()
-
-    // --- Event Registration ---
+    
+    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // These implementations reference scheduler types that are unused in Phase 3-4
+    // override fun getTaskStatus(taskId: String): ExecutionPlan? = intelligentDistributedComputeService?.getTaskStatus(taskId)
+    // override fun getAllTasks(): List<ComputeTask> = intelligentDistributedComputeService?.getAllTasks() ?: emptyList()
     private var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
     private var onFileStored: ((fileId: String, file: File) -> Unit)? = null
+    private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
+    private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
+    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
+    private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
     private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
     private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
     private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
@@ -288,13 +295,16 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
     override fun setOnPermissionUpdated(handler: (fileId: String, success: Boolean) -> Unit) {
         onPermissionUpdated = handler
-    }
     override fun setOnOperationFailed(handler: (operation: String, error: Throwable) -> Unit) {
         onOperationFailed = handler
     }
-    override fun setOnTaskCompleted(handler: (taskId: String, result: ExecutionPlan) -> Unit) {
-        onTaskCompleted = handler
-    }
+    
+    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // override fun setOnTaskCompleted(handler: (taskId: String, result: ExecutionPlan) -> Unit) {
+    //     onTaskCompleted = handler
+    // }
+    
+    override fun setOnFileShared(handler: (fileId: String, recipientId: String) -> Unit) {
     override fun setOnFileShared(handler: (fileId: String, recipientId: String) -> Unit) {
         onFileShared = handler
     }
