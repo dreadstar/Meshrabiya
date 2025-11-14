@@ -1,5 +1,6 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
+import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics
 import kotlinx.serialization.Serializable
 
 /**
@@ -41,19 +42,6 @@ enum class ServiceCategory {
     COORDINATION    // Task coordination and scheduling
 }
 
-/**
- * ResourceMetrics
- *
- * Estimated resource capacity and usage metrics for a compute node.
- * Used to advertise compute capabilities to the mesh network.
- */
-@Serializable
-data class ResourceMetrics(
-    val ramActualBytes: Long = 0,
-    val ramAverageBytes: Long = 0,
-    val ramPeakBytes: Long,
-    val cpuTimeUsedMs: Long = 0,
-    val cpuPercentage: Float = 0f,
-    val diskIoOperations: Long = 0,
-    val diskStorageUsedBytes: Long
-)
+// Note: ResourceMetrics is now imported from MeshComputeDataDefinitions.kt
+// to avoid redeclaration errors
+

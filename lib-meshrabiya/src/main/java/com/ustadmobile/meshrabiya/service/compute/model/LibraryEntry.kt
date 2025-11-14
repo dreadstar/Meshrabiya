@@ -1,5 +1,9 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
+import com.ustadmobile.meshrabiya.service.compute.PythonLibrary
+import com.ustadmobile.meshrabiya.service.compute.InferenceConfig
+import com.ustadmobile.meshrabiya.service.compute.Precision
+
 /**
  * Represents a search result for a service in the mesh ecosystem.
  */
@@ -121,42 +125,5 @@ sealed class LibraryEntry {
     ) : LibraryEntry()
 }
 
-/**
- * Enum representing supported Python libraries.
- */
-enum class PythonLibrary {
-    OPENCV,
-    NUMPY,
-    JSON,
-    BASE64,
-    SCIPY,
-    PANDAS,
-    TORCH,
-    TENSORFLOW
-}
-
-/**
- * Configuration for LiteRT model execution.
- */
-// data class LiteRTConfig(
-//     val useGPU: Boolean = false,
-//     val useNNAPI: Boolean = false,
-//     val numThreads: Int = 1
-// )
-
-/**
- * Configuration for inference execution.
- */
-data class InferenceConfig(
-    val batchSize: Int = 1,
-    val precision: Precision = Precision.FLOAT32
-)
-
-/**
- * Enum representing inference precision.
- */
-enum class Precision {
-    FLOAT32,
-    FLOAT16,
-    QUANTIZED
-}
+// Note: PythonLibrary, InferenceConfig, and Precision are now imported from SupportTypes.kt
+// to avoid redeclaration errors

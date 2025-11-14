@@ -1,40 +1,21 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
-/**
- * Resource requirements for a distributed compute service or task.
- * Specifies RAM, CPU, storage, battery, thermal, and network constraints.
- */
-data class ResourceRequirements(
-    val minRAMMB: Int,
-    val preferredRAMMB: Int,
-    val cpuIntensity: CPUIntensity,
-    val requiresGPU: Boolean = false,
-    val requiresNPU: Boolean = false,
-    val requiresStorage: Boolean = false,
-    val minStorageGB: Float = 0f,
-    val minBatteryLevel: Int = 0,
-    val thermalConstraints: Set<ThermalState> = setOf(ThermalState.NORMAL),
-    val maxNetworkLatencyMs: Int = 1000
-)
+import com.ustadmobile.meshrabiya.service.compute.ResourceRequirements
+import com.ustadmobile.meshrabiya.service.compute.CPUIntensity
+import com.ustadmobile.meshrabiya.service.compute.ThermalState
 
 /**
- * Enum representing CPU intensity for resource requirements.
+ * This file re-exports ResourceRequirements, CPUIntensity, and ThermalState
+ * from SupportTypes.kt to maintain backward compatibility.
+ * 
+ * Note: The actual definitions are in:
+ * Meshrabiya/lib-meshrabiya/src/main/java/com/ustadmobile/meshrabiya/service/compute/SupportTypes.kt
  */
-enum class CPUIntensity {
-    LIGHT,
-    MODERATE,
-    HEAVY,
-    BURST
-}
 
-/**
- * Enum representing device thermal state.
- */
-enum class ThermalState {
-    NORMAL,
-    WARNING,
-    CRITICAL
-}
+// Re-export types for backward compatibility
+typealias ResourceRequirementsCompat = ResourceRequirements
+typealias CPUIntensityCompat = CPUIntensity  
+typealias ThermalStateCompat = ThermalState
 
 /**
  * Output schema for a compute task.

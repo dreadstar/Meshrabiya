@@ -1,5 +1,7 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
 import kotlinx.serialization.Serializable
 
 /**
@@ -119,32 +121,6 @@ data class TaskResult(
 )
 
 /**
- * FileReference
- *
- * Reference to an output file in distributed storage.
- */
-@Serializable
-data class FileReference(
-    val fileId: String,
-    val fileName: String,
-    val sizeBytes: Long,
-    val checksum: String
-)
-
-/**
- * ExecutionMetrics
- *
- * Resource usage metrics for task execution.
- */
-@Serializable
-data class ExecutionMetrics(
-    val executionTimeMs: Long,
-    val cpuUsagePercent: Float,
-    val peakMemoryBytes: Long,
-    val diskIoBytes: Long
-)
-
-/**
  * TaskCompletionAckMessage
  *
  * Acknowledgment from scheduler to compute node that completion was received.
@@ -154,17 +130,4 @@ data class ExecutionMetrics(
 data class TaskCompletionAckMessage(
     val taskId: String,
     val timestamp: Long = System.currentTimeMillis()
-)
-
-/**
- * ResourceLimits
- *
- * Resource constraints for task execution.
- */
-@Serializable
-data class ResourceLimits(
-    val maxMemoryMB: Int,
-    val maxCpuPercent: Int,
-    val maxExecutionTimeMs: Long,
-    val maxDiskMB: Int
 )

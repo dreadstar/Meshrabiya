@@ -1,5 +1,9 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
+import com.ustadmobile.meshrabiya.service.compute.ResourceRequirements
+import com.ustadmobile.meshrabiya.service.compute.CPUIntensity
+import com.ustadmobile.meshrabiya.service.compute.ThermalState
+
 /**
  * Represents the manifest for a distributed compute service.
  * Describes service type, version, author, signature, runtime requirements, device profile,
@@ -87,38 +91,8 @@ enum class ServiceCapability {
     NDK
 }
 
-/**
- * Resource requirements for a service.
- * This is referenced by ServiceManifest.
- */
-data class ResourceRequirements(
-    val minRAMMB: Int,
-    val preferredRAMMB: Int,
-    val cpuIntensity: CPUIntensity,
-    val requiresGPU: Boolean = false,
-    val requiresNPU: Boolean = false,
-    val requiresStorage: Boolean = false,
-    val minStorageGB: Float = 0f,
-    val minBatteryLevel: Int = 0,
-    val thermalConstraints: Set<ThermalState> = setOf(ThermalState.NORMAL),
-    val maxNetworkLatencyMs: Int = 1000
-)
-
-/**
- * Enum representing CPU intensity for resource requirements.
- */
-enum class CPUIntensity {
-    LIGHT,
-    MODERATE,
-    HEAVY,
-    BURST
-}
-
-/**
- * Enum representing device thermal state.
- */
-enum class ThermalState {
-    NORMAL,
-    WARNING,
-    CRITICAL
-}
+// Note: ResourceRequirements, CPUIntensity, and ThermalState are now imported from SupportTypes.kt
+// to avoid redeclaration errors. Import them as needed:
+// import com.ustadmobile.meshrabiya.service.compute.ResourceRequirements
+// import com.ustadmobile.meshrabiya.service.compute.CPUIntensity
+// import com.ustadmobile.meshrabiya.service.compute.ThermalState

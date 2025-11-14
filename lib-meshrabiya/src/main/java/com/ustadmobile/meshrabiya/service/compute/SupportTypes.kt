@@ -1,6 +1,16 @@
 package com.ustadmobile.meshrabiya.service.compute
 
-// Shared lightweight support types used across compute code.
+/**
+ * SupportTypes
+ * 
+ * Shared lightweight support types used across compute code.
+ * This file consolidates ResourceRequirements, PythonLibrary, InferenceConfig,
+ * Precision, CPUIntensity, and ThermalState definitions.
+ * 
+ * Note: Other files (JobTypes.kt, LibraryEntry.kt, ResourceRequirements.kt, 
+ * ServiceManifest.kt) should import these types instead of redefining them.
+ */
+
 data class ResourceRequirements(
     val minRAMMB: Int,
     val preferredRAMMB: Int,
@@ -16,14 +26,8 @@ data class ResourceRequirements(
 
 enum class PythonLibrary {
     NUMPY, PANDAS, OPENCV, PILLOW, SCIKIT_LEARN,
-    MATPLOTLIB, SCIPY, REQUESTS, JSON, BASE64
+    MATPLOTLIB, SCIPY, REQUESTS, JSON, BASE64, TORCH, TENSORFLOW
 }
-
-// data class LiteRTConfig(
-//     val useGPU: Boolean = false,
-//     val useNNAPI: Boolean = false,
-//     val numThreads: Int = 2
-// )
 
 data class InferenceConfig(
     val batchSize: Int = 1,
@@ -35,3 +39,4 @@ enum class Precision { FLOAT32, FLOAT16, QUANTIZED }
 enum class CPUIntensity { LIGHT, MODERATE, HEAVY, BURST }
 
 enum class ThermalState { COLD, WARM, HOT, CRITICAL }
+

@@ -69,6 +69,11 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
     implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
     implementation("com.google.android.gms:play-services-tasks:18.1.0")
+    
+    // BouncyCastle PGP support for PGPKeypairGenerator.kt (Phase 4)
+    implementation("org.bouncycastle:bcprov-jdk18on:1.75")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.75")
+    implementation("org.bouncycastle:bcpg-jdk18on:1.75")
 
     // Test dependencies
     testImplementation("junit:junit:4.13.2")

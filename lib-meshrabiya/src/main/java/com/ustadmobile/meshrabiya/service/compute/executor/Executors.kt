@@ -4,9 +4,13 @@ import com.ustadmobile.meshrabiya.service.compute.scheduler.*
 import com.ustadmobile.meshrabiya.service.compute.model.*
 
 /**
- * Interface for executing Python compute tasks.
+ * DEPRECATED: Legacy interface for executing Python compute tasks.
+ * Use TaskExecutor interface from Phase 2 implementation instead.
+ * 
+ * See: PythonExecutor.kt (Phase 2 implementation) which implements TaskExecutor
  */
-interface PythonExecutor {
+@Deprecated("Use TaskExecutor interface instead", ReplaceWith("TaskExecutor"))
+interface PythonExecutorLegacy {
     suspend fun executeTask(task: ComputeTask.PythonTask): TaskExecutionResult
 }
 

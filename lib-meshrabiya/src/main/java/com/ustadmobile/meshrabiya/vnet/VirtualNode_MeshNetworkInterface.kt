@@ -2,8 +2,8 @@ package com.ustadmobile.meshrabiya.vnet
 
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager.FileTransportDTO
 import com.ustadmobile.meshrabiya.mmcp.StorageCapabilities
-import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionRequest
-import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionResponse
+import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionRequest
+import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResponse
 import com.ustadmobile.meshrabiya.service.compute.model.StorageOperation
 import com.ustadmobile.meshrabiya.log.MNetLogger
 
