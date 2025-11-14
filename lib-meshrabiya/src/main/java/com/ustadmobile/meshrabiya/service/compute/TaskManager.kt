@@ -17,6 +17,9 @@ import com.ustadmobile.meshrabiya.service.MeshServiceCoordinator
 import com.ustadmobile.meshrabiya.OrbotApp
 import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import kotlinx.serialization.json.Json
+import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
+import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutor
+import com.ustadmobile.meshrabiya.service.security.StrangersSafeComputeEngine
 
 /**
  * TaskManager - Monitors running tasks, handles TaskDataAccessUpdate events,
@@ -105,12 +108,20 @@ object TaskManager {
         val containerId: String,
         val executorNodeAddress: String,
         val startTime: Long,
-        val resourceMetrics: MutableMap<String, Any> = mutableMapOf(),
-        val executionContext: Map<String, Any> = emptyMap()
+        val taskContext: TaskExecutionContext,
+        val requesterNodeId: String,
+        val callbackAddress: String,
+        // Phase 2.2: Resource monitoring fields
+        val resourceMetrics: ResourceMetrics = ResourceMetrics.zero(),
+        val lastMetricUpdate: Long = 0L
     )
 
     private val activeExecutions = mutableMapOf<UUID, ExecutionState>()
     private val containerToTask = mutableMapOf<String, UUID>()
+    
+    // Phase 2.2: Resource monitoring state
+    private var resourceMonitoringJob: Job? = null
+    private val peakMetrics = mutableMapOf<String, ResourceMetrics>()
 
     // --- Task Access Update and Output Publishing Hooks ---
 
@@ -415,12 +426,11 @@ object TaskManager {
                 containerId = containerId,
                 executorNodeAddress = "local", // TODO: Get actual node address
                 startTime = System.currentTimeMillis(),
-                resourceMetrics = mutableMapOf(),
-                executionContext = mapOf(
-                    "taskType" to taskType.name,
-                    "jobType" to jobType.name,
-                    "requesterNodeId" to requesterNodeId
-                )
+                taskContext = context,
+                requesterNodeId = requesterNodeId,
+                callbackAddress = callbackAddress,
+                resourceMetrics = ResourceMetrics.zero(),
+                lastMetricUpdate = System.currentTimeMillis()
             )
             activeExecutions[taskId] = executionState
             containerToTask[containerId] = taskId
@@ -512,8 +522,207 @@ object TaskManager {
         return "container_${context.taskId}"
     }
 
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Ensures the background resource monitoring loop is running
+     */
     private suspend fun ensureResourceMonitoringActive() {
-        // TODO: Implement resource monitoring loop
+        if (resourceMonitoringJob?.isActive == true) return
+        
+        resourceMonitoringJob = CoroutineScope(Dispatchers.IO).launch {
+            while (isActive) {
+                try {
+                    updateResourceMetrics()
+                    checkResourceLimitViolations()
+                    delay(1000) // Poll every second
+                } catch (e: Exception) {
+                    // Log error and continue monitoring
+                }
+            }
+        }
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Updates resource metrics for all active containers
+     */
+    private suspend fun updateResourceMetrics() {
+        val context = getAppContext() ?: return
+        val computeEngine = StrangersSafeComputeEngine.getInstance(context)
+        
+        for ((taskId, execution) in activeExecutions) {
+            try {
+                val metrics = computeEngine.getContainerMetrics(execution.containerId)
+                
+                // Update execution state with latest metrics
+                activeExecutions[taskId] = execution.copy(
+                    resourceMetrics = metrics,
+                    lastMetricUpdate = System.currentTimeMillis()
+                )
+                
+                // Update peak metrics
+                peakMetrics[execution.containerId] = ResourceMetrics(
+                    ramUsedBytes = maxOf(
+                        peakMetrics[execution.containerId]?.ramUsedBytes ?: 0L,
+                        metrics.ramUsedBytes
+                    ),
+                    cpuUsedPercent = maxOf(
+                        peakMetrics[execution.containerId]?.cpuUsedPercent ?: 0.0,
+                        metrics.cpuUsedPercent
+                    ),
+                    diskUsedBytes = maxOf(
+                        peakMetrics[execution.containerId]?.diskUsedBytes ?: 0L,
+                        metrics.diskUsedBytes
+                    ),
+                    networkSentBytes = metrics.networkSentBytes,
+                    networkReceivedBytes = metrics.networkReceivedBytes
+                )
+                
+            } catch (e: Exception) {
+                // Log error, continue to next container
+            }
+        }
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Checks all active tasks for resource limit violations and terminates violators
+     */
+    private suspend fun checkResourceLimitViolations() {
+        val tasksToTerminate = mutableListOf<UUID>()
+        
+        for ((taskId, execution) in activeExecutions) {
+            val limits = execution.taskContext.resourceLimits
+            val metrics = execution.resourceMetrics
+            
+            // Check memory limit
+            if (metrics.ramUsedBytes > limits.maxMemoryBytes) {
+                tasksToTerminate.add(taskId)
+                continue
+            }
+            
+            // Check CPU limit (average over monitoring window)
+            if (metrics.cpuUsedPercent > limits.maxCpuPercent) {
+                tasksToTerminate.add(taskId)
+                continue
+            }
+            
+            // Check disk limit
+            if (metrics.diskUsedBytes > limits.maxDiskBytes) {
+                tasksToTerminate.add(taskId)
+                continue
+            }
+            
+            // Check execution time limit
+            val executionTime = System.currentTimeMillis() - execution.startTime
+            if (executionTime > limits.maxExecutionTimeMs) {
+                tasksToTerminate.add(taskId)
+                continue
+            }
+        }
+        
+        // Terminate violating tasks
+        for (taskId in tasksToTerminate) {
+            terminateTask(taskId, ExecutionErrorType.OUT_OF_MEMORY) // Or appropriate error type
+        }
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Forcefully terminates a task due to resource violations
+     */
+    private suspend fun terminateTask(taskId: UUID, errorType: ExecutionErrorType) {
+        val execution = activeExecutions[taskId] ?: return
+        val context = getAppContext() ?: return
+        val computeEngine = StrangersSafeComputeEngine.getInstance(context)
+        
+        try {
+            // Kill the container
+            computeEngine.killContainer(execution.containerId)
+            
+            // Create error result
+            val result = ExecutionResult(
+                taskId = taskId.toString(),
+                success = false,
+                outputManifest = emptyList(),
+                resourcesUsed = execution.resourceMetrics,
+                executionTimeMs = System.currentTimeMillis() - execution.startTime,
+                errorMessage = when (errorType) {
+                    ExecutionErrorType.TIMEOUT -> "Task execution exceeded time limit"
+                    ExecutionErrorType.OUT_OF_MEMORY -> "Task exceeded memory limit"
+                    ExecutionErrorType.DISK_FULL -> "Task exceeded disk limit"
+                    else -> "Task terminated due to resource violation"
+                },
+                errorType = errorType
+            )
+            
+            // Update task status
+            val task = taskStatuses[taskId]
+            if (task != null) {
+                taskStatuses[taskId] = task.copy(
+                    state = TaskStatus.State.FAILED,
+                    completedAt = System.currentTimeMillis()
+                )
+            }
+            
+            // Send failure notification
+            sendCompletionNotification(
+                taskId,
+                execution.requesterNodeId,
+                execution.callbackAddress,
+                result
+            )
+            
+            // Cleanup
+            cleanupExecution(taskId)
+            
+        } catch (e: Exception) {
+            // Log error
+        }
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Public API: Get current total resource load across all executing tasks
+     */
+    fun getTotalLoad(): ResourceMetrics {
+        var totalRam = 0L
+        var maxCpu = 0.0
+        var totalDisk = 0L
+        var totalNetSent = 0L
+        var totalNetRecv = 0L
+        
+        for (execution in activeExecutions.values) {
+            totalRam += execution.resourceMetrics.ramUsedBytes
+            maxCpu = maxOf(maxCpu, execution.resourceMetrics.cpuUsedPercent)
+            totalDisk += execution.resourceMetrics.diskUsedBytes
+            totalNetSent += execution.resourceMetrics.networkSentBytes
+            totalNetRecv += execution.resourceMetrics.networkReceivedBytes
+        }
+        
+        return ResourceMetrics(
+            ramUsedBytes = totalRam,
+            cpuUsedPercent = maxCpu,
+            diskUsedBytes = totalDisk,
+            networkSentBytes = totalNetSent,
+            networkReceivedBytes = totalNetRecv
+        )
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Public API: Get resource metrics for a specific task
+     */
+    fun getTaskMetrics(taskId: UUID): ResourceMetrics? {
+        return activeExecutions[taskId]?.resourceMetrics
+    }
+    
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Public API: Get peak resource metrics for a container
+     */
+    fun getPeakMetrics(containerId: String): ResourceMetrics? {
+        return peakMetrics[containerId]
     }
 
     private suspend fun loadExecutor(

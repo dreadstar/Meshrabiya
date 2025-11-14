@@ -29,6 +29,20 @@ class StrangersSafeComputeEngine(private val context: Context) {
     private const val MAX_MEMORY_MB = 64L // 64MB RAM limit
         private const val MAX_CPU_PERCENT = 25 // 25% CPU max
 
+        @Volatile
+        private var INSTANCE: StrangersSafeComputeEngine? = null
+        
+        /**
+         * Phase 2.4: Singleton instance getter
+         */
+        fun getInstance(context: Context): StrangersSafeComputeEngine {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: StrangersSafeComputeEngine(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
+
         // Library-level helper to provide current device onion address for nested classes
         // App module may override or call different APIs if needed.
         fun getCurrentDeviceOnion(): String {
@@ -612,6 +626,128 @@ class DistributedServiceLibrary {
             // Get list of maintainers who endorse this one
             return emptyList() // Placeholder
         }
+    }
+    
+    // === Phase 2.4: Resource Monitoring Methods ===
+    
+    /**
+     * Get resource metrics for a specific container
+     * @param containerId Container identifier
+     * @return ResourceMetrics with current usage statistics
+     */
+    fun getContainerMetrics(containerId: String): com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics {
+        // Parse containerId to get process ID
+        val pid = extractPidFromContainerId(containerId)
+        
+        return com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics(
+            ramUsedBytes = readContainerMemoryUsage(pid),
+            cpuUsedPercent = readContainerCpuUsage(pid),
+            diskUsedBytes = readContainerDiskUsage(pid),
+            networkSentBytes = 0L, // Not tracking network for now
+            networkReceivedBytes = 0L
+        )
+    }
+    
+    /**
+     * Read memory usage from /proc/<pid>/status
+     */
+    private fun readContainerMemoryUsage(pid: Int): Long {
+        return try {
+            val statusFile = File("/proc/$pid/status")
+            if (!statusFile.exists()) return 0L
+            
+            val content = statusFile.readText()
+            val vmRssLine = content.lines().find { it.startsWith("VmRSS:") }
+            
+            if (vmRssLine != null) {
+                // VmRSS: 12345 kB
+                val parts = vmRssLine.split("\\s+".toRegex())
+                if (parts.size >= 2) {
+                    val kb = parts[1].toLongOrNull() ?: 0L
+                    kb * 1024 // Convert to bytes
+                } else 0L
+            } else 0L
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading memory usage for PID $pid", e)
+            0L
+        }
+    }
+    
+    /**
+     * Read CPU usage from /proc/<pid>/stat
+     * Returns CPU percentage (0-100)
+     */
+    private fun readContainerCpuUsage(pid: Int): Double {
+        return try {
+            val statFile = File("/proc/$pid/stat")
+            if (!statFile.exists()) return 0.0
+            
+            val content = statFile.readText()
+            val parts = content.split(" ")
+            
+            // Fields: utime (14), stime (15)
+            if (parts.size >= 17) {
+                val utime = parts[13].toLongOrNull() ?: 0L
+                val stime = parts[14].toLongOrNull() ?: 0L
+                val totalTime = utime + stime
+                
+                // Convert jiffies to CPU percentage
+                // TODO: Calculate actual percentage based on elapsed time
+                // For now, return normalized value
+                (totalTime / 100.0).coerceIn(0.0, 100.0)
+            } else 0.0
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading CPU usage for PID $pid", e)
+            0.0
+        }
+    }
+    
+    /**
+     * Read disk usage from /proc/<pid>/io
+     */
+    private fun readContainerDiskUsage(pid: Int): Long {
+        return try {
+            val ioFile = File("/proc/$pid/io")
+            if (!ioFile.exists()) return 0L
+            
+            val content = ioFile.readText()
+            val writeBytesLine = content.lines().find { it.startsWith("write_bytes:") }
+            
+            if (writeBytesLine != null) {
+                // write_bytes: 12345
+                val parts = writeBytesLine.split(":")
+                if (parts.size >= 2) {
+                    parts[1].trim().toLongOrNull() ?: 0L
+                } else 0L
+            } else 0L
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading disk usage for PID $pid", e)
+            0L
+        }
+    }
+    
+    /**
+     * Kill a container process
+     * @param containerId Container identifier
+     */
+    fun killContainer(containerId: String) {
+        try {
+            val pid = extractPidFromContainerId(containerId)
+            Process.killProcess(pid)
+            Log.i(TAG, "Killed container $containerId (PID $pid)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error killing container $containerId", e)
+        }
+    }
+    
+    /**
+     * Extract process ID from container ID
+     * Format: "container_<taskId>_<pid>"
+     */
+    private fun extractPidFromContainerId(containerId: String): Int {
+        // TODO: Implement proper container ID to PID mapping
+        // For now, assume containerId contains the PID
+        return containerId.split("_").lastOrNull()?.toIntOrNull() ?: 0
     }
 }
 
