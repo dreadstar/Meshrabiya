@@ -50,9 +50,8 @@ class ServiceLayerCoordinator(
             null
         } ?: throw IllegalStateException("MeshServiceCoordinator did not provide a Meshrabiya MeshNetworkInterface. Ensure MeshServiceCoordinator is initialized before constructing ServiceLayerCoordinator or provide a meshrabiyaAdapter for tests.")
 
-    // Initialize storage agent lazily to avoid construction-time failures when the coordinator
-    // may not yet have registered the adapter.
-    private val storageAgent by lazy { DistributedStorageAgent(meshrabiyaMeshAdapter) }
+    // DEPRECATED: Storage agent - November 14, 2025 - Use DistributedStorageManager instead
+    // private val storageAgent by lazy { DistributedStorageAgent(meshrabiyaMeshAdapter) }
     
     private val isActiveFlag = AtomicBoolean(false)
     private fun isActive() = isActiveFlag.get()
@@ -90,14 +89,16 @@ class ServiceLayerCoordinator(
     
     // Active service operations
     private val activeComputeTasks = ConcurrentHashMap<String, ComputeTaskStatus>()
-    private val activeStorageOps = ConcurrentHashMap<String, StorageOperationStatus>()
+    // DEPRECATED: activeStorageOps - November 14, 2025
+    // private val activeStorageOps = ConcurrentHashMap<String, StorageOperationStatus>()
     
     data class ServiceStatistics(
         var computeTasksCompleted: Long = 0L,
         var computeTasksFailed: Long = 0L,
         var computeTasksCanceled: Long = 0L,
-        var storageRequestsHandled: Long = 0L,
-        var storageErrorsEncountered: Long = 0L,
+        // DEPRECATED: Storage statistics - November 14, 2025
+        // var storageRequestsHandled: Long = 0L,
+        // var storageErrorsEncountered: Long = 0L,
         var totalBytesProcessed: Long = 0L,
         var totalComputeTimeMs: Long = 0L,
         var meshContributionScore: Float = 0.0f,
@@ -112,15 +113,16 @@ class ServiceLayerCoordinator(
         val estimatedCompletion: Long? = null
     )
     
-    data class StorageOperationStatus(
-        val operationId: String,
-        val type: String, // "STORE", "RETRIEVE", "DELETE"
-        val fileId: String,
-        val status: String,
-        val progress: Float,
-        val startTime: Long,
-        val fileSizeBytes: Long = 0L
-    )
+    // DEPRECATED: StorageOperationStatus - November 14, 2025
+    // data class StorageOperationStatus(
+    //     val operationId: String,
+    //     val type: String, // "STORE", "RETRIEVE", "DELETE"
+    //     val fileId: String,
+    //     val status: String,
+    //     val progress: Float,
+    //     val startTime: Long,
+    //     val fileSizeBytes: Long = 0L
+    // )
     
     data class ServiceCapabilities(
         val computeEnabled: Boolean,
@@ -233,8 +235,8 @@ class ServiceLayerCoordinator(
         return true
     }
     
-    // === STORAGE SERVICE DELEGATION ===
-    
+    // === STORAGE SERVICE DELEGATION === DEPRECATED November 14, 2025
+    /*
     suspend fun storeFile(
         fileName: String,
         data: ByteArray,
@@ -358,6 +360,7 @@ class ServiceLayerCoordinator(
             null
         }
     }
+    */
     
     // === SERVICE MONITORING ===
     
@@ -393,17 +396,17 @@ class ServiceLayerCoordinator(
     
     fun getActiveOperations(): Map<String, Any> {
         return mapOf(
-            "computeTasks" to activeComputeTasks.values.toList(),
-            "storageOperations" to activeStorageOps.values.toList()
+            "computeTasks" to activeComputeTasks.values.toList()
+            // DEPRECATED: "storageOperations" to activeStorageOps.values.toList()
         )
     }
     
-    /**
-     * Get the count of active storage operations (file transfers)
-     */
+    // DEPRECATED: getActiveStorageOperationsCount - November 14, 2025
+    /*
     fun getActiveStorageOperationsCount(): Int {
         return activeStorageOps.size
     }
+    */
     
     /**
      * Get the count of active compute tasks (Python scripts, ML inference)
@@ -487,13 +490,15 @@ class ServiceLayerCoordinator(
             }
         }
         
-        // Storage maintenance
+        // DEPRECATED: Storage maintenance - November 14, 2025
+        /*
         serviceScope.launch {
             while (isActive()) {
                 delay(300000) // 5 minutes
                 storageAgent.performMaintenance()
             }
         }
+        */
     }
     
     private suspend fun gracefulShutdown() {
@@ -769,6 +774,8 @@ class ServiceLayerCoordinator(
                 startTime = System.currentTimeMillis() - 45000 // Started 45 seconds ago
             )
             
+            // DEPRECATED: Storage operations test initialization - November 14, 2025
+            /*
             // Simulate some storage operations
             activeStorageOps["storage_op_1"] = StorageOperationStatus(
                 operationId = "storage_upload_1",
@@ -799,8 +806,10 @@ class ServiceLayerCoordinator(
                 startTime = System.currentTimeMillis() - 35000,
                 fileSizeBytes = 1024 * 1024 // 1MB
             )
+            */
             
-            Log.d(TAG, "Simulated active tasks: ${activeComputeTasks.size} compute, ${activeStorageOps.size} storage")
+            Log.d(TAG, "Simulated active tasks: ${activeComputeTasks.size} compute")
+            // DEPRECATED: ", ${activeStorageOps.size} storage"
         }
     }
 }

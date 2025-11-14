@@ -4,7 +4,7 @@ import com.ustadmobile.meshrabiya.storage.DistributedStorageManager.FileTranspor
 import com.ustadmobile.meshrabiya.mmcp.StorageCapabilities
 import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionRequest
 import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResponse
-import com.ustadmobile.meshrabiya.service.compute.model.StorageOperation
+// DEPRECATED: import com.ustadmobile.meshrabiya.service.compute.model.StorageOperation
 import com.ustadmobile.meshrabiya.log.MNetLogger
 
 /**
@@ -22,8 +22,10 @@ internal class VirtualNode_MeshNetworkInterface(
     
     private val logger = MNetLogger(VirtualNode_MeshNetworkInterface::class.java)
     
-    // Storage operations - delegate to DistributedStorageManager when available
-    
+    // DEPRECATED: Storage operations - November 14, 2025
+    // These stubs were never implemented and throw NotImplementedError
+    // Use DistributedStorageManager directly via VirtualNode.getDistributedStorageManager()
+    /*
     override suspend fun sendStorageRequest(
         targetNodeId: String, 
         fileInfo: FileTransportDTO, 
@@ -67,6 +69,7 @@ internal class VirtualNode_MeshNetworkInterface(
         // Will delegate to virtualNode.getDistributedStorageManager().requestChunkFromNode(nodeId, chunkId)
         throw NotImplementedError("requestChunkFromNode not yet implemented in VirtualNode_MeshNetworkInterface")
     }
+    */
     
     // Compute operations - delegate to IntelligentDistributedComputeService
     

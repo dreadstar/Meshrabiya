@@ -38,9 +38,10 @@ enum class OutputFormat {
     CSV
 }
 
-/**
- * Enum representing storage operations for distributed storage tasks.
- */
+// DEPRECATED: StorageOperation enum - November 14, 2025
+// This was part of the deprecated DistributedStorageAgent prototype
+// Use DistributedStorageManager directly for storage operations
+/*
 enum class StorageOperation {
     STORE,
     RETRIEVE,
@@ -48,3 +49,4 @@ enum class StorageOperation {
     REPLICATE,
     VERIFY
 }
+*/

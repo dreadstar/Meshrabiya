@@ -65,9 +65,8 @@ fun ResourceRequirements.toMeshrabiya(): UMRR {
     )
 }
 
-/**
- * Map Meshrabiya FileTransportDTO -> app FileMetadata / SharedFileMetadata
- */
+// DEPRECATED: DistributedStorageAgent conversions - November 14, 2025
+/*
 fun UMFileTransportDTO.toAppFileMetadata(): DistributedStorageAgent.FileMetadata {
     val replicationFactor = when (this.replicationLevel) {
         UMReplicationLevel.MINIMAL -> 1
@@ -89,10 +88,6 @@ fun UMFileTransportDTO.toAppFileMetadata(): DistributedStorageAgent.FileMetadata
     )
 }
 
-/**
- * Map app StorageRequest -> Meshrabiya FileTransportDTO (transport-friendly)
- * This creates a lightweight DTO that can be sent to other nodes
- */
 fun DistributedStorageAgent.StorageRequest.toFileTransportDTO(): UMFileTransportDTO {
     val replLevel = when (this.replicationFactor) {
         1 -> UMReplicationLevel.MINIMAL
@@ -120,6 +115,7 @@ fun DistributedStorageAgent.StorageRequest.toFileTransportDTO(): UMFileTransport
         checksum = ""
     )
 }
+*/
 
 /**
  * Convert a TaskExecutionRequest into a Meshrabiya FileTransportDTO for transport.

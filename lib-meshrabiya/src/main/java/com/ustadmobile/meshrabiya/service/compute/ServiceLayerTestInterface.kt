@@ -36,8 +36,10 @@ class ServiceLayerTestInterface(
         if (coordinator.isServiceActive()) {
             results.add(testBasicComputeTask())
             
-            // Test 3: Storage operation
-            results.add(testBasicStorageOperation())
+            // DEPRECATED: Test 3: Storage operation - November 14, 2025
+            // This test used deprecated DistributedStorageAgent
+            // Use DistributedStorageManager tests instead
+            // results.add(testBasicStorageOperation())
             
             // Test 4: Service capabilities
             results.add(testServiceCapabilities())
@@ -160,6 +162,10 @@ class ServiceLayerTestInterface(
         }
     }
     
+    // DEPRECATED: testBasicStorageOperation - November 14, 2025
+    // This test used deprecated DistributedStorageAgent (storeFile/retrieveFile methods)
+    // Use DistributedStorageManager tests instead
+    /*
     private suspend fun testBasicStorageOperation(): TestResult {
         val startTime = System.currentTimeMillis()
         
@@ -205,6 +211,7 @@ class ServiceLayerTestInterface(
             )
         }
     }
+    */
     
     private suspend fun testServiceCapabilities(): TestResult {
         val startTime = System.currentTimeMillis()
