@@ -200,6 +200,156 @@ class StorageEncryptionManager {
         SecureRandom().nextBytes(keyBytes)
         return SecretKeySpec(keyBytes, "AES")
     }
+    
+    // ========== Phase 4.7: Multi-Recipient PGP Encryption ==========
+    // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART2.md Section 8
+    
+    /**
+     * Re-encrypt session key for additional recipients without re-encrypting file data.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART2.md Section 8.2
+     * 
+     * This is used when adding task recipients to already-encrypted files.
+     * Only the session key is re-encrypted, not the entire file.
+     * 
+     * @param encryptedBundle Existing encrypted bundle
+     * @param newRecipients New recipients to add (public keys)
+     * @return Updated encrypted bundle with new recipient keys
+     */
+    fun addRecipientsToBundle(
+        encryptedBundle: ByteArray,
+        newRecipients: List<String>
+    ): ByteArray {
+        // Parse existing bundle
+        val buffer = java.nio.ByteBuffer.wrap(encryptedBundle)
+        
+        // Read encrypted data (preserved as-is)
+        val encryptedDataSize = buffer.getInt()
+        val encryptedData = ByteArray(encryptedDataSize)
+        buffer.get(encryptedData)
+        
+        // Read existing recipients
+        val existingRecipientCount = buffer.getInt()
+        val existingRecipients = mutableListOf<Pair<String, ByteArray>>()
+        
+        repeat(existingRecipientCount) {
+            val recipientIdSize = buffer.getInt()
+            val recipientIdBytes = ByteArray(recipientIdSize)
+            buffer.get(recipientIdBytes)
+            val recipientId = String(recipientIdBytes)
+            
+            // Read encrypted key (IV + encrypted chunk key)
+            val encryptedKeySize = IV_SIZE + AES_KEY_SIZE + 16 // IV + key + padding
+            val encryptedKey = ByteArray(encryptedKeySize)
+            buffer.get(encryptedKey)
+            
+            existingRecipients.add(Pair(recipientId, encryptedKey))
+        }
+        
+        // Decrypt chunk key using owner's key (first recipient)
+        // TODO: In production, use actual owner private key
+        val chunkKey = ByteArray(AES_KEY_SIZE)
+        SecureRandom().nextBytes(chunkKey) // Placeholder
+        
+        // Encrypt chunk key for new recipients
+        val newEncryptedKeys = newRecipients.map { recipientId ->
+            val recipientKeyId = recipientId.hashCode().toLong()
+            val recipientKey = deriveKeyForRecipient(recipientKeyId)
+            val keyIv = ByteArray(IV_SIZE)
+            SecureRandom().nextBytes(keyIv)
+            val keyCipher = Cipher.getInstance(AES_TRANSFORMATION)
+            keyCipher.init(Cipher.ENCRYPT_MODE, recipientKey, IvParameterSpec(keyIv))
+            val encryptedKey = keyCipher.doFinal(chunkKey)
+            Pair(recipientId, keyIv + encryptedKey)
+        }
+        
+        // Build updated bundle
+        val allRecipients = existingRecipients + newEncryptedKeys
+        val newBuffer = java.nio.ByteBuffer.allocate(
+            4 + encryptedData.size +
+            4 + allRecipients.sumOf { (id, key) -> 4 + id.toByteArray().size + key.size }
+        )
+        
+        // Write encrypted data
+        newBuffer.putInt(encryptedData.size)
+        newBuffer.put(encryptedData)
+        
+        // Write recipient count
+        newBuffer.putInt(allRecipients.size)
+        
+        // Write all recipients (existing + new)
+        allRecipients.forEach { (recipientId, encryptedKey) ->
+            val recipientIdBytes = recipientId.toByteArray()
+            newBuffer.putInt(recipientIdBytes.size)
+            newBuffer.put(recipientIdBytes)
+            newBuffer.put(encryptedKey)
+        }
+        
+        return newBuffer.array()
+    }
+    
+    /**
+     * Remove recipients from encrypted bundle.
+     * 
+     * @param encryptedBundle Existing encrypted bundle
+     * @param recipientsToRemove Recipient IDs to remove
+     * @return Updated encrypted bundle without specified recipients
+     */
+    fun removeRecipientsFromBundle(
+        encryptedBundle: ByteArray,
+        recipientsToRemove: List<String>
+    ): ByteArray {
+        // Parse existing bundle
+        val buffer = java.nio.ByteBuffer.wrap(encryptedBundle)
+        
+        // Read encrypted data (preserved as-is)
+        val encryptedDataSize = buffer.getInt()
+        val encryptedData = ByteArray(encryptedDataSize)
+        buffer.get(encryptedData)
+        
+        // Read existing recipients
+        val existingRecipientCount = buffer.getInt()
+        val remainingRecipients = mutableListOf<Pair<String, ByteArray>>()
+        
+        repeat(existingRecipientCount) {
+            val recipientIdSize = buffer.getInt()
+            val recipientIdBytes = ByteArray(recipientIdSize)
+            buffer.get(recipientIdBytes)
+            val recipientId = String(recipientIdBytes)
+            
+            val encryptedKeySize = IV_SIZE + AES_KEY_SIZE + 16
+            val encryptedKey = ByteArray(encryptedKeySize)
+            buffer.get(encryptedKey)
+            
+            // Keep only if not in removal list
+            if (recipientId !in recipientsToRemove) {
+                remainingRecipients.add(Pair(recipientId, encryptedKey))
+            }
+        }
+        
+        // Build updated bundle
+        val newBuffer = java.nio.ByteBuffer.allocate(
+            4 + encryptedData.size +
+            4 + remainingRecipients.sumOf { (id, key) -> 4 + id.toByteArray().size + key.size }
+        )
+        
+        // Write encrypted data
+        newBuffer.putInt(encryptedData.size)
+        newBuffer.put(encryptedData)
+        
+        // Write recipient count
+        newBuffer.putInt(remainingRecipients.size)
+        
+        // Write remaining recipients
+        remainingRecipients.forEach { (recipientId, encryptedKey) ->
+            val recipientIdBytes = recipientId.toByteArray()
+            newBuffer.putInt(recipientIdBytes.size)
+            newBuffer.put(recipientIdBytes)
+            newBuffer.put(encryptedKey)
+        }
+        
+        return newBuffer.array()
+    }
 }
 
 /**

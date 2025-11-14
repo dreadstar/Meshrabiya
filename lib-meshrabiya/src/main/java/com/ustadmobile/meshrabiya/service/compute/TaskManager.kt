@@ -123,6 +123,50 @@ object TaskManager {
     private var resourceMonitoringJob: Job? = null
     private val peakMetrics = mutableMapOf<String, ResourceMetrics>()
 
+    // Phase 4.2: Task keypair management
+    // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5
+    
+    /**
+     * Keypair entry for per-task encryption.
+     * 
+     * @property publicKey PGP public key (PEM format, Base64-encoded)
+     * @property privateKey PGP private key (PEM format, Base64-encoded)
+     * @property createdAt Timestamp when keypair was generated (milliseconds since epoch)
+     * @property expiresAt Timestamp when keypair expires (milliseconds since epoch)
+     */
+    data class KeypairEntry(
+        val publicKey: String,
+        val privateKey: String,
+        val createdAt: Long,
+        val expiresAt: Long
+    ) {
+        /**
+         * Check if this keypair is expired.
+         */
+        fun isExpired(): Boolean {
+            return System.currentTimeMillis() > expiresAt
+        }
+        
+        /**
+         * Get remaining lifetime in milliseconds.
+         */
+        fun getRemainingLifetimeMs(): Long {
+            return maxOf(0L, expiresAt - System.currentTimeMillis())
+        }
+    }
+    
+    /**
+     * In-memory keypair registry: taskId → KeypairEntry
+     * Stores ephemeral task keypairs for task-level data isolation.
+     */
+    private val keypairRegistry = mutableMapOf<String, KeypairEntry>()
+    
+    /**
+     * Background cleanup job for expired keypairs.
+     * Runs every 15 minutes to remove expired entries.
+     */
+    private var keypairCleanupJob: Job? = null
+
     // --- Task Access Update and Output Publishing Hooks ---
 
     private val accessUpdateHandlers = mutableMapOf<UUID, (List<String>) -> Unit>()
@@ -792,6 +836,148 @@ object TaskManager {
             containerToTask.remove(execution.containerId)
         }
         activeExecutions.remove(taskId)
+    }
+
+    // ========== Phase 4.2: Task Keypair Management ==========
+    // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5
+    
+    /**
+     * Generate a new PGP keypair for a task.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.2
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART4.md Section 11 (Performance: 287ms on Pixel 5)
+     * 
+     * @param taskId Unique task identifier
+     * @param lifetimeMs Keypair lifetime in milliseconds (default: 24 hours)
+     * @return KeypairEntry with public and private keys
+     */
+    suspend fun generateTaskKeypair(
+        taskId: String,
+        lifetimeMs: Long = 24 * 60 * 60 * 1000L // 24 hours default
+    ): KeypairEntry = withContext(Dispatchers.IO) {
+        val createdAt = System.currentTimeMillis()
+        val expiresAt = createdAt + lifetimeMs
+        
+        // Generate PGP keypair using BouncyCastle
+        val identity = "task-$taskId"
+        val (publicKey, privateKey) = com.ustadmobile.meshrabiya.service.compute.security.PGPKeypairGenerator
+            .generateKeypair(identity, passphrase = null)
+        
+        val keypairEntry = KeypairEntry(
+            publicKey = publicKey,
+            privateKey = privateKey,
+            createdAt = createdAt,
+            expiresAt = expiresAt
+        )
+        
+        // Register in keypair registry
+        keypairRegistry[taskId] = keypairEntry
+        
+        // Start cleanup job if not already running
+        if (keypairCleanupJob == null || keypairCleanupJob?.isActive != true) {
+            startKeypairCleanup()
+        }
+        
+        keypairEntry
+    }
+    
+    /**
+     * Retrieve task public key.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.3
+     * 
+     * @param taskId Task identifier
+     * @return Public key string or null if not found/expired
+     */
+    fun getTaskPublicKey(taskId: String): String? {
+        val entry = keypairRegistry[taskId] ?: return null
+        if (entry.isExpired()) {
+            keypairRegistry.remove(taskId)
+            return null
+        }
+        return entry.publicKey
+    }
+    
+    /**
+     * Retrieve task private key.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.3
+     * 
+     * @param taskId Task identifier
+     * @return Private key string or null if not found/expired
+     */
+    fun getTaskPrivateKey(taskId: String): String? {
+        val entry = keypairRegistry[taskId] ?: return null
+        if (entry.isExpired()) {
+            keypairRegistry.remove(taskId)
+            return null
+        }
+        return entry.privateKey
+    }
+    
+    /**
+     * Remove a task keypair from the registry.
+     * 
+     * @param taskId Task identifier
+     */
+    fun removeTaskKeypair(taskId: String) {
+        keypairRegistry.remove(taskId)
+    }
+    
+    /**
+     * Start background cleanup task for expired keypairs.
+     * Runs every 15 minutes.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.4
+     */
+    private fun startKeypairCleanup() {
+        keypairCleanupJob?.cancel()
+        
+        keypairCleanupJob = CoroutineScope(Dispatchers.Default).launch {
+            while (isActive) {
+                delay(15 * 60 * 1000L) // 15 minutes
+                cleanupExpiredKeypairs()
+            }
+        }
+    }
+    
+    /**
+     * Clean up expired keypairs from the registry.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.4
+     */
+    fun cleanupExpiredKeypairs() {
+        val expiredTaskIds = keypairRegistry
+            .filter { (_, entry) -> entry.isExpired() }
+            .map { (taskId, _) -> taskId }
+        
+        expiredTaskIds.forEach { taskId ->
+            keypairRegistry.remove(taskId)
+            // TODO: Secure memory zeroing of private keys
+        }
+        
+        if (expiredTaskIds.isNotEmpty()) {
+            println("TaskManager: Cleaned up ${expiredTaskIds.size} expired task keypairs")
+        }
+    }
+    
+    /**
+     * Stop the keypair cleanup background job.
+     */
+    fun stopKeypairCleanup() {
+        keypairCleanupJob?.cancel()
+        keypairCleanupJob = null
+    }
+    
+    /**
+     * Get all active task keypairs (for debugging/monitoring).
+     * 
+     * @return Map of taskId to remaining lifetime in milliseconds
+     */
+    fun getActiveKeypairs(): Map<String, Long> {
+        return keypairRegistry
+            .filter { (_, entry) -> !entry.isExpired() }
+            .mapValues { (_, entry) -> entry.getRemainingLifetimeMs() }
     }
 
     // TaskExecutor interface

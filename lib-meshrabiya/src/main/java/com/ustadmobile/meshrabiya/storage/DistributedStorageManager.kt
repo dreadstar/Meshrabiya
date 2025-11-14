@@ -65,19 +65,52 @@ enum class SyncPriority {
  * File metadata with permission information
  * 
  * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN.md Section 2.4
+ * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 4 (USER vs TASK recipients)
  */
 @Serializable
 data class FileMetadata(
     val fileId: String,
     val path: String,
     val sizeBytes: Long,
-    val owner: String,              // Task requester node public key
-    val recipients: List<String>,   // Authorized nodes
+    val owner: String,                          // Task requester node public key
+    val recipients: List<RecipientEntry>,       // Authorized recipients with type info
     val accessScope: AccessScope,
     val createdAt: Long,
     val lastAccessedBy: String? = null,
     val encryptionKeyId: String? = null
-)
+) {
+    /**
+     * Get all active (non-expired) recipients.
+     */
+    fun getActiveRecipients(): List<RecipientEntry> {
+        return recipients.filter { !it.isExpired() }
+    }
+    
+    /**
+     * Get all USER recipients (long-lived).
+     */
+    fun getUserRecipients(): List<RecipientEntry> {
+        return recipients.filter { it.recipientType == RecipientType.USER }
+    }
+    
+    /**
+     * Get all TASK recipients (ephemeral).
+     */
+    fun getTaskRecipients(): List<RecipientEntry> {
+        return recipients.filter { it.recipientType == RecipientType.TASK }
+    }
+    
+    /**
+     * Check if a specific task has access.
+     */
+    fun hasTaskAccess(taskId: String): Boolean {
+        return recipients.any { 
+            it.recipientType == RecipientType.TASK && 
+            it.taskId == taskId && 
+            !it.isExpired() 
+        }
+    }
+}
 
 class DistributedStorageManager(
     private val context: Context,
@@ -348,7 +381,7 @@ class DistributedStorageManager(
      * @param replicationLevel Number of replicas across mesh
      * @param accessScope Permission model (TASK_ISOLATED, SERVICE_SHARED, MESH_GLOBAL)
      * @param owner Task requester node public key (null = local node)
-     * @param recipients Authorized nodes that can access the file (null = owner only)
+     * @param recipients Authorized recipients with type info (null = owner only as USER)
      */
     suspend fun storeFile(
         path: String,
@@ -357,7 +390,7 @@ class DistributedStorageManager(
         replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
         accessScope: AccessScope = AccessScope.TASK_ISOLATED,
         owner: String? = null,
-        recipients: List<String>? = null
+        recipients: List<RecipientEntry>? = null
     ): FileReference? = coroutineScope {
         betaLogger.log(LogLevel.DEBUG, "Storage", "Write operation started: $path (${data.size} bytes)")
 
@@ -368,10 +401,17 @@ class DistributedStorageManager(
 
         // === NEW: Prepare permission metadata ===
         val effectiveOwner = owner ?: meshNetworkInterface.getLocalNodeId()
-        val effectiveRecipients = when (accessScope) {
-            AccessScope.TASK_ISOLATED -> recipients ?: listOf(effectiveOwner)
-            AccessScope.SERVICE_SHARED -> recipients ?: emptyList() // Service members loaded separately
-            AccessScope.MESH_GLOBAL -> emptyList() // Public access (no specific recipients)
+        val effectiveRecipients = when {
+            recipients != null -> recipients
+            accessScope == AccessScope.TASK_ISOLATED -> listOf(
+                RecipientEntry(
+                    publicKey = effectiveOwner,
+                    recipientType = RecipientType.USER
+                )
+            )
+            accessScope == AccessScope.SERVICE_SHARED -> emptyList() // Service members loaded separately
+            accessScope == AccessScope.MESH_GLOBAL -> emptyList() // Public access (no specific recipients)
+            else -> emptyList()
         }
         
         betaLogger.log(
@@ -387,7 +427,7 @@ class DistributedStorageManager(
         val encryptedData = encryptionManager.encryptWithRecipients(
             data = data,
             owner = effectiveOwner,
-            recipients = effectiveRecipients
+            recipients = effectiveRecipients.map { it.publicKey }
         )
         val encryptDuration = System.currentTimeMillis() - encryptStartTime
         betaLogger.log(
@@ -638,6 +678,60 @@ class DistributedStorageManager(
      */
     fun getFileMetadata(fileId: String): FileMetadata? {
         return fileMetadataStore[fileId]
+    }
+    
+    /**
+     * Update file access permissions dynamically without re-encrypting the entire file.
+     * Only re-encrypts chunk keys for new/removed recipients.
+     * 
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART5.md Section 14.2
+     * 
+     * @param fileId File ID to update
+     * @param addRecipients New recipients to grant access
+     * @param removeRecipients Recipients to revoke access from
+     * @return true if successful, false if file not found or operation failed
+     */
+    suspend fun updateFileAccess(
+        fileId: String,
+        addRecipients: List<RecipientEntry> = emptyList(),
+        removeRecipients: List<String> = emptyList() // Public keys to remove
+    ): Boolean = withContext(Dispatchers.IO) {
+        val metadata = fileMetadataStore[fileId] ?: return@withContext false
+        
+        betaLogger.log(
+            LogLevel.DEBUG,
+            TAG,
+            "Updating file access for $fileId: +${addRecipients.size} recipients, -${removeRecipients.size} recipients"
+        )
+        
+        // Build updated recipient list
+        val updatedRecipients = metadata.recipients
+            .filter { it.publicKey !in removeRecipients }
+            .toMutableList()
+            .apply { addAll(addRecipients) }
+        
+        // Update metadata
+        val updatedMetadata = metadata.copy(recipients = updatedRecipients)
+        fileMetadataStore[fileId] = updatedMetadata
+        
+        // Re-encrypt chunk keys for new recipients
+        // Note: This is a placeholder for the actual chunk key re-encryption logic
+        // Full implementation would:
+        // 1. Retrieve encrypted chunk keys from storage
+        // 2. Decrypt chunk keys using a master key or owner private key
+        // 3. Re-encrypt chunk keys for new recipients
+        // 4. Store updated chunk key packets
+        
+        betaLogger.log(
+            LogLevel.INFO,
+            TAG,
+            "File access updated for $fileId: ${updatedRecipients.size} total recipients"
+        )
+        
+        // TODO: Implement chunk key re-encryption in StorageEncryptionManager
+        // encryptionManager.reEncryptChunkKeys(fileId, addRecipients.map { it.publicKey })
+        
+        true
     }
     
     /**

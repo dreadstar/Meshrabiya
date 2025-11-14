@@ -241,11 +241,19 @@ class StrangersSafeComputeEngine(private val context: Context) {
      * BULLETPROOF CONTAINER EXECUTION
      * 
      * Runs untrusted code in mathematical isolation
+     * 
+     * Phase 4.4: Enhanced with optional task keypair for per-task encryption
+     * 
+     * @param codeBundle Code to execute
+     * @param input Input data
+     * @param maxTimeMs Maximum execution time
+     * @param taskKeypair Optional task keypair for environment variables
      */
     suspend fun executeUntrustedCode(
         codeBundle: ByteArray,
         input: ByteArray,
-        maxTimeMs: Long = COMPUTE_PROCESS_TIMEOUT
+        maxTimeMs: Long = COMPUTE_PROCESS_TIMEOUT,
+        taskKeypair: com.ustadmobile.meshrabiya.service.compute.TaskManager.KeypairEntry? = null
     ): ContainerExecutionResult = withContext(Dispatchers.IO) {
         
         val containerId = generateContainerId()
@@ -258,8 +266,8 @@ class StrangersSafeComputeEngine(private val context: Context) {
                 return@withContext ContainerExecutionResult.Failure("Invalid code signature")
             }
             
-            // 2. Set up isolated execution environment
-            val isolatedEnv = setupIsolatedEnvironment(container)
+            // 2. Set up isolated execution environment with optional keypair
+            val isolatedEnv = setupIsolatedEnvironment(container, taskKeypair)
             
             // 3. Start execution with strict monitoring
             val executionJob = async {
@@ -340,14 +348,43 @@ class StrangersSafeComputeEngine(private val context: Context) {
         return Process.myPid() // Placeholder - real implementation would fork
     }
     
-    private fun setupIsolatedEnvironment(container: MicroContainer): IsolatedEnvironment {
+    /**
+     * Setup isolated execution environment with optional task keypair.
+     * 
+     * Phase 4.4: Adds TASK_PUBLIC_KEY and TASK_PRIVATE_KEY environment variables
+     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5
+     * 
+     * @param container Container to set up
+     * @param taskKeypair Optional task keypair for per-task encryption
+     * @return IsolatedEnvironment with environment variables
+     */
+    private fun setupIsolatedEnvironment(
+        container: MicroContainer,
+        taskKeypair: com.ustadmobile.meshrabiya.service.compute.TaskManager.KeypairEntry? = null
+    ): IsolatedEnvironment {
         // Set up completely isolated execution environment:
         // - No file system access
         // - No network access
         // - No access to other processes
         // - Only communication via named pipes
         
-        return IsolatedEnvironment()
+        val environmentVars = mutableMapOf<String, String>()
+        
+        // Phase 4.4: Add task keypair environment variables if provided
+        if (taskKeypair != null) {
+            // Encode keys as Base64 for environment variable transmission
+            environmentVars["TASK_PUBLIC_KEY"] = java.util.Base64.getEncoder()
+                .encodeToString(taskKeypair.publicKey.toByteArray())
+            environmentVars["TASK_PRIVATE_KEY"] = java.util.Base64.getEncoder()
+                .encodeToString(taskKeypair.privateKey.toByteArray())
+            environmentVars["TASK_KEY_CREATED_AT"] = taskKeypair.createdAt.toString()
+            environmentVars["TASK_KEY_EXPIRES_AT"] = taskKeypair.expiresAt.toString()
+        }
+        
+        return IsolatedEnvironment(
+            id = container.containerId,
+            environmentVars = environmentVars
+        )
     }
     
     private suspend fun executeInContainer(
@@ -395,7 +432,19 @@ class StrangersSafeComputeEngine(private val context: Context) {
         val signerOnion: String?
     )
     
-    data class IsolatedEnvironment(val id: String = "")
+    /**
+     * Isolated environment with environment variables.
+     * 
+     * Phase 4.4: Enhanced to support task keypair environment variables
+     * 
+     * @property id Environment identifier
+     * @property environmentVars Environment variables including TASK_PUBLIC_KEY and TASK_PRIVATE_KEY
+     */
+    data class IsolatedEnvironment(
+        val id: String = "",
+        val environmentVars: Map<String, String> = emptyMap()
+    )
+    
     data class ExecutionResult(val output: ByteArray)
     
     private fun verifyCodeBundle(bundle: ByteArray): CodeVerification = 
