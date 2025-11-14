@@ -725,23 +725,42 @@ object TaskManager {
         return peakMetrics[containerId]
     }
 
+    /**
+     * Phase 3: Runtime Management
+     * Load appropriate executor for task type with runtime validation
+     */
     private suspend fun loadExecutor(
         taskType: com.ustadmobile.meshrabiya.service.compute.model.TaskType
     ): TaskExecutor {
-        // TODO: Implement executor loading
-        return object : TaskExecutor {
-            override suspend fun execute(
-                context: com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.TaskExecutionContext,
-                inputFiles: Map<String, ByteArray>,
-                containerId: String
-            ): com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult {
-                return com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult(
-                    taskId = context.taskId,
-                    success = true,
-                    outputManifest = emptyList(),
-                    resourcesUsed = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics.zero(),
-                    executionTimeMs = 0
-                )
+        val context = getAppContext() ?: throw IllegalStateException("Context not available")
+        val registry = com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry.getInstance(context)
+        
+        // Check if runtime is available
+        if (!registry.isRuntimeAvailable(taskType)) {
+            throw IllegalStateException("Runtime not available for task type: ${taskType.name}")
+        }
+        
+        // Load appropriate executor
+        return when (taskType) {
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.PYTHON -> 
+                com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor(context)
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JVM,
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JAVA ->
+                com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor(context)
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JAVASCRIPT ->
+                com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.ML_NATIVE ->
+                com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
+            com.ustadmobile.meshrabiya.service.compute.model.TaskType.WORKFLOW -> {
+                // WorkflowExecutor needs an executor factory
+                val factory: (com.ustadmobile.meshrabiya.service.compute.model.TaskType) -> TaskExecutor? = { type ->
+                    try {
+                        loadExecutor(type)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor(context, factory)
             }
         }
     }

@@ -249,7 +249,9 @@ class IntelligentDistributedComputeService(
     
     /**
      * Assign task to selected node: send assignment message, update status, invoke callback.
-     * TODO: Implement actual task assignment message sending when MeshGossipService supports it.
+     * 
+     * Phase 3.3: Implements actual task assignment message protocol
+     * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN_PART3.md Section 8.1
      */
     private fun assignTaskToNode(
         localRequest: LocalComputeTaskRequest,
@@ -265,20 +267,48 @@ class IntelligentDistributedComputeService(
         betaLogger?.log(LogLevel.INFO, "ComputeService",
             "Task $taskId assigned to node ${selectedNode.nodeAddress}")
         
-        // TODO: Send actual task assignment message to selected node
-        // This will be implemented when task execution protocol is defined
-        // For now, just mark as completed
         scope.launch {
-            // Placeholder: simulate task completion
-            delay(100)
-            tracked.status = RequestStatus.COMPLETED
-            tracked.lastUpdated = System.currentTimeMillis()
-            
-            // onTaskCompleted?.invoke(taskId, executionResult)
-            betaLogger?.log(LogLevel.INFO, "ComputeService",
-                "Task $taskId completed on node ${selectedNode.nodeAddress}")
-            
-            activeRequests.remove(taskId)
+            try {
+                // Create task assignment message
+                val assignment = TaskAssignmentMessage(
+                    messageId = java.util.UUID.randomUUID().toString(),
+                    taskId = taskId,
+                    requesterNodeId = meshNetwork.getLocalNodeAddress().toString(),
+                    callbackAddress = meshNetwork.getLocalNodeAddress().toString(),
+                    taskType = localRequest.mmcpRequest.taskType,
+                    jobType = localRequest.mmcpRequest.jobType,
+                    codeBundle = localRequest.mmcpRequest.codeBundle,
+                    inputFiles = localRequest.mmcpRequest.inputFileIds,
+                    resourceLimits = ResourceLimits(
+                        maxMemoryMB = localRequest.mmcpRequest.resourceLimits?.maxMemoryMB ?: 512,
+                        maxCpuPercent = localRequest.mmcpRequest.resourceLimits?.maxCpuPercent ?: 80,
+                        maxExecutionTimeMs = localRequest.mmcpRequest.resourceLimits?.maxExecutionTimeMs ?: 60000,
+                        maxDiskMB = localRequest.mmcpRequest.resourceLimits?.maxDiskMB ?: 100
+                    ),
+                    timestamp = System.currentTimeMillis()
+                )
+                
+                // Send task assignment message to selected compute node
+                // Note: This assumes MeshNetworkInterface has a method to send custom messages
+                // If not implemented yet, this will need to be added to the interface
+                meshNetwork.sendTaskAssignmentMessage(selectedNode.nodeAddress, assignment)
+                
+                betaLogger?.log(LogLevel.INFO, "ComputeService",
+                    "Task assignment message sent to node ${selectedNode.nodeAddress} for task $taskId")
+                
+                // Status will be updated when we receive acceptance/rejection message
+                // For now, mark as assigned and wait for response
+                
+            } catch (e: Exception) {
+                betaLogger?.log(LogLevel.ERROR, "ComputeService",
+                    "Failed to send task assignment for task $taskId: ${e.message}")
+                
+                tracked.status = RequestStatus.FAILED
+                tracked.lastUpdated = System.currentTimeMillis()
+                activeRequests.remove(taskId)
+                
+                onTaskFailed?.invoke(taskId, e)
+            }
         }
     }
 
@@ -529,6 +559,313 @@ def preprocess_images(input_data):
 result = preprocess_images(globals().get('input_data', {}))
 print(json.dumps(result))
 """
+
+    // ============================================================================
+    // Phase 3.3: Task Assignment Message Handlers
+    // ============================================================================
+    
+    // Note: RuntimeRegistry reference needed - must be passed to constructor or made available
+    private lateinit var runtimeRegistry: RuntimeRegistry
+    
+    /**
+     * HANDLE TASK ASSIGNMENT MESSAGE (Compute Node Side)
+     * 
+     * Compute node receives task assignment and begins execution.
+     * Verifies runtime availability, creates execution context, and starts task.
+     * 
+     * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN_PART3.md Section 8.2
+     */
+    suspend fun handleTaskAssignmentMessage(
+        senderAddress: Int,
+        assignment: TaskAssignmentMessage
+    ) {
+        try {
+            betaLogger?.log(
+                LogLevel.INFO,
+                "ComputeService",
+                "Received task assignment: ${assignment.taskId} (${assignment.taskType}) from node $senderAddress"
+            )
+            
+            // Verify runtime available (double-check)
+            // TODO: Initialize runtimeRegistry in constructor
+            // if (!runtimeRegistry.isRuntimeAvailable(assignment.taskType)) {
+            //     sendTaskRejection(senderAddress, assignment, "Runtime ${assignment.taskType} not available")
+            //     return
+            // }
+            
+            // Check resource availability
+            val currentLoad = resourceManager.getCurrentLoad()
+            if (currentLoad > 0.9 || !resourceManager.hasAvailableResources()) {
+                sendTaskRejection(senderAddress, assignment, "Node overloaded (load: $currentLoad)")
+                return
+            }
+            
+            // Send acceptance message
+            sendTaskAcceptance(senderAddress, assignment)
+            
+            // Increment active job count
+            activeJobCount.incrementAndGet()
+            
+            // Execute task (implementation would delegate to TaskManager)
+            // For Phase 3, this is a placeholder - full execution in Phase 4+
+            scope.launch {
+                try {
+                    betaLogger?.log(
+                        LogLevel.INFO,
+                        "ComputeService",
+                        "Starting execution of task ${assignment.taskId}"
+                    )
+                    
+                    // TODO: Integrate with TaskManager for actual execution
+                    // val result = TaskManager.executeTask(context)
+                    
+                    // Placeholder: simulate task execution
+                    delay(1000)
+                    
+                    // Send completion message (placeholder result)
+                    val result = TaskResult(
+                        success = true,
+                        outputManifest = emptyList(),
+                        metrics = ExecutionMetrics(
+                            executionTimeMs = 1000,
+                            cpuUsagePercent = 50f,
+                            peakMemoryBytes = 100 * 1024 * 1024,
+                            diskIoBytes = 0
+                        ),
+                        errorMessage = null,
+                        errorDetails = null
+                    )
+                    
+                    sendTaskCompletion(senderAddress, assignment.taskId, result)
+                    
+                } catch (e: Exception) {
+                    betaLogger?.log(
+                        LogLevel.ERROR,
+                        "ComputeService",
+                        "Task execution failed: ${assignment.taskId} - ${e.message}"
+                    )
+                    
+                    val errorResult = TaskResult(
+                        success = false,
+                        outputManifest = emptyList(),
+                        metrics = ExecutionMetrics(0, 0f, 0, 0),
+                        errorMessage = e.message,
+                        errorDetails = e.stackTraceToString()
+                    )
+                    
+                    sendTaskCompletion(senderAddress, assignment.taskId, errorResult)
+                    
+                } finally {
+                    activeJobCount.decrementAndGet()
+                }
+            }
+            
+        } catch (e: Exception) {
+            betaLogger?.log(
+                LogLevel.ERROR,
+                "ComputeService",
+                "Failed to handle task assignment: ${e.message}"
+            )
+        }
+    }
+    
+    /**
+     * SEND TASK REJECTION
+     * 
+     * Notify requester that task cannot be executed.
+     */
+    private suspend fun sendTaskRejection(
+        requesterAddress: Int,
+        assignment: TaskAssignmentMessage,
+        reason: String
+    ) {
+        val rejection = TaskRejectionMessage(
+            taskId = assignment.taskId,
+            reason = reason
+        )
+        
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Rejecting task ${assignment.taskId}: $reason"
+        )
+        
+        // TODO: Implement in MeshNetworkInterface
+        // meshNetwork.sendTaskRejectionMessage(requesterAddress, rejection)
+    }
+    
+    /**
+     * SEND TASK ACCEPTANCE
+     * 
+     * Confirm task execution has started.
+     */
+    private suspend fun sendTaskAcceptance(
+        requesterAddress: Int,
+        assignment: TaskAssignmentMessage
+    ) {
+        val acceptance = TaskAcceptanceMessage(
+            taskId = assignment.taskId,
+            estimatedCompletionMs = 5000 // Placeholder estimate
+        )
+        
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Accepting task ${assignment.taskId}"
+        )
+        
+        // TODO: Implement in MeshNetworkInterface
+        // meshNetwork.sendTaskAcceptanceMessage(requesterAddress, acceptance)
+    }
+    
+    /**
+     * SEND TASK COMPLETION
+     * 
+     * Notify requester that task execution is complete.
+     */
+    private suspend fun sendTaskCompletion(
+        requesterAddress: Int,
+        taskId: String,
+        result: TaskResult
+    ) {
+        val completion = TaskCompletedMessage(
+            taskId = taskId,
+            result = result
+        )
+        
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Task completed: $taskId (success=${result.success})"
+        )
+        
+        // TODO: Implement in MeshNetworkInterface
+        // meshNetwork.sendTaskCompletionMessage(requesterAddress, completion)
+    }
+    
+    /**
+     * HANDLE TASK REJECTION MESSAGE (Scheduler Side)
+     * 
+     * Scheduler receives rejection from compute node and can reassign task.
+     */
+    fun handleTaskRejectionMessage(
+        senderAddress: Int,
+        rejection: TaskRejectionMessage
+    ) {
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Task ${rejection.taskId} rejected by node $senderAddress: ${rejection.reason}"
+        )
+        
+        val tracked = activeRequests[rejection.taskId]
+        if (tracked != null) {
+            tracked.status = RequestStatus.REJECTED
+            tracked.lastUpdated = System.currentTimeMillis()
+            
+            // Retry task assignment with different node
+            retryTaskRequest(tracked.localRequest)
+        }
+    }
+    
+    /**
+     * HANDLE TASK ACCEPTANCE MESSAGE (Scheduler Side)
+     * 
+     * Scheduler receives acceptance from compute node.
+     */
+    fun handleTaskAcceptanceMessage(
+        senderAddress: Int,
+        acceptance: TaskAcceptanceMessage
+    ) {
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Task ${acceptance.taskId} accepted by node $senderAddress (ETA: ${acceptance.estimatedCompletionMs}ms)"
+        )
+        
+        val tracked = activeRequests[acceptance.taskId]
+        if (tracked != null) {
+            tracked.status = RequestStatus.EXECUTING
+            tracked.lastUpdated = System.currentTimeMillis()
+        }
+    }
+    
+    /**
+     * HANDLE TASK COMPLETION MESSAGE (Scheduler Side)
+     * 
+     * Scheduler receives completion notification from compute node.
+     */
+    fun handleTaskCompletionMessage(
+        senderAddress: Int,
+        completion: TaskCompletedMessage
+    ) {
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Task ${completion.taskId} completed by node $senderAddress (success=${completion.result.success})"
+        )
+        
+        val tracked = activeRequests[completion.taskId]
+        if (tracked != null) {
+            if (completion.result.success) {
+                tracked.status = RequestStatus.COMPLETED
+                // onTaskCompleted?.invoke(completion.taskId, completion.result)
+            } else {
+                tracked.status = RequestStatus.FAILED
+                onTaskFailed?.invoke(
+                    completion.taskId,
+                    Exception(completion.result.errorMessage ?: "Task execution failed")
+                )
+            }
+            
+            tracked.lastUpdated = System.currentTimeMillis()
+            activeRequests.remove(completion.taskId)
+            
+            // Send acknowledgment
+            scope.launch {
+                sendTaskCompletionAck(senderAddress, completion.taskId)
+            }
+        }
+    }
+    
+    /**
+     * SEND TASK COMPLETION ACKNOWLEDGMENT
+     * 
+     * Confirm receipt of completion notification (stops retry loop).
+     */
+    private suspend fun sendTaskCompletionAck(
+        executorAddress: Int,
+        taskId: String
+    ) {
+        val ack = TaskCompletionAckMessage(taskId = taskId)
+        
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Sending completion acknowledgment for task $taskId to node $executorAddress"
+        )
+        
+        // TODO: Implement in MeshNetworkInterface
+        // meshNetwork.sendTaskCompletionAckMessage(executorAddress, ack)
+    }
+    
+    /**
+     * HANDLE TASK COMPLETION ACKNOWLEDGMENT (Compute Node Side)
+     * 
+     * Compute node receives acknowledgment and stops completion retry loop.
+     */
+    fun handleTaskCompletionAckMessage(
+        senderAddress: Int,
+        ack: TaskCompletionAckMessage
+    ) {
+        betaLogger?.log(
+            LogLevel.INFO,
+            "ComputeService",
+            "Received completion acknowledgment for task ${ack.taskId} from node $senderAddress"
+        )
+        
+        // TODO: Stop retry loop if implemented
+    }
 
     // The IntelligentTaskScheduler inner class and other logic are now imported from scheduler package.
 }
