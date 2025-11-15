@@ -221,8 +221,12 @@ class DistributedStorageManager(
     /**
      * Handles responses from storage node broadcast.
      * Evaluates responses, retries if needed, and continues lifecycle for chunk distribution.
+     * 
+     * @param requestId The ID of the originating request for correlation
+     * @param senderId The node address that sent the response
+     * @param response The storage node response
      */
-    fun handleStorageNodeResponse(senderId: Int, response: StorageNodeResponse) {
+    fun handleStorageNodeResponse(requestId: String, senderId: Int, response: StorageNodeResponse) {
         pendingStorageNodeRequests.forEach { pending ->
             if (pending.request.fileId == response.fileId) {
                 pending.responses.add(response)
@@ -230,26 +234,52 @@ class DistributedStorageManager(
         }
         // Optionally: update replication tracker or trigger next lifecycle step
         replicationTracker.updateNodeAvailability(response.nodeId, response.availableSpace, response.systemState)
+        
+        betaLogger.log(
+            LogLevel.DEBUG,
+            TAG,
+            "Received storage node response for request $requestId from node $senderId (fileId=${response.fileId})"
+        )
     }
 
     /**
      * Handles chunk retrieval responses.
      * Used to aggregate responses for ongoing retrieval requests.
+     * 
+     * @param requestId The ID of the originating request for correlation
+     * @param senderId The node address that sent the response
+     * @param response The chunk retrieval response
      */
-    fun handleChunkRetrievalResponse(senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse) {
+    fun handleChunkRetrievalResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse) {
         val chunkId = response.chunkId
         pendingChunkRetrievals.computeIfAbsent(chunkId) { mutableListOf() }.add(response)
+        
+        betaLogger.log(
+            LogLevel.DEBUG,
+            TAG,
+            "Received chunk retrieval response for request $requestId from node $senderId (chunkId=$chunkId)"
+        )
         // Optionally: trigger retrieval continuation or update state
     }
 
     /**
      * Handles replica responses.
      * Used to track replica state and health for files/chunks.
+     * 
+     * @param requestId The ID of the originating request for correlation
+     * @param senderId The node address that sent the response
+     * @param response The replica response
      */
-    fun handleReplicaResponse(senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ReplicaResponse) {
+    fun handleReplicaResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ReplicaResponse) {
         val fileId = response.fileId
         pendingReplicaResponses.computeIfAbsent(fileId) { mutableListOf() }.add(response)
         replicationTracker.updateReplicaState(fileId, response)
+        
+        betaLogger.log(
+            LogLevel.DEBUG,
+            TAG,
+            "Received replica response for request $requestId from node $senderId (fileId=$fileId)"
+        )
     }
 
     /**

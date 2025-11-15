@@ -61,9 +61,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("org.msgpack:msgpack-core:0.8.22")
     implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.ai.edge.litert:litert:2.0.0-alpha")
-    implementation("com.google.ai.edge.litert:litert-gpu:2.0.0-alpha")
-    implementation("com.google.ai.edge.litert:litert-support:2.0.0-alpha")
+    // DEPRECATED: LiteRT support deferred to future implementation
+    // implementation("com.google.ai.edge.litert:litert:2.0.0-alpha")
+    // implementation("com.google.ai.edge.litert:litert-gpu:2.0.0-alpha")
+    // implementation("com.google.ai.edge.litert:litert-support:2.0.0-alpha")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.0")
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")

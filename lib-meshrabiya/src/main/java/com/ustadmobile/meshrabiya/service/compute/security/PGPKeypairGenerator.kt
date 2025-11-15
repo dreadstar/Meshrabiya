@@ -2,6 +2,7 @@ package com.ustadmobile.meshrabiya.service.compute.security
 
 import org.bouncycastle.bcpg.ArmoredOutputStream
 import org.bouncycastle.bcpg.HashAlgorithmTags
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.openpgp.*
 import org.bouncycastle.openpgp.operator.PGPDigestCalculator
 import org.bouncycastle.openpgp.operator.jcajce.JcaPGPContentSignerBuilder
@@ -11,6 +12,7 @@ import org.bouncycastle.openpgp.operator.jcajce.JcePBESecretKeyEncryptorBuilder
 import java.io.ByteArrayOutputStream
 import java.security.KeyPairGenerator
 import java.security.SecureRandom
+import java.security.Security
 import java.util.*
 
 /**
@@ -27,6 +29,13 @@ object PGPKeypairGenerator {
     private const val RSA_KEY_SIZE = 4096
     private const val KEY_ALGORITHM = "RSA"
     
+    // Ensure BouncyCastle provider is registered
+    init {
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.addProvider(BouncyCastleProvider())
+        }
+    }
+    
     /**
      * Generate a PGP keypair for a task.
      * 
@@ -39,7 +48,7 @@ object PGPKeypairGenerator {
         passphrase: CharArray? = null
     ): Pair<String, String> {
         // Generate RSA keypair
-        val keyPairGenerator = KeyPairGenerator.getInstance(KEY_ALGORITHM, "BC")
+        val keyPairGenerator = KeyPairGenerator.getInstance(KEY_ALGORITHM, BouncyCastleProvider.PROVIDER_NAME)
         keyPairGenerator.initialize(RSA_KEY_SIZE, SecureRandom())
         val keyPair = keyPairGenerator.generateKeyPair()
         
@@ -52,7 +61,7 @@ object PGPKeypairGenerator {
         
         // Create digest calculator for key ring
         val sha256Calc: PGPDigestCalculator = JcaPGPDigestCalculatorProviderBuilder()
-            .setProvider("BC")
+            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
             .build()
             .get(HashAlgorithmTags.SHA256)
         
@@ -67,10 +76,10 @@ object PGPKeypairGenerator {
             JcaPGPContentSignerBuilder(
                 pgpKeyPair.publicKey.algorithm,
                 HashAlgorithmTags.SHA256
-            ).setProvider("BC"),
+            ).setProvider(BouncyCastleProvider.PROVIDER_NAME),
             if (passphrase != null) {
                 JcePBESecretKeyEncryptorBuilder(PGPEncryptedData.AES_256, sha256Calc)
-                    .setProvider("BC")
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                     .build(passphrase)
             } else {
                 null

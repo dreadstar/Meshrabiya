@@ -187,6 +187,35 @@ class IntelligentDistributedComputeService(
     }
     
     /**
+     * Handle single compute node response (called by MeshEcosystemListener).
+     * Routes individual response to the appropriate tracked request.
+     * 
+     * @param requestId The UUID of the original broadcast request
+     * @param senderId The node address that sent this response
+     * @param response The compute node response with availability and capabilities
+     */
+    fun handleComputeNodeResponse(
+        requestId: String,
+        senderId: Int,
+        response: ComputeNodeResponse
+    ) {
+        // Find the tracked request by matching requestId
+        val tracked = activeRequests.values.firstOrNull { 
+            it.localRequest.mmcpRequest.taskId == requestId 
+        }
+        
+        if (tracked != null) {
+            tracked.responses.add(response)
+            betaLogger?.log(LogLevel.DEBUG, "ComputeService",
+                "Added response from node $senderId for request $requestId " +
+                "(total responses: ${tracked.responses.size})")
+        } else {
+            betaLogger?.log(LogLevel.WARN, "ComputeService",
+                "Received response for unknown request $requestId from node $senderId")
+        }
+    }
+    
+    /**
      * Check if response has required ML Kit capabilities for the task.
      * Returns true if no specific requirements or all requirements met.
      */

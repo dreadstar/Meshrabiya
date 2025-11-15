@@ -100,7 +100,7 @@ class MeshEcosystemListener(
         }
 
         // Get current node roles to check if we should handle this message
-        val currentRoles: Set<MeshRole> = virtualNode.getEmergentRoleManager().getCurrentMeshRoles()
+        val currentRoles = virtualNode.getEmergentRoleManager().getCurrentMeshRoles()
 
         when (message) {
             // === STORAGE RESPONSES (responses to our storage queries) ===

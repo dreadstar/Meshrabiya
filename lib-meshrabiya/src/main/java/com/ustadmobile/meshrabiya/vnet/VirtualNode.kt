@@ -202,20 +202,22 @@ abstract class VirtualNode(
     protected val coreGossipBroadcastService: CoreGossipBroadcastService = 
         CoreGossipBroadcastService(meshGossipService)
     
-    // MeshNetworkInterface implementation - bridge to VirtualNode capabilities
-    protected val meshNetworkInterface: MeshNetworkInterface = 
-        VirtualNode_MeshNetworkInterface(this)
-    
-    // MeshEcosystemListener depends on meshNetworkInterface and meshGossipService
-    protected val meshEcosystemListener: MeshEcosystemListener = 
-        MeshEcosystemListener(meshNetworkInterface, meshGossipService)
-    
     // EmergentRoleManager initialized lazily with context from subclass
     protected val emergentRoleManager: EmergentRoleManager by lazy {
         val context = getContext() 
             ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
         EmergentRoleManager(this, context)
     }
+    
+    // MeshEcosystemListener depends on emergentRoleManager and meshGossipService
+    protected val meshEcosystemListener: MeshEcosystemListener by lazy {
+        MeshEcosystemListener(this)
+    }
+    
+    // MeshNetworkInterface implementation - bridge to VirtualNode capabilities
+    // DEPRECATED: Being phased out in favor of direct service access
+    protected val meshNetworkInterface: MeshNetworkInterface = 
+        VirtualNode_MeshNetworkInterface(this)
     
     // IntelligentDistributedComputeService initialized lazily with all dependencies
     protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
@@ -553,17 +555,18 @@ abstract class VirtualNode(
             }
 
             // Ecosystem message handling (UDP broadcast or direct)
+            // Route ALL Distributed Storage & Compute messages to MeshEcosystemListener
             val ecosystemPort = MeshrabiyaConstants.getEcosystemGossipPort()
             if(packet.header.toPort == ecosystemPort) {
                 val bytes = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
-                val msgType = try {
-                    MeshEcosystemMessage.fromBytes(bytes).type
+                try {
+                    val message = MeshEcosystemMessage.fromBytes(bytes)
+                    val senderId = packet.header.fromAddr
+                    
+                    // MeshEcosystemListener is the global listener for all ecosystem messages
+                    meshEcosystemListener.routeMessage(senderId, message)
                 } catch (e: Exception) {
-                    logger(Log.WARN, "$logPrefix: Failed to deserialize MeshEcosystemMessage: ${e.message}")
-                    null
-                }
-                if (msgType != null) {
-                    coreGossipBroadcastService.onReceiveBroadcast(bytes, msgType)
+                    logger(Log.WARN, "$logPrefix: Failed to deserialize or route MeshEcosystemMessage: ${e.message}", e)
                 }
                 return
             }

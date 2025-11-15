@@ -8,13 +8,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Provides robust acquire/release APIs and pool monitoring.
  *
  * Usage:
- *   val pool = MeshConnectionPool(virtualNode, poolSize = 8)
+ *   val pool = MeshConnectionPool(meshNetworkInterface, poolSize = 8)
  *   val conn = pool.acquireConnection()
  *   // ... use conn ...
  *   pool.releaseConnection(conn)
  */
 class MeshConnectionPool(
-    private val virtualNode: VirtualNode,
+    private val meshNetworkInterface: MeshNetworkInterface,
     poolSize: Int = DEFAULT_POOL_SIZE
 ) {
 
@@ -28,7 +28,7 @@ class MeshConnectionPool(
 
     init {
         repeat(maxPoolSize) {
-            connectionQueue.add(Connection(virtualNode))
+            connectionQueue.add(Connection(meshNetworkInterface))
             totalConnections.incrementAndGet()
         }
     }
@@ -76,9 +76,9 @@ class MeshConnectionPool(
 
     /**
      * Connection abstraction for pooled communication.
-     * Wraps VirtualNode for mesh operations.
+     * Wraps MeshNetworkInterface for mesh operations.
      */
-    class Connection(val virtualNode: VirtualNode) {
+    class Connection(val meshNetworkInterface: MeshNetworkInterface) {
         // Add any connection-specific state or methods here if needed.
     }
 }

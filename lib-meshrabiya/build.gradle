@@ -63,11 +63,19 @@ dependencies {
     api "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
     api "androidx.fragment:fragment:1.6.2"
     api "androidx.datastore:datastore-preferences:1.1.7"
+    
+    // BouncyCastle for TLS/QUIC certificates and PGP encryption
     api "org.bouncycastle:bcprov-jdk18on:1.75"
     api "org.bouncycastle:bcpkix-jdk18on:1.75"
     api "org.bouncycastle:bcutil-jdk18on:1.75"
+    api "org.bouncycastle:bcpg-jdk18on:1.75"  // PGP support for PGPKeypairGenerator.kt
+    
     api "com.github.seancfoley:ipaddress:5.5.1"
-    api "com.google.ai.edge.litert:litert:2.0.0-alpha"
+    
+    // LiteRT (TensorFlow Lite) - DEPRECATED: Commented out, deferred to future implementation
+    // api "com.google.ai.edge.litert:litert:2.0.0-alpha"
+    
+    // ML Kit services (active)
     api "com.google.android.gms:play-services-mlkit-text-recognition:19.0.1"
     api "com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.0"
     api "com.google.android.gms:play-services-mlkit-face-detection:17.1.0"

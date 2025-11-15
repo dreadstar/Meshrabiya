@@ -2,16 +2,19 @@ package com.ustadmobile.meshrabiya.service
 
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
-import com.ustadmobile.meshrabiya.storage.StorageNodeRequest
-import com.ustadmobile.meshrabiya.storage.StorageNodeResponse
+import com.ustadmobile.meshrabiya.vnet.StorageNodeRequest
+import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
 import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalQuery
 import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
 import com.ustadmobile.meshrabiya.vnet.ReplicaQuery
 import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
-import com.ustadmobile.meshrabiya.storage.StorageCapabilities
-import com.ustadmobile.meshrabiya.service.MeshGossipService.AccessType
-import com.ustadmobile.meshrabiya.storage.AccessPattern
+import com.ustadmobile.meshrabiya.mmcp.StorageCapabilities
+import com.ustadmobile.meshrabiya.mmcp.AccessPattern
+import com.ustadmobile.meshrabiya.service.AccessType
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import org.msgpack.core.MessagePack
 import org.msgpack.core.MessageUnpacker
 import org.msgpack.core.MessageBufferPacker
@@ -67,14 +70,15 @@ sealed class MeshEcosystemMessage(
                     )
                 )
                 "StorageNodeResponse" -> StorageNodeResponseMessage(
-                    StorageNodeResponse(
+                    response = StorageNodeResponse(
                         nodeId = unpacker.unpackString(),
                         availableSpace = unpacker.unpackLong(),
                         systemState = unpacker.unpackString(),
                         url = unpacker.unpackString(),
                         latency = unpacker.unpackInt(),
                         fitnessScore = unpacker.unpackFloat()
-                    )
+                    ),
+                    requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
                 )
                 "ChunkTransfer" -> {
                     val chunkId = unpacker.unpackString()
@@ -95,7 +99,7 @@ sealed class MeshEcosystemMessage(
                     ChunkRetrievalQuery(unpacker.unpackString())
                 )
                 "ChunkRetrievalResponse" -> ChunkRetrievalResponseMessage(
-                    ChunkRetrievalResponse(
+                    response = ChunkRetrievalResponse(
                         chunkId = unpacker.unpackString(),
                         fileId = unpacker.unpackString(),
                         chunkIndex = unpacker.unpackInt(),
@@ -104,13 +108,15 @@ sealed class MeshEcosystemMessage(
                         fileName = unpacker.unpackString(),
                         relativePath = unpacker.unpackString(),
                         chunkSize = unpacker.unpackLong()
-                    )
+                    ),
+                    requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
                 )
                 "ReplicaQuery" -> ReplicaQueryMessage(
                     ReplicaQuery(unpacker.unpackString())
                 )
                 "ReplicaResponse" -> ReplicaResponseMessage(
-                    ReplicaResponse(unpacker.unpackString())
+                    response = ReplicaResponse(unpacker.unpackString()),
+                    requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
                 )
                 "StorageCapabilities" -> StorageCapabilitiesMessage(
                     StorageCapabilities(
@@ -172,10 +178,14 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
     }
 }
 
-data class StorageNodeResponseMessage(val response: StorageNodeResponse) : MeshEcosystemMessage("StorageNodeResponse") {
+data class StorageNodeResponseMessage(
+    val response: StorageNodeResponse,
+    val requestId: String? = null
+) : MeshEcosystemMessage("StorageNodeResponse") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
+        packer.packString(requestId ?: "")
         packer.packString(response.nodeId)
         packer.packLong(response.availableSpace)
         packer.packString(response.systemState)
@@ -224,10 +234,14 @@ data class ChunkRetrievalQueryMessage(val query: ChunkRetrievalQuery) : MeshEcos
     }
 }
 
-data class ChunkRetrievalResponseMessage(val response: ChunkRetrievalResponse) : MeshEcosystemMessage("ChunkRetrievalResponse") {
+data class ChunkRetrievalResponseMessage(
+    val response: ChunkRetrievalResponse,
+    val requestId: String? = null
+) : MeshEcosystemMessage("ChunkRetrievalResponse") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
+        packer.packString(requestId ?: "")
         packer.packString(response.chunkId)
         packer.packString(response.fileId)
         packer.packInt(response.chunkIndex)
@@ -251,10 +265,14 @@ data class ReplicaQueryMessage(val query: ReplicaQuery) : MeshEcosystemMessage("
     }
 }
 
-data class ReplicaResponseMessage(val response: ReplicaResponse) : MeshEcosystemMessage("ReplicaResponse") {
+data class ReplicaResponseMessage(
+    val response: ReplicaResponse,
+    val requestId: String? = null
+) : MeshEcosystemMessage("ReplicaResponse") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
+        packer.packString(requestId ?: "")
         packer.packString(response.nodeId)
         packer.close()
         return packer.toByteArray()

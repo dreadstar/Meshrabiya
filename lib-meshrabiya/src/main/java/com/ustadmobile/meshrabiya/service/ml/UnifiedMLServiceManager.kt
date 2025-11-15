@@ -74,7 +74,7 @@ class UnifiedMLServiceManager(
         return when (serviceType) {
             "ml-kit-native" -> processMLKitNative(serviceId, input)
             "ml-kit-custom" -> processMLKitCustom(serviceId, input)
-            "litert" -> processLiteRT(serviceId, input)
+            // "litert" -> processLiteRT(serviceId, input) // DEPRECATED: LiteRT support deferred
             else -> MLServiceResult.error("Unknown service type: $serviceType")
         }
     }
