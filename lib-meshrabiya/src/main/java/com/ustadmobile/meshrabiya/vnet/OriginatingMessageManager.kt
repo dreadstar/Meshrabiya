@@ -348,11 +348,11 @@ class OriginatingMessageManager(
             // Store neighbor fitness and role info
             neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair((mmcpMessage.fitnessScore * 100).toInt(), 0) // Convert fitness score back to 0-100 scale, default role
             
-            // Update EmergentRoleManager with mesh intelligence if available
-            (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.processNodeAnnouncement(
-                nodeId = mmcpMessage.nodeId,
-                meshRoles = mmcpMessage.meshRoles
-            )
+            // DEPRECATED: processNodeAnnouncement() method doesn't exist (false start for quorum/service announcement system)
+            // (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.processNodeAnnouncement(
+            //     nodeId = mmcpMessage.nodeId,
+            //     meshRoles = mmcpMessage.meshRoles
+            // )
             
             // Also update MeshRoleManager if available
             // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(

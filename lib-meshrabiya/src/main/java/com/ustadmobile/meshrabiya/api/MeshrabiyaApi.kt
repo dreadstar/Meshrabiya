@@ -18,7 +18,7 @@ import com.ustadmobile.meshrabiya.model.NodeInfo
 import com.ustadmobile.meshrabiya.model.ApiResult
 import com.ustadmobile.meshrabiya.vnet.LocalNodeState
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
-import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+// import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
  * Unified API interface for Meshrabiya module.
@@ -117,15 +117,15 @@ interface MeshrabiyaApi {
     fun setSetting(key: String, value: Any, callback: (Result<Unit>) -> Unit)
 
     // --- Service Bundle & Gateway Controls ---
-    fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit)
-    fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit)
+    // fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit)
+    // fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit)
     fun setOnGatewayTraffic(handler: (packet: VirtualPacket) -> Boolean)
     fun getMeshTrafficRouterStatus(): String
 
     // --- Event/Callback Integration ---
     fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit)
     fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit)
-    fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit)
-    fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit)
+    // fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit)
+    // fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit)
     fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit)
 }

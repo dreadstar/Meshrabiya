@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
-import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+// import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
  * Production-ready implementation of MeshrabiyaApi.
@@ -295,6 +295,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
     override fun setOnPermissionUpdated(handler: (fileId: String, success: Boolean) -> Unit) {
         onPermissionUpdated = handler
+    }
     override fun setOnOperationFailed(handler: (operation: String, error: Throwable) -> Unit) {
         onOperationFailed = handler
     }
@@ -304,7 +305,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     //     onTaskCompleted = handler
     // }
     
-    override fun setOnFileShared(handler: (fileId: String, recipientId: String) -> Unit) {
+    
     override fun setOnFileShared(handler: (fileId: String, recipientId: String) -> Unit) {
         onFileShared = handler
     }
@@ -333,22 +334,22 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Service Bundle & Gateway Controls ---
-    override fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
-        try {
-            myNode?.announceService(serviceAnnouncement, signedBundle)
-            callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
-    }
-    override fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit) {
-        try {
-            val result = myNode?.requestServiceBundle(serviceId, requesterOnionAddress)
-            callback(Result.success(result))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
-    }
+    // override fun announceService(serviceAnnouncement: ServiceAnnouncement, signedBundle: ByteArray, callback: (Result<Unit>) -> Unit) {
+    //     try {
+    //         myNode?.announceService(serviceAnnouncement, signedBundle)
+    //         callback(Result.success(Unit))
+    //     } catch (e: Exception) {
+    //         callback(Result.failure(e))
+    //     }
+    // }
+    // override fun requestServiceBundle(serviceId: String, requesterOnionAddress: String, callback: (Result<ByteArray?>) -> Unit) {
+    //     try {
+    //         val result = myNode?.requestServiceBundle(serviceId, requesterOnionAddress)
+    //         callback(Result.success(result))
+    //     } catch (e: Exception) {
+    //         callback(Result.failure(e))
+    //     }
+    // }
     private var onGatewayTraffic: ((packet: VirtualPacket) -> Boolean)? = null
     override fun setOnGatewayTraffic(handler: (packet: VirtualPacket) -> Boolean) {
         onGatewayTraffic = handler
@@ -361,8 +362,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // --- Event/Callback Integration ---
     private var onMeshStateChanged: ((MeshState) -> Unit)? = null
     private var onPeerCountChanged: ((Int) -> Unit)? = null
-    private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
-    private var onServiceAnnounced: ((String, ServiceAnnouncement) -> Unit)? = null
+    // private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
+    // private var onServiceAnnounced: ((String, ServiceAnnouncement) -> Unit)? = null
     private var onGossipMessage: ((Int, ByteArray) -> Unit)? = null
 
     override fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit) {
@@ -371,12 +372,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit) {
         onPeerCountChanged = handler
     }
-    override fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit) {
-        onServiceBundleReceived = handler
-    }
-    override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit) {
-        onServiceAnnounced = handler
-    }
+    // override fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit) {
+    //     onServiceBundleReceived = handler
+    // }
+    // override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit) {
+    //     onServiceAnnounced = handler
+    // }
     override fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit) {
         onGossipMessage = handler
         myNode?.addGossipListener(handler)

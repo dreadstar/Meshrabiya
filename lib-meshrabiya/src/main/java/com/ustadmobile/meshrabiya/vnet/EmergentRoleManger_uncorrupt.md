@@ -12,23 +12,12 @@ import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.AndroidDeviceCapabilityManager
-// UPDATED: MeshRole moved from mmcp to vnet package (canonical location)
-import com.ustadmobile.meshrabiya.vnet.MeshRole
-
-// UPDATED: Device capability types extracted to vnet/hardware/DeviceMetrics.kt
-// Original location (mmcp/EnhancedGossipMessage.kt) deprecated to .md
-import com.ustadmobile.meshrabiya.vnet.hardware.ResourceCapabilities
-import com.ustadmobile.meshrabiya.vnet.hardware.BatteryInfo
-import com.ustadmobile.meshrabiya.vnet.hardware.BatteryHealth
-import com.ustadmobile.meshrabiya.vnet.hardware.ChargingSource
-import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
-import com.ustadmobile.meshrabiya.vnet.hardware.PowerState
-import com.ustadmobile.meshrabiya.vnet.hardware.SerializableNetworkInterfaceInfo
-
-// DEPRECATED: MmcpGatewayAnnouncement - part of quorum/announcement false start
-// File moved to MmcpGatewayAnnouncement.md (already deprecated on filesystem)
-// import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
-
+import com.ustadmobile.meshrabiya.mmcp.MeshRole
+import com.ustadmobile.meshrabiya.mmcp.ResourceCapabilities
+import com.ustadmobile.meshrabiya.mmcp.BatteryInfo
+import com.ustadmobile.meshrabiya.mmcp.ThermalState
+import com.ustadmobile.meshrabiya.mmcp.PowerState
+import com.ustadmobile.meshrabiya.mmcp.MmcpGatewayAnnouncement
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -455,9 +444,6 @@ class EmergentRoleManager(
         safeLog(LogLevel.DEBUG, "Updated mesh intelligence: $intelligence")
     }
     
-    // DEPRECATED: Node announcement processing - part of quorum/announcement false start
-    // Will rebuild mesh intelligence from originator messages when needed
-    /*
     /**
      * Process received node announcement to update mesh intelligence
      */
@@ -498,7 +484,6 @@ class EmergentRoleManager(
         _meshIntelligence.value = updated
         safeLog(LogLevel.DEBUG, "Updated mesh intelligence from node $nodeId: $updated")
     }
-    */
     
     private fun estimateNetworkLoad(): Float {
         // TODO: Implement actual network load estimation
@@ -546,14 +531,12 @@ class EmergentRoleManager(
                 MeshRole.TOR_GATEWAY in addedRoles -> {
                     safeLog(LogLevel.INFO, "EmergentRole: Activating Tor gateway routing")
                     activateGatewayRouting(GatewayMode.TOR_GATEWAY)
-                    // DEPRECATED: announceGatewayCapability() - part of quorum/announcement false start
-                    // CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
+                    CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
                 }
                 MeshRole.CLEARNET_GATEWAY in addedRoles -> {
                     safeLog(LogLevel.INFO, "EmergentRole: Activating clearnet gateway routing")
                     activateGatewayRouting(GatewayMode.CLEARNET_GATEWAY)
-                    // DEPRECATED: announceGatewayCapability() - part of quorum/announcement false start
-                    // CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
+                    CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
                 }
             }
             
@@ -647,10 +630,10 @@ class EmergentRoleManager(
         }
     }
     
-    // DEPRECATED: Gateway announcement functionality - part of quorum false start
-    // Pre-announcement pattern unused, replaced by on-demand query
-    // MmcpGatewayAnnouncement.md already deprecated on filesystem
-    /*
+    /**
+     * Announce gateway capability to the mesh network
+     * Implements comprehensive logging consistent with project standards
+     */
     private suspend fun announceGatewayCapability() {
         val startTime = System.currentTimeMillis()
         
@@ -739,11 +722,11 @@ class EmergentRoleManager(
             safeLog(LogLevel.ERROR, "Failed to announce gateway capability: ${e.message}", e)
         }
     }
-    */
     
-    // DEPRECATED: Network capacity estimation - part of quorum/announcement false start
-    // Used only by announceGatewayCapability() which is deprecated
-    /*
+    /**
+     * Estimate current network capacity based on device capabilities
+     * Implements performance tracking consistent with project standards
+     */
     private suspend fun estimateNetworkCapacity(): MmcpGatewayAnnouncement.BandwidthCapacity {
         val startTime = System.currentTimeMillis()
         
@@ -779,11 +762,10 @@ class EmergentRoleManager(
             )
         }
     }
-    */
     
-    // DEPRECATED: Network latency measurement - part of quorum/announcement false start
-    // Used only by announceGatewayCapability() which is deprecated
-    /*
+    /**
+     * Measure current network latency with comprehensive performance tracking
+     */
     private suspend fun measureNetworkLatency(): MmcpGatewayAnnouncement.NetworkLatency {
         val startTime = System.currentTimeMillis()
         
@@ -833,7 +815,6 @@ class EmergentRoleManager(
             )
         }
     }
-    */
     
     /**
      * Check if I2P support is available
@@ -865,9 +846,9 @@ class EmergentRoleManager(
         }
     }
     
-    // DEPRECATED: Protocol list generation - part of quorum/announcement false start
-    // Used only by announceGatewayCapability() which is deprecated
-    /*
+    /**
+     * Get supported protocols for gateway type
+     */
     private fun getSupportedProtocols(gatewayType: MmcpGatewayAnnouncement.GatewayType): Set<String> {
         return when (gatewayType) {
             MmcpGatewayAnnouncement.GatewayType.CLEARNET -> setOf("HTTP", "HTTPS", "DNS", "FTP")
@@ -875,7 +856,6 @@ class EmergentRoleManager(
             MmcpGatewayAnnouncement.GatewayType.I2P -> setOf("HTTP", "HTTPS", "I2P")
         }
     }
-    */
     
     /**
      * Generate unique message ID
