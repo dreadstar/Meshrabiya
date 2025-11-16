@@ -102,13 +102,20 @@ data class RoleTransitionPlan(
 )
 
 /**
- * Enhanced emergent role manager that builds on the existing MeshRoleManager
- * Uses global mesh intelligence for smart, decentralized role assignment
+ * Enhanced emergent role manager for intelligent, decentralized role assignment
+ * 
+ * Features:
+ * - Hardware-aware role assignment (battery, thermal, CPU monitoring)
+ * - Multi-role support (MESH_PARTICIPANT, TOR_GATEWAY, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, COORDINATOR)
+ * - Power constraint management with graceful transitions
+ * - User preference integration (Tor proxy, preferred roles)
+ * - Real-time mesh intelligence updates
+ * 
+ * Replaces deprecated MeshRoleManager with superior architecture.
  */
 class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
-    private val meshRoleManager: MeshRoleManager,
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
     private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
@@ -148,6 +155,28 @@ class EmergentRoleManager(
     val isRoleTransitionInProgress: StateFlow<Boolean> = _isRoleTransitionInProgress.asStateFlow()
 
     private val _preferredRoles = MutableStateFlow<Set<MeshRole>>(emptySet())
+
+    /**
+     * User preference for allowing Tor proxy gateway mode
+     * When true, node will prefer TOR_GATEWAY role over CLEARNET_GATEWAY
+     */
+    private val _userAllowsTorProxy = MutableStateFlow(false)
+    val userAllowsTorProxy: StateFlow<Boolean> = _userAllowsTorProxy.asStateFlow()
+
+    fun setUserAllowsTorProxy(allowed: Boolean) {
+        _userAllowsTorProxy.value = allowed
+        safeLog(LogLevel.INFO, "User Tor proxy preference set to: $allowed")
+    }
+
+    /**
+     * Legacy fitness score structure for fallback compatibility
+     * Used when hardware capability manager is unavailable
+     */
+    private data class LegacyFitnessScore(
+        val signalStrength: Int,
+        val batteryLevel: Float,
+        val clientCount: Int
+    )
 
     /**
      * Main entry point: determine optimal roles based on capabilities and mesh needs
@@ -251,8 +280,8 @@ class EmergentRoleManager(
         
         // Otherwise, use capability-based selection
         return when {
-            !meshRoleManager.userAllowsTorProxy && node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps when Tor not allowed
-            meshRoleManager.userAllowsTorProxy -> MeshRole.TOR_GATEWAY
+            !userAllowsTorProxy.value && node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps when Tor not allowed
+            userAllowsTorProxy.value -> MeshRole.TOR_GATEWAY
             node.resources.availableBandwidth > 10_000_000L -> MeshRole.CLEARNET_GATEWAY // >10Mbps fallback
             else -> MeshRole.TOR_GATEWAY // Default to Tor for privacy
         }
@@ -378,7 +407,8 @@ class EmergentRoleManager(
             logger?.log(LogLevel.BASIC, "EmergentRoleManager", 
                 "Hardware metrics unavailable, using fallback: ${e.message}")
             
-            val fitnessScore = meshRoleManager.calculateFitnessScore()
+            // DEPRECATED: MeshRoleManager.calculateFitnessScore() replaced with internal method
+            val fitnessScore = calculateLegacyFitnessScore()
             val storageOffered = calculateAvailableStorage()
             
             val resources = ResourceCapabilities(
@@ -410,6 +440,43 @@ class EmergentRoleManager(
                 stability = 0.8f // Fallback: assume good stability
             )
         }
+    }
+    
+    /**
+     * Calculate legacy fitness score for fallback scenarios
+     * Used when hardware capability manager fails or is unavailable
+     */
+    private fun calculateLegacyFitnessScore(): LegacyFitnessScore {
+        // Try to get fitness score from VirtualNode if available
+        val virtualNodeFitness = try {
+            virtualNode.getCurrentFitnessScore()
+        } catch (e: Exception) {
+            null
+        }
+        
+        // Estimate signal strength from network topology
+        val signalStrength = virtualNodeFitness ?: run {
+            val neighborCount = virtualNode.neighbors().size
+            when {
+                neighborCount >= 3 -> 100 // Well-connected node
+                neighborCount >= 1 -> 50  // Some connectivity
+                else -> 0                 // Isolated node
+            }
+        }
+        
+        // Default battery level (moderate)
+        val batteryLevel = 0.5f
+        
+        // Client count from neighbors
+        val clientCount = virtualNode.neighbors().size
+        
+        safeLog(LogLevel.DEBUG, "Legacy fitness: signal=$signalStrength, battery=$batteryLevel, clients=$clientCount")
+        
+        return LegacyFitnessScore(
+            signalStrength = signalStrength,
+            batteryLevel = batteryLevel,
+            clientCount = clientCount
+        )
     }
     
     /**
@@ -911,8 +978,8 @@ class EmergentRoleManager(
                 applyTransitionPlan(plan)
             }
             
-            // Also update the legacy role manager
-            meshRoleManager.updateRole()
+            // DEPRECATED: meshRoleManager.updateRole() - legacy NodeRole system removed
+            // EmergentRoleManager uses MeshRole enum exclusively, no legacy compatibility needed
             
         } catch (e: Exception) {
             safeLog(LogLevel.ERROR, "Error updating roles: ${e.message}")
@@ -934,6 +1001,11 @@ class EmergentRoleManager(
     }
     
     fun getPreferredRoles(): Set<MeshRole> = _preferredRoles.value
+    
+    /**
+     * Get current Tor proxy preference
+     */
+    fun getUserAllowsTorProxy(): Boolean = userAllowsTorProxy.value
     
     // Hardware monitoring lifecycle management
     
