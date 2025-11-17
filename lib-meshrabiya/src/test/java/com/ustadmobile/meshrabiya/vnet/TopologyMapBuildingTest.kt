@@ -86,10 +86,14 @@ class TopologyMapBuildingTest {
         // Verify topology map was updated
         val topologyMap = manager.getTopologyMap()
         assertTrue("Topology map should contain sender address", topologyMap.containsKey(fromAddr))
+        
+        // NEW: Access neighbors via NodeTopologyInfo
+        val nodeInfo = topologyMap[fromAddr]
+        assertNotNull("NodeInfo should exist for sender", nodeInfo)
         assertEquals(
             "Topology map should contain sender's neighbors",
             neighbors.toSet(),
-            topologyMap[fromAddr]
+            nodeInfo?.neighbors
         )
         
         manager.close()
@@ -171,10 +175,10 @@ class TopologyMapBuildingTest {
         val topologyMap = manager.getTopologyMap()
         assertEquals("Topology map should contain all 3 nodes", 3, topologyMap.size)
         
-        // Verify each node's neighbors
-        assertEquals(setOf(192837465, 192837466), topologyMap[192837464])
-        assertEquals(setOf(192837464, 192837467), topologyMap[192837465])
-        assertEquals(setOf(192837465, 192837466), topologyMap[192837467])
+        // Verify each node's neighbors (NEW: access via NodeTopologyInfo.neighbors)
+        assertEquals(setOf(192837465, 192837466), topologyMap[192837464]?.neighbors)
+        assertEquals(setOf(192837464, 192837467), topologyMap[192837465]?.neighbors)
+        assertEquals(setOf(192837465, 192837466), topologyMap[192837467]?.neighbors)
         
         manager.close()
     }

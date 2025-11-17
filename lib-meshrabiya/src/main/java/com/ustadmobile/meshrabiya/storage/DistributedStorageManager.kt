@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import com.ustadmobile.meshrabiya.mmcp.AccessPattern
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
-import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
@@ -114,7 +114,7 @@ data class FileMetadata(
 
 class DistributedStorageManager(
     private val context: Context,
-    private val meshNetworkInterface: MeshNetworkInterface,
+    private val virtualNode: VirtualNode,
     private val meshGossipService: MeshGossipService,
     private val storageConfig: StorageConfiguration,
     private val connectionPool: MeshConnectionPool
@@ -142,7 +142,7 @@ class DistributedStorageManager(
         
         fun initialize(
             context: Context,
-            meshNetworkInterface: MeshNetworkInterface,
+            virtualNode: VirtualNode,
             meshGossipService: MeshGossipService,
             storageConfig: StorageConfiguration,
             connectionPool: MeshConnectionPool
@@ -430,7 +430,7 @@ class DistributedStorageManager(
         }
 
         // === NEW: Prepare permission metadata ===
-        val effectiveOwner = owner ?: meshNetworkInterface.getLocalNodeId()
+        val effectiveOwner = owner ?: virtualNode.addressAsInt.toString()
         val effectiveRecipients = when {
             recipients != null -> recipients
             accessScope == AccessScope.TASK_ISOLATED -> listOf(
@@ -504,7 +504,7 @@ class DistributedStorageManager(
                         }
                         if (connection != null) {
                             try {
-                                connection.meshNetworkInterface.sendChunkToNode(nodeId, chunk, chunkMsg.toBytes())
+                                connection.virtualNode.sendChunkToNode(nodeId, chunk, chunkMsg.toBytes())
                                 chunkReplicaTracker[chunk.chunkId]?.add(nodeId)
                                 betaLogger.log(LogLevel.INFO, TAG, "Chunk ${chunk.chunkId} stored on node $nodeId")
                             } finally {
@@ -616,7 +616,7 @@ class DistributedStorageManager(
                             val chunkInfoList = pendingChunkRetrievals[chunk.chunkId] ?: emptyList()
                             val nodeIds = chunkInfoList.map { it.nodeId }
                             for (nodeId in nodeIds) {
-                                val msgPackBytes = connection.meshNetworkInterface.requestChunkFromNode(nodeId, chunk.chunkId)
+                                val msgPackBytes = connection.virtualNode.requestChunkFromNode(nodeId, chunk.chunkId)
                                 if (msgPackBytes != null) {
                                     val chunkMsg = MeshEcosystemMessage.fromBytes(msgPackBytes)
                                     if (chunkMsg is MeshEcosystemMessage.ChunkTransferMessage && chunkMsg.chunkId == chunk.chunkId) {

@@ -15,9 +15,6 @@ import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
  */
 class ServiceLayerCoordinator(
     private val meshNetwork: IntelligentDistributedComputeService.MeshNetworkInterface,
-    // Optional Meshrabiya Mesh adapter for storage operations. Tests should provide this to avoid
-    // depending on runtime MeshServiceCoordinator initialization.
-    private val meshrabiyaAdapter: com.ustadmobile.meshrabiya.storage.MeshNetworkInterface? = null,
     // Optional beta logger - if not provided, attempt to obtain from MeshServiceCoordinator context
     private val betaLogger: BetaTestLogger? = try {
         com.ustadmobile.meshrabiya.service.MeshServiceCoordinator.getInstance(com.ustadmobile.meshrabiya.OrbotApp.instance.applicationContext).let {
@@ -41,15 +38,7 @@ class ServiceLayerCoordinator(
             betaLogger = betaLogger
         )
     }
-    // Use the coordinator-provided Meshrabiya MeshNetworkInterface. Fail fast if it's not available.
-    private val meshrabiyaMeshAdapter: com.ustadmobile.meshrabiya.storage.MeshNetworkInterface
-        get() = meshrabiyaAdapter ?: try {
-            com.ustadmobile.meshrabiya.service.MeshServiceCoordinator.getInstance(com.ustadmobile.meshrabiya.OrbotApp.instance.applicationContext)
-                .provideMeshNetworkInterface()
-        } catch (e: Exception) {
-            null
-        } ?: throw IllegalStateException("MeshServiceCoordinator did not provide a Meshrabiya MeshNetworkInterface. Ensure MeshServiceCoordinator is initialized before constructing ServiceLayerCoordinator or provide a meshrabiyaAdapter for tests.")
-
+    
     // DEPRECATED: Storage agent - November 14, 2025 - Use DistributedStorageManager instead
     // private val storageAgent by lazy { DistributedStorageAgent(meshrabiyaMeshAdapter) }
     

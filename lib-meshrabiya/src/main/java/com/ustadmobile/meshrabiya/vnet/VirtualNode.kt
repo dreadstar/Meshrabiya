@@ -192,7 +192,7 @@ abstract class VirtualNode(
         EmergentRoleManager(
             virtualNode = this,
             context = context,
-            getTopologyMap = { originatingMessageManager.getTopologyMap() },
+            getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
             getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
         )
     }
@@ -217,6 +217,25 @@ abstract class VirtualNode(
         originatingMessageNodeLostThreshold = 10_000,
         lostNodeCheckInterval = 1_000
     )
+
+    // === Gateway Selector and Router (Phase 4) ===
+    protected val gatewaySelector: GatewaySelector by lazy {
+        GatewaySelector(
+            originatingMessageManager = originatingMessageManager,
+            emergentRoleManager = emergentRoleManager,
+            logger = logger,
+            localNodeAddress = addressAsInt
+        )
+    }
+
+    protected val gatewayRouter: GatewayRouter by lazy {
+        GatewayRouter(
+            gatewaySelector = gatewaySelector,
+            virtualNode = this,
+            logger = logger,
+            localNodeAddress = addressAsInt
+        )
+    }
 
     private val localPort = findFreePort(0)
 
@@ -268,16 +287,12 @@ abstract class VirtualNode(
         MeshEcosystemListener(this)
     }
     
-    // MeshNetworkInterface implementation - bridge to VirtualNode capabilities
-    // DEPRECATED: Being phased out in favor of direct service access
-    protected val meshNetworkInterface: MeshNetworkInterface = 
-        VirtualNode_MeshNetworkInterface(this)
-    
     // IntelligentDistributedComputeService initialized lazily with all dependencies
     protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
         IntelligentDistributedComputeService(
-            meshNetwork = meshNetworkInterface,
-            resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
+            virtualNode = this,
+            // DEPRECATED: ResourceManager replaced by canonical compute task workflows
+            // resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
             pythonExecutor = createPythonExecutor(),
             // liteRTEngine = createLiteRTEngine(),
             emergentRoleManager = emergentRoleManager,
@@ -828,18 +843,65 @@ abstract class VirtualNode(
         return true
     }
 
-    // --- Helper: Route via proxy ---
-    private fun routeViaProxy(packet: VirtualPacket) {
-        val host = proxyHost ?: return
-        val port = proxyPort ?: return
+    // === Gateway Routing Methods (Phase 4) ===
+    
+    /**
+     * Check if this node is acting as a gateway of given type
+     */
+    fun isGatewayNode(gatewayType: MeshRole): Boolean {
+        return emergentRoleManager.currentMeshRoles.value.contains(gatewayType)
+    }
+
+    /**
+     * Route packet through gateway based on destination analysis
+     * CLIENT NODE: Select gateway from topology, route to gateway
+     * GATEWAY NODE: Route through proxy
+     */
+    fun routeThroughGateway(packet: VirtualPacket): Boolean {
+        // Determine gateway type needed based on destination
+        val gatewayType = determineGatewayType(packet)
+        
+        return if (gatewayType != null) {
+            gatewayRouter.routeToGateway(packet, gatewayType)
+        } else {
+            // No gateway needed, route directly (route() returns Unit, so wrap in true)
+            route(packet)
+            true
+        }
+    }
+
+    /**
+     * Determine which gateway type is needed for this packet
+     * @return Gateway type (TOR/CLEARNET/I2P) or null for direct routing
+     */
+    private fun determineGatewayType(packet: VirtualPacket): MeshRole? {
+        // TODO: Implement packet inspection logic
+        // Phase 1: Explicit tagging (application layer specifies gateway)
+        // Phase 2: Destination-based (.onion → TOR, .i2p → I2P, else CLEARNET)
+        // Phase 3: Port-based (443 → CLEARNET, 9150 → TOR, 7657 → I2P)
+        
+        // For now, return null (no gateway routing until classification implemented)
+        return null
+    }
+
+    /**
+     * Route packet through configured proxy (Tor/etc)
+     * GATEWAY NODE behavior - called by GatewayRouter
+     * Enhanced to return Boolean for success/failure
+     */
+    fun routeViaProxy(packet: VirtualPacket): Boolean {
+        val host = proxyHost ?: return false
+        val port = proxyPort ?: return false
+        
         try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(host, port))
             val socket = Socket(proxy)
-            // Example: send packet data via socket
             socket.getOutputStream().write(packet.data)
             socket.close()
+            return true
         } catch (e: Exception) {
             logger(Log.ERROR, "$logPrefix Failed to route via proxy: ${e.message}", e)
+            return false
         }
     }
 
@@ -848,7 +910,6 @@ abstract class VirtualNode(
     fun getDistributedStorageManager(): DistributedStorageManager? = distributedStorageManager
     fun getIntelligentDistributedComputeService(): IntelligentDistributedComputeService = intelligentDistributedComputeService
     fun getMeshEcosystemListener(): MeshEcosystemListener = meshEcosystemListener
-    fun getMeshNetworkInterface(): MeshNetworkInterface = meshNetworkInterface
     fun getEmergentRoleManager(): EmergentRoleManager = emergentRoleManager
     fun getOriginatingMessageManager(): OriginatingMessageManager = originatingMessageManager
 }

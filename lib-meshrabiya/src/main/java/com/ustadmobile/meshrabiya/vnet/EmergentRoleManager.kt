@@ -116,7 +116,7 @@ data class RoleTransitionPlan(
 class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
-    private val getTopologyMap: (() -> Map<Int, Set<Int>>)? = null,  // NEW: Callback
+    private val getTopologyMap: (() -> Map<Int, NodeTopologyInfo>)? = null,  // NEW: Callback - Updated to NodeTopologyInfo
     private val getCurrentNodeCapabilities: (() -> NodeCapabilitySnapshot)? = null,  // NEW: Callback
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
@@ -508,16 +508,16 @@ class EmergentRoleManager(
     private fun calculateBFSCentrality(): CentralityResult {
         try {
             // Get topology map from callback or OriginatingMessageManager
-            val topologyMap: Map<Int, Set<Int>> = getTopologyMap?.invoke() 
-                ?: (virtualNode as VirtualNode)
-                    .getOriginatingMessageManager()
-                    .getTopologyMap()
+            // NEW: Uses NodeTopologyInfo.neighbors instead of direct Set<Int>
+            val topologyMapInfo: Map<Int, NodeTopologyInfo> = (virtualNode as VirtualNode)
+                .getOriginatingMessageManager()
+                .getTopologyMapInfo()
             
             val myAddr = virtualNode.addressAsInt
             val minChokePointNeighbors = 2
             
             // Choke point detection: any node with ≤2 neighbors indicates bottleneck
-            val chokePointFlag = topologyMap.values.any { it.size <= minChokePointNeighbors }
+            val chokePointFlag = topologyMapInfo.values.any { it.neighbors.size <= minChokePointNeighbors }
             
             // BFS traversal for centrality calculation
             val visited = mutableSetOf<Int>()
@@ -537,7 +537,7 @@ class EmergentRoleManager(
                     reachable++
                 }
                 
-                val neighbors: Set<Int> = topologyMap[current] ?: emptySet()
+                val neighbors: Set<Int> = topologyMapInfo[current]?.neighbors ?: emptySet()
                 for (neighbor in neighbors) {
                     if (neighbor !in visited) {
                         visited.add(neighbor)
@@ -548,7 +548,7 @@ class EmergentRoleManager(
             
             // Calculate centrality: degree + (1 / average hops to all reachable nodes)
             val avgHops = if (reachable > 0) totalHops.toFloat() / reachable else 0f
-            val degree: Int = topologyMap[myAddr]?.size ?: 0
+            val degree: Int = topologyMapInfo[myAddr]?.neighbors?.size ?: 0
             val centralityScore = degree + (if (avgHops > 0) 1f / avgHops else 0f)
             
             safeLog(LogLevel.DEBUG, "BFS Centrality: score=$centralityScore, degree=$degree, " +

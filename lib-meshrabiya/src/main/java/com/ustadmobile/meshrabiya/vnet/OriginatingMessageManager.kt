@@ -103,9 +103,45 @@ class OriginatingMessageManager(
 
     private val messageCounter = AtomicInteger(0)
 
-    // 1. When sending a gossip message, set neighbors to originatorMessages.keys.toList()
-    private val topologyMap: MutableMap<Int, Set<Int>> = mutableMapOf()
-    fun getTopologyMap(): Map<Int, Set<Int>> = topologyMap
+    // === TOPOLOGY MAP WITH FULL NODE INFO ===
+    // Enhanced to store complete NodeTopologyInfo (roles, metrics) instead of just neighbors
+    private val _topologyMapInfo: MutableMap<Int, NodeTopologyInfo> = mutableMapOf()
+    
+    // Expose as Flow for observers (e.g., GatewaySelector)
+    private val _topologyMapFlow = MutableStateFlow<Map<Int, NodeTopologyInfo>>(emptyMap())
+    val topologyMapFlow: StateFlow<Map<Int, NodeTopologyInfo>> = _topologyMapFlow.asStateFlow()
+    
+    /**
+     * Get full topology map with NodeTopologyInfo (roles, metrics, neighbors)
+     * Used by GatewaySelector for intelligent gateway selection
+     */
+    fun getTopologyMapInfo(): Map<Int, NodeTopologyInfo> = _topologyMapInfo
+    
+    /**
+     * Get nodes with specific role (e.g., TOR_GATEWAY, CLEARNET_GATEWAY)
+     * @param role MeshRole to filter by
+     * @return List of NodeTopologyInfo for nodes with the specified role
+     */
+    fun getNodesWithRole(role: MeshRole): List<NodeTopologyInfo> {
+        return _topologyMapInfo.filter { it.value.hasRole(role) }.values.toList()
+    }
+    
+    /**
+     * Get all gateway nodes (TOR, CLEARNET, I2P)
+     * @return List of NodeTopologyInfo for gateway nodes
+     */
+    fun getGatewayNodes(): List<NodeTopologyInfo> {
+        return _topologyMapInfo.filter { it.value.isGatewayNode() }.values.toList()
+    }
+    
+    /**
+     * Backward compatibility: Convert NodeTopologyInfo to old Map<Int, Set<Int>> format
+     * Used by EmergentRoleManager for centrality calculations
+     */
+    @Deprecated("Use getTopologyMapInfo() for full node information")
+    fun getTopologyMap(): Map<Int, Set<Int>> {
+        return _topologyMapInfo.mapValues { it.value.neighbors }
+    }
 
     private fun logBeta(level: LogLevel, message: String, throwable: Throwable? = null) {
         betaLogger?.log(level, message, throwable)
@@ -354,16 +390,49 @@ class OriginatingMessageManager(
                 lastHopRealPort = datagramPacket.port
             )
             
-            // === NEW: BUILD TOPOLOGY MAP ===
-            if (mmcpMessage.neighbors.isNotEmpty()) {
-                topologyMap[virtualPacket.header.fromAddr] = mmcpMessage.neighbors.toSet()
-                
+            // === ENHANCED: BUILD TOPOLOGY MAP WITH ROLES ===
+            val nodeInfo = NodeTopologyInfo(
+                nodeAddress = virtualPacket.header.fromAddr,
+                neighbors = mmcpMessage.neighbors.toSet(),
+                meshRoles = mmcpMessage.meshRoles,  // Store ALL roles (gateway + intelligence)
+                centralityScore = mmcpMessage.centralityScore,
+                fitnessScore = mmcpMessage.fitnessScore,
+                lastSeen = System.currentTimeMillis(),
+                pingTime = mmcpMessage.pingTimeSum
+            )
+            
+            _topologyMapInfo[virtualPacket.header.fromAddr] = nodeInfo
+            _topologyMapFlow.value = _topologyMapInfo.toMap()  // Emit update for observers
+            
+            // Log gateway role changes (TOR/CLEARNET/I2P only)
+            val gatewayRoles = nodeInfo.meshRoles.filter { 
+                it in setOf(MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY, MeshRole.I2P_GATEWAY)
+            }
+            if (gatewayRoles.isNotEmpty()) {
                 logger(
-                    Log.VERBOSE,
-                    message = { "$logPrefix updated topology: node ${virtualPacket.header.fromAddr.addressToDotNotation()} " +
-                        "has ${mmcpMessage.neighbors.size} neighbors" }
+                    Log.INFO, 
+                    message = { "$logPrefix Node ${virtualPacket.header.fromAddr.addressToDotNotation()} offers gateways: $gatewayRoles " +
+                        "(fitness=${nodeInfo.fitnessScore}, centrality=${nodeInfo.centralityScore})" }
                 )
             }
+            
+            // Log intelligence roles (STORAGE/COMPUTE) at DEBUG level
+            val intelligenceRoles = nodeInfo.meshRoles.filter {
+                it in setOf(MeshRole.STORAGE_NODE, MeshRole.COMPUTE_NODE)
+            }
+            if (intelligenceRoles.isNotEmpty()) {
+                logger(
+                    Log.DEBUG,
+                    message = { "$logPrefix Node ${virtualPacket.header.fromAddr.addressToDotNotation()} offers intelligence: $intelligenceRoles " +
+                        "(fitness=${nodeInfo.fitnessScore}, centrality=${nodeInfo.centralityScore})" }
+                )
+            }
+            
+            logger(
+                Log.VERBOSE,
+                message = { "$logPrefix updated topology: node ${virtualPacket.header.fromAddr.addressToDotNotation()} " +
+                    "has ${mmcpMessage.neighbors.size} neighbors, ${nodeInfo.meshRoles.size} roles" }
+            )
             
             // === NEW: STORE NEIGHBOR METADATA ===
             if (virtualPacket.header.hopCount == 1.toByte()) {

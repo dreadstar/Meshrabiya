@@ -2,6 +2,7 @@ package com.ustadmobile.meshrabiya.service.compute.model
 
 import kotlinx.serialization.Serializable
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
+import com.ustadmobile.meshrabiya.service.compute.model.JobType
 
 /**
  * MESH COMPUTE DATA DEFINITIONS

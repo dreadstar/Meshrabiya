@@ -5,7 +5,6 @@ import kotlinx.coroutines.*
 import android.content.Context
 import android.net.Uri
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.storage.MeshNetworkInterface
 import com.ustadmobile.meshrabiya.storage.StorageConfiguration
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageAccessPolicy
@@ -388,14 +387,6 @@ object TaskManager {
 
     private fun getAppContext(): Context? {
         return OrbotApp.instance.applicationContext
-    }
-
-    private fun getMeshNetworkInterface(): MeshNetworkInterface {
-        val ctx = getAppContext() ?: throw IllegalStateException("Application context unavailable")
-        val coordinator = MeshServiceCoordinator.getInstance(ctx)
-            ?: throw IllegalStateException("MeshServiceCoordinator not available; ensure the mesh adapter is initialized before using TaskManager")
-        return coordinator.provideMeshNetworkInterface()
-            ?: throw IllegalStateException("Mesh network adapter not provided by MeshServiceCoordinator; storage operations require an explicit mesh adapter")
     }
 
     private fun getStorageConfiguration(): StorageConfiguration {
