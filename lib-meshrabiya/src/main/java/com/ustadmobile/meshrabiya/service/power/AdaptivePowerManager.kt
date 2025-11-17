@@ -9,6 +9,7 @@ import android.os.BatteryManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
+import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use canonical ThermalState
 
 /**
  * ADAPTIVE POWER MANAGEMENT SYSTEM
@@ -111,6 +112,8 @@ class AdaptivePowerManager(
         val canRelayMeshTraffic: Boolean
     )
     
+    // DEPRECATED: Use com.ustadmobile.meshrabiya.vnet.hardware.ThermalState (canonical)
+    /*
     enum class ThermalState {
         COOL,           // < 35°C - Full performance
         WARM,           // 35-40°C - Minor throttling
@@ -118,6 +121,7 @@ class AdaptivePowerManager(
         OVERHEATING,    // 45-50°C - Aggressive throttling
         CRITICAL        // > 50°C - Emergency shutdown
     }
+    */
     
     enum class PowerSavingMode {
         FULL_PERFORMANCE,   // No restrictions
@@ -314,7 +318,7 @@ class AdaptivePowerManager(
             cpuTemp < maxTemp - 10f -> ThermalState.COOL
             cpuTemp < maxTemp - 5f -> ThermalState.WARM
             cpuTemp < maxTemp -> ThermalState.HOT
-            cpuTemp < maxTemp + 5f -> ThermalState.OVERHEATING
+            cpuTemp < maxTemp + 5f -> ThermalState.THROTTLING  // Was OVERHEATING
             else -> ThermalState.CRITICAL
         }
     }
@@ -330,9 +334,9 @@ class AdaptivePowerManager(
             state.batteryLevel <= settings.batteryShutdownThreshold ||
             state.thermalState == ThermalState.CRITICAL -> PowerSavingMode.EMERGENCY
             
-            // Power saver mode: Low battery or overheating
+            // Power saver mode: Low battery or throttling (was overheating)
             state.batteryLevel <= settings.batteryThrottleThreshold ||
-            state.thermalState == ThermalState.OVERHEATING ||
+            state.thermalState == ThermalState.THROTTLING ||
             state.estimatedDailyBatteryUsage > settings.maxDailyBatteryImpact -> PowerSavingMode.POWER_SAVER
             
             // Balanced mode: Moderate conditions

@@ -35,9 +35,15 @@ import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
-import com.ustadmobile.meshrabiya.vnet.MeshNetworkInterface
-import com.ustadmobile.meshrabiya.role.EmergentRoleManager
+// Removed: import com.ustadmobile.meshrabiya.role.EmergentRoleManager (old package)
 import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
+// NEW: Import hardware capability classes for getCurrentNodeCapabilities()
+import com.ustadmobile.meshrabiya.vnet.hardware.ResourceCapabilities
+import com.ustadmobile.meshrabiya.vnet.hardware.BatteryInfo
+import com.ustadmobile.meshrabiya.vnet.hardware.BatteryHealth
+import com.ustadmobile.meshrabiya.vnet.hardware.PowerState
+import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use hardware package version
+
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 
@@ -134,7 +140,7 @@ abstract class VirtualNode(
     private val forwardingRules: MutableMap<ForwardBindPoint, UdpForwardRule> = ConcurrentHashMap()
 
     data class LastOriginatorMessage(
-        val originatorMessage: MmcpNodeAnnouncement,
+        val originatorMessage: MmcpOriginatorMessage,  // Correct type
         val timeReceived: Long,
         val lastHopAddr: Int,
         val hopCount: Byte,
@@ -148,14 +154,68 @@ abstract class VirtualNode(
         VNET, REAL
     }
 
+    /**
+     * Get current node capabilities. Default implementation returns a basic snapshot.
+     * Can be overridden by subclasses to provide real hardware metrics.
+     */
+    protected open fun getCurrentNodeCapabilities(): NodeCapabilitySnapshot {
+        return NodeCapabilitySnapshot(
+            nodeId = addressAsInt.toString(),
+            resources = ResourceCapabilities(
+                availableCPU = 0.5f,
+                availableRAM = Runtime.getRuntime().freeMemory(),
+                availableBandwidth = 10_000_000L,
+                storageOffered = 0L,
+                batteryLevel = 50,
+                thermalThrottling = false,
+                powerState = PowerState.BATTERY_MEDIUM,
+                networkInterfaces = emptySet()
+            ),
+            batteryInfo = BatteryInfo(
+                level = 50,
+                isCharging = false,
+                estimatedTimeRemaining = null,
+                temperatureCelsius = 25,
+                health = BatteryHealth.GOOD,
+                chargingSource = null
+            ),
+            thermalState = ThermalState.COOL,
+            networkQuality = 0.5f,
+            stability = 0.8f
+        )
+    }
+
+    // === STEP 1: Create EmergentRoleManager with topology callback ===
+    protected val emergentRoleManager: EmergentRoleManager by lazy {
+        val context = getContext() 
+            ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
+        EmergentRoleManager(
+            virtualNode = this,
+            context = context,
+            getTopologyMap = { originatingMessageManager.getTopologyMap() },
+            getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
+        )
+    }
+
+    // === STEP 2: Create OriginatingMessageManager with EmergentRoleManager callbacks ===
     protected open val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
         scheduledExecutor = scheduledExecutor,
         nextMmcpMessageId = { nextMmcpMessageId() },
         getWifiState = { currentNodeState.wifiState },
-        getFitnessScore = { getCurrentFitnessScore() },
-        getNodeRole = { getCurrentNodeRole() }
+        
+        // === NEW: Callbacks to EmergentRoleManager ===
+        getCentralityScore = { emergentRoleManager.calculateCentralityScore() },
+        getMeshRoles = { emergentRoleManager.currentMeshRoles.value },
+        getFitnessScore = { 
+            emergentRoleManager.calculateNormalizedFitness(getCurrentNodeCapabilities()) 
+        },
+        
+        // === EXISTING PARAMS ===
+        pingTimeout = 15_000,
+        originatingMessageNodeLostThreshold = 10_000,
+        lostNodeCheckInterval = 1_000
     )
 
     private val localPort = findFreePort(0)
@@ -202,12 +262,6 @@ abstract class VirtualNode(
     protected val coreGossipBroadcastService: CoreGossipBroadcastService = 
         CoreGossipBroadcastService(meshGossipService)
     
-    // EmergentRoleManager initialized lazily with context from subclass
-    protected val emergentRoleManager: EmergentRoleManager by lazy {
-        val context = getContext() 
-            ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
-        EmergentRoleManager(this, context)
-    }
     
     // MeshEcosystemListener depends on emergentRoleManager and meshGossipService
     protected val meshEcosystemListener: MeshEcosystemListener by lazy {
@@ -305,8 +359,7 @@ abstract class VirtualNode(
         return messageCounter.incrementAndGet()
     }
 
-    abstract fun getCurrentFitnessScore(): Int
-    abstract fun getCurrentNodeRole(): Byte
+    // Abstract methods removed - now using callbacks through OriginatingMessageManager and EmergentRoleManager
 
     override fun allocateUdpPortOrThrow(
         virtualDatagramSocketImpl: VirtualDatagramSocketImpl,
@@ -498,7 +551,8 @@ abstract class VirtualNode(
                     }
                 }
 
-                mmcpMessage is MmcpNodeAnnouncement -> {
+                // Phase 3: Changed from MmcpNodeAnnouncement to MmcpOriginatorMessage
+                mmcpMessage is MmcpOriginatorMessage -> {
                     shouldRoute = originatingMessageManager.onReceiveOriginatingMessage(
                         mmcpMessage = mmcpMessage,
                         datagramPacket = datagramPacket ?: return false,
@@ -507,11 +561,12 @@ abstract class VirtualNode(
                     )
                 }
 
-                mmcpMessage is MmcpGatewayAnnouncement -> {
-                    logger(Log.INFO, "$logPrefix received gateway announcement from ${from.addressToDotNotation()}: ${mmcpMessage.gatewayType}", null)
-                    onGatewayAnnouncementReceived(mmcpMessage, from)
-                    shouldRoute = true
-                }
+                // DEPRECATED: MmcpGatewayAnnouncement class moved to .md (commented out to fix compilation)
+                // mmcpMessage is MmcpGatewayAnnouncement -> {
+                //     logger(Log.INFO, "$logPrefix received gateway announcement from ${from.addressToDotNotation()}: ${mmcpMessage.gatewayType}", null)
+                //     onGatewayAnnouncementReceived(mmcpMessage, from)
+                //     shouldRoute = true
+                // }
 
                 else -> {
                     // do nothing
@@ -700,16 +755,17 @@ abstract class VirtualNode(
         originatingMessageManager.sendMessage(message)
     }
 
-    protected open fun onGatewayAnnouncementReceived(announcement: MmcpGatewayAnnouncement, fromNodeAddr: Int) {
-        logger(Log.INFO, "$logPrefix Gateway ${announcement.gatewayType} available from ${fromNodeAddr.addressToDotNotation()}")
-        try {
-            if (announcement.isActive && announcement.capacity.downloadMbps > 0) {
-                logger(Log.DEBUG, "$logPrefix Valid gateway: capacity=${announcement.capacity.downloadMbps}Mbps, latency=${announcement.latency.averageMs}ms")
-            }
-        } catch (e: Exception) {
-            logger(Log.WARN, "$logPrefix Error processing gateway announcement: ${e.message}")
-        }
-    }
+    // DEPRECATED: MmcpGatewayAnnouncement class moved to .md (commented out to fix compilation)
+    // protected open fun onGatewayAnnouncementReceived(announcement: MmcpGatewayAnnouncement, fromNodeAddr: Int) {
+    //     logger(Log.INFO, "$logPrefix Gateway ${announcement.gatewayType} available from ${fromNodeAddr.addressToDotNotation()}")
+    //     try {
+    //         if (announcement.isActive && announcement.capacity.downloadMbps > 0) {
+    //             logger(Log.DEBUG, "$logPrefix Valid gateway: capacity=${announcement.capacity.downloadMbps}Mbps, latency=${announcement.latency.averageMs}ms")
+    //         }
+    //     } catch (e: Exception) {
+    //         logger(Log.WARN, "$logPrefix Error processing gateway announcement: ${e.message}")
+    //     }
+    // }
 
     fun getCurrentState(): LocalNodeState {
         return currentNodeState
@@ -724,8 +780,6 @@ abstract class VirtualNode(
         connectionExecutor.shutdown()
         scheduledExecutor.shutdown()
     }
-
-    internal fun getOriginatingMessageManager() = originatingMessageManager
 
     protected fun safeLog(
         level: LogLevel,

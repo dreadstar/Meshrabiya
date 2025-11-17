@@ -2,7 +2,7 @@ package com.ustadmobile.meshrabiya.service.compute.model
 
 import com.ustadmobile.meshrabiya.service.compute.ResourceRequirements
 import com.ustadmobile.meshrabiya.service.compute.CPUIntensity
-import com.ustadmobile.meshrabiya.service.compute.ThermalState
+import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use canonical ThermalState
 
 /**
  * Represents the manifest for a distributed compute service.

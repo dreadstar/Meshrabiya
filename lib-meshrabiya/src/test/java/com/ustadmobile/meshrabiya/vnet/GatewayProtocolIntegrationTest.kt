@@ -7,7 +7,6 @@ import com.ustadmobile.meshrabiya.mmcp.SerializableNetworkInterfaceInfo
 import com.ustadmobile.meshrabiya.mmcp.ThermalState
 import com.ustadmobile.meshrabiya.vnet.NodeCapabilitySnapshot
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
-import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager

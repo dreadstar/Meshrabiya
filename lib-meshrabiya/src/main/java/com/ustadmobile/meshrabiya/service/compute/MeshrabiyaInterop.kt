@@ -38,7 +38,7 @@ fun UMRR.toAppResourceRequirements(): ResourceRequirements {
         requiresNPU = false,
         requiresStorage = (this.minStorageMB > 0),
         minStorageGB = this.minStorageMB / 1024f,
-        thermalConstraints = setOf(ThermalState.COLD, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),
+        thermalConstraints = setOf(ThermalState.COOL, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),  // Changed COLD to COOL
         maxNetworkLatencyMs = 1000,
         minBatteryLevel = 10
     )

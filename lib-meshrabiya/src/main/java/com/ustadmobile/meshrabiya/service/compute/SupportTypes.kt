@@ -1,12 +1,15 @@
 package com.ustadmobile.meshrabiya.service.compute
 
+import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
+
 /**
  * SupportTypes
  * 
  * Shared lightweight support types used across compute code.
  * This file consolidates ResourceRequirements, PythonLibrary, InferenceConfig,
- * Precision, CPUIntensity, and ThermalState definitions.
+ * Precision, CPUIntensity definitions.
  * 
+ * Note: ThermalState is now imported from hardware package (canonical version).
  * Note: Other files (JobTypes.kt, LibraryEntry.kt, ResourceRequirements.kt, 
  * ServiceManifest.kt) should import these types instead of redefining them.
  */
@@ -19,7 +22,7 @@ data class ResourceRequirements(
     val requiresNPU: Boolean = false,
     val requiresStorage: Boolean = false,
     val minStorageGB: Float = 0f,
-    val thermalConstraints: Set<ThermalState> = setOf(ThermalState.COLD, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),
+    val thermalConstraints: Set<ThermalState> = setOf(ThermalState.COOL, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),  // Changed COLD to COOL
     val maxNetworkLatencyMs: Int = 1000,
     val minBatteryLevel: Int = 25
 )
@@ -38,5 +41,4 @@ enum class Precision { FLOAT32, FLOAT16, QUANTIZED }
 
 enum class CPUIntensity { LIGHT, MODERATE, HEAVY, BURST }
 
-enum class ThermalState { COLD, WARM, HOT, CRITICAL }
-
+// REMOVED: enum class ThermalState - now using hardware.ThermalState (canonical)

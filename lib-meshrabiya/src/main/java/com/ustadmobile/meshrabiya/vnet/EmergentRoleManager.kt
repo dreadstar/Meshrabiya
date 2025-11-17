@@ -116,6 +116,8 @@ data class RoleTransitionPlan(
 class EmergentRoleManager(
     private val virtualNode: VirtualNode,
     private val context: Context,
+    private val getTopologyMap: (() -> Map<Int, Set<Int>>)? = null,  // NEW: Callback
+    private val getCurrentNodeCapabilities: (() -> NodeCapabilitySnapshot)? = null,  // NEW: Callback
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
     private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
@@ -244,13 +246,21 @@ class EmergentRoleManager(
             safeLog(LogLevel.INFO, "Assigned compute role")
         }
         
-        // Router roles based on connectivity
-        if (fitness > 0.6 && virtualNode.neighbors().size >= 2) {
+        // Router roles based on connectivity AND graph centrality
+        // Use BFS centrality to identify nodes in structurally important positions
+        val centralityResult = calculateBFSCentrality()
+        val centralityThreshold = 3.0f // Minimum centrality score for router role
+        
+        if (fitness > 0.6 && centralityResult.centralityScore > centralityThreshold) {
             roles.add(MeshRole.MESH_ROUTER)
-            safeLog(LogLevel.INFO, "Assigned router role")
+            safeLog(LogLevel.INFO, "Assigned router role (centrality=${centralityResult.centralityScore}, " +
+                "degree=${centralityResult.degree}, reachable=${centralityResult.reachableNodes})")
         }
         
-        // Coordinator role for highly connected, stable nodes
+        // COORDINATOR ROLE DEPRECATED - Not in canonical design
+        // Coordinator role assignment commented out per architectural decision
+        // If needed in future, centrality score should be primary factor
+        /*
         if (fitness > 0.85 && 
             node.hasStableConnection() && 
             virtualNode.neighbors().size >= 3 &&
@@ -258,6 +268,7 @@ class EmergentRoleManager(
             roles.add(MeshRole.COORDINATOR)
             safeLog(LogLevel.INFO, "Assigned coordinator role")
         }
+        */
         
         return roles
     }
@@ -288,9 +299,10 @@ class EmergentRoleManager(
     }
     
     /**
-     * Calculate normalized fitness score (0.0-1.0) from node capabilities
+     * Calculate normalized fitness score (0.0-1.0) from node capabilities.
+     * Made internal for access from VirtualNode callbacks.
      */
-    private fun calculateNormalizedFitness(node: NodeCapabilitySnapshot): Float {
+    internal fun calculateNormalizedFitness(node: NodeCapabilitySnapshot): Float {
         val batteryScore = when {
             node.isCharging -> 1.0f
             node.batteryLevel > 70 -> 0.9f
@@ -332,10 +344,6 @@ class EmergentRoleManager(
                 MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY -> {
                     // Only remove gateway roles if there are other gateways
                     meshIntelligence.value.activeGateways > 1
-                }
-                MeshRole.COORDINATOR -> {
-                    // Always safe to remove coordinator role
-                    true
                 }
                 else -> true
             }
@@ -427,7 +435,7 @@ class EmergentRoleManager(
                 isCharging = false, // Fallback: assume not charging
                 estimatedTimeRemaining = null,
                 temperatureCelsius = 25, // Fallback: room temperature
-                health = com.ustadmobile.meshrabiya.mmcp.BatteryHealth.GOOD,
+                health = BatteryHealth.GOOD,
                 chargingSource = null
             )
             
@@ -447,15 +455,11 @@ class EmergentRoleManager(
      * Used when hardware capability manager fails or is unavailable
      */
     private fun calculateLegacyFitnessScore(): LegacyFitnessScore {
-        // Try to get fitness score from VirtualNode if available
-        val virtualNodeFitness = try {
-            virtualNode.getCurrentFitnessScore()
-        } catch (e: Exception) {
-            null
-        }
+        // REMOVED: virtualNode.getCurrentFitnessScore() - deprecated abstract method
+        // Use topology-based estimation instead
         
         // Estimate signal strength from network topology
-        val signalStrength = virtualNodeFitness ?: run {
+        val signalStrength = run {
             val neighborCount = virtualNode.neighbors().size
             when {
                 neighborCount >= 3 -> 100 // Well-connected node
@@ -477,6 +481,98 @@ class EmergentRoleManager(
             batteryLevel = batteryLevel,
             clientCount = clientCount
         )
+    }
+    
+    /**
+     * Data class for centrality calculation results
+     */
+    private data class CentralityResult(
+        val centralityScore: Float,
+        val chokePointFlag: Boolean,
+        val degree: Int,
+        val reachableNodes: Int
+    )
+    
+    /**
+     * Calculate BFS-based centrality score for this node in the mesh topology.
+     * 
+     * Uses Breadth-First Search to traverse the mesh graph and calculate:
+     * - Centrality score: degree + (1 / avgHops)
+     * - Choke point detection: nodes with ≤2 neighbors
+     * 
+     * Higher centrality scores indicate more structurally important positions in the mesh.
+     * Used for MESH_ROUTER role assignment to place routing responsibilities on well-connected nodes.
+     * 
+     * @return CentralityResult with score, choke point flag, and topology metrics
+     */
+    private fun calculateBFSCentrality(): CentralityResult {
+        try {
+            // Get topology map from callback or OriginatingMessageManager
+            val topologyMap: Map<Int, Set<Int>> = getTopologyMap?.invoke() 
+                ?: (virtualNode as VirtualNode)
+                    .getOriginatingMessageManager()
+                    .getTopologyMap()
+            
+            val myAddr = virtualNode.addressAsInt
+            val minChokePointNeighbors = 2
+            
+            // Choke point detection: any node with ≤2 neighbors indicates bottleneck
+            val chokePointFlag = topologyMap.values.any { it.size <= minChokePointNeighbors }
+            
+            // BFS traversal for centrality calculation
+            val visited = mutableSetOf<Int>()
+            val queue = ArrayDeque<Pair<Int, Int>>() // Pair<address, hops>
+            queue.add(Pair(myAddr, 0))
+            visited.add(myAddr)
+            
+            var totalHops = 0
+            var maxHops = 0
+            var reachable = 0
+            
+            while (queue.isNotEmpty()) {
+                val (current, hops) = queue.removeFirst()
+                if (hops > 0) {
+                    totalHops += hops
+                    maxHops = maxOf(maxHops, hops)
+                    reachable++
+                }
+                
+                val neighbors: Set<Int> = topologyMap[current] ?: emptySet()
+                for (neighbor in neighbors) {
+                    if (neighbor !in visited) {
+                        visited.add(neighbor)
+                        queue.add(Pair(neighbor, hops + 1))
+                    }
+                }
+            }
+            
+            // Calculate centrality: degree + (1 / average hops to all reachable nodes)
+            val avgHops = if (reachable > 0) totalHops.toFloat() / reachable else 0f
+            val degree: Int = topologyMap[myAddr]?.size ?: 0
+            val centralityScore = degree + (if (avgHops > 0) 1f / avgHops else 0f)
+            
+            safeLog(LogLevel.DEBUG, "BFS Centrality: score=$centralityScore, degree=$degree, " +
+                "reachable=$reachable, avgHops=$avgHops, chokePoint=$chokePointFlag")
+            
+            return CentralityResult(
+                centralityScore = centralityScore,
+                chokePointFlag = chokePointFlag,
+                degree = degree,
+                reachableNodes = reachable
+            )
+            
+        } catch (e: Exception) {
+            safeLog(LogLevel.ERROR, "Failed to calculate BFS centrality: ${e.message}")
+            return CentralityResult(0f, false, 0, 0)
+        }
+    }
+    
+    /**
+     * Public wrapper to get centrality score for callbacks.
+     * Returns just the centrality score as Float for OriginatingMessageManager.
+     */
+    fun calculateCentralityScore(): Float {
+        return calculateBFSCentrality().centralityScore
     }
     
     /**
@@ -502,14 +598,21 @@ class EmergentRoleManager(
     
     /**
      * Create device capabilities with dynamic storage calculation
+     * 
+     * NOTE: Currently unused - kept for potential future use.
+     * The main fallback path uses NodeCapabilitySnapshot construction directly in getCurrentCapabilities().
+     * 
+     * @param batteryInfo Battery information for the device
+     * @param legacyFitness Legacy fitness score calculated from network topology and battery
+     * @return DeviceCapabilities for role assignment
      */
-    private fun createDeviceCapabilities(batteryInfo: BatteryInfo, fitnessScore: FitnessScore): DeviceCapabilities {
+    private fun createDeviceCapabilities(batteryInfo: BatteryInfo, legacyFitness: LegacyFitnessScore): DeviceCapabilities {
         return DeviceCapabilities(
             storageAvailable = calculateAvailableStorage(),
-            processingPower = (fitnessScore.batteryLevel / 100.0f).coerceAtMost(1.0f),
+            processingPower = legacyFitness.batteryLevel.coerceAtMost(1.0f),
             batteryInfo = batteryInfo,
-            thermalState = ThermalState.COOL, // TODO: Get from thermal API
-            networkQuality = (fitnessScore.signalStrength.toFloat() / 100.0f).coerceIn(0.0f, 1.0f),
+            thermalState = ThermalState.COOL, // TODO: Get from thermal API when available
+            networkQuality = (legacyFitness.signalStrength.toFloat() / 100.0f).coerceIn(0.0f, 1.0f),
             stability = 0.8f // TODO: Calculate from uptime/connectivity history
         )
     }

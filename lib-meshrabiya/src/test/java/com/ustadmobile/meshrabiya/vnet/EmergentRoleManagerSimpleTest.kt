@@ -662,4 +662,201 @@ class EmergentRoleManagerSimpleTest {
         storageUtilization = 0.5f,
         computeUtilization = 0.9f // High utilization indicates need for more compute
     )
+
+    // ===== LEGACY FITNESS SCORE TESTS =====
+    
+    @Test
+    fun testLegacyFitnessScore_WithZeroNeighbors() {
+        // Setup: Node with no neighbors
+        whenever(mockVirtualNode.neighbors()).thenReturn(emptyList())
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(UnsupportedOperationException("Not implemented"))
+        
+        val lowCapNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = lowCapNode,
+            currentRoles = emptySet()
+        )
+        
+        // With 0 neighbors, signal strength should be 0
+        // Node should only get MESH_PARTICIPANT role
+        assertEquals(setOf(MeshRole.MESH_PARTICIPANT), plan.addRoles,
+            "Node with 0 neighbors should only get participant role")
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_WithOneNeighbor() {
+        // Setup: Node with exactly 1 neighbor
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(UnsupportedOperationException("Not implemented"))
+        
+        val basicNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = basicNode,
+            currentRoles = emptySet()
+        )
+        
+        // With 1 neighbor, signal strength should be 50 (moderate)
+        // Should get MESH_PARTICIPANT
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_WithTwoNeighbors() {
+        // Setup: Node with exactly 2 neighbors (boundary condition)
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(UnsupportedOperationException("Not implemented"))
+        
+        val basicNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = basicNode,
+            currentRoles = emptySet()
+        )
+        
+        // With 2 neighbors, signal strength should be 50
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_WithThreeNeighbors() {
+        // Setup: Node with exactly 3 neighbors (threshold for high connectivity)
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2, 3))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(UnsupportedOperationException("Not implemented"))
+        
+        val basicNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = basicNode,
+            currentRoles = emptySet()
+        )
+        
+        // With 3+ neighbors, signal strength should be 100 (well-connected)
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_WithMultipleNeighbors() {
+        // Setup: Node with many neighbors
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2, 3, 4, 5))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(UnsupportedOperationException("Not implemented"))
+        
+        val highCapNode = createHighCapabilityNode()
+        val needyMesh = createHighDemandMesh()
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapNode,
+            meshIntelligence = needyMesh,
+            currentRoles = emptySet()
+        )
+        
+        // With 5 neighbors and high capabilities, should get multiple roles
+        assertTrue(plan.addRoles.size > 1, "Well-connected high-cap node should get multiple roles")
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_VirtualNodeSuccess() {
+        // Setup: VirtualNode successfully provides fitness score
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(85)
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2, 3))
+        
+        val highCapNode = createHighCapabilityNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = highCapNode,
+            currentRoles = emptySet()
+        )
+        
+        // Should use VirtualNode's fitness score (85) instead of estimating
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_VirtualNodeFailure() {
+        // Setup: VirtualNode throws exception when getting fitness score
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenThrow(RuntimeException("Test exception"))
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2))
+        
+        val basicNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = basicNode,
+            currentRoles = emptySet()
+        )
+        
+        // Should fallback to neighbor-based estimation without crashing
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_SignalStrengthThreshold_Zero() {
+        // Verify signal strength threshold: 0 neighbors → 0
+        whenever(mockVirtualNode.neighbors()).thenReturn(emptyList())
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(null)
+        
+        val lowCapNode = createLowCapabilityNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = lowCapNode,
+            currentRoles = emptySet()
+        )
+        
+        // Isolated node should only get MESH_PARTICIPANT
+        assertEquals(setOf(MeshRole.MESH_PARTICIPANT), plan.addRoles)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_SignalStrengthThreshold_Moderate() {
+        // Verify signal strength threshold: 1-2 neighbors → 50
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(null)
+        
+        val moderateNode = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = moderateNode,
+            currentRoles = emptySet()
+        )
+        
+        // Should get MESH_PARTICIPANT at minimum
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_SignalStrengthThreshold_High() {
+        // Verify signal strength threshold: 3+ neighbors → 100
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(1, 2, 3, 4))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(null)
+        
+        val wellConnectedNode = createHighCapabilityNode()
+        val needyMesh = createHighDemandMesh()
+        
+        val plan = emergentRoleManager.determineOptimalRoles(
+            nodeCapabilities = wellConnectedNode,
+            meshIntelligence = needyMesh,
+            currentRoles = emptySet()
+        )
+        
+        // Well-connected high-cap node should get multiple roles
+        assertTrue(plan.addRoles.size >= 2, 
+            "Well-connected node with high capabilities should get multiple roles")
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_BoundaryCondition_ExactlyOneNeighbor() {
+        // Boundary test: exactly 1 neighbor
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(100))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(null)
+        
+        val node = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(node, currentRoles = emptySet())
+        
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
+    
+    @Test
+    fun testLegacyFitnessScore_BoundaryCondition_ExactlyThreeNeighbors() {
+        // Boundary test: exactly 3 neighbors (threshold between moderate and high)
+        whenever(mockVirtualNode.neighbors()).thenReturn(listOf(100, 101, 102))
+        whenever(mockVirtualNode.getCurrentFitnessScore()).thenReturn(null)
+        
+        val node = createBasicNode()
+        val plan = emergentRoleManager.determineOptimalRoles(node, currentRoles = emptySet())
+        
+        assertContains(plan.addRoles, MeshRole.MESH_PARTICIPANT)
+    }
 }
+

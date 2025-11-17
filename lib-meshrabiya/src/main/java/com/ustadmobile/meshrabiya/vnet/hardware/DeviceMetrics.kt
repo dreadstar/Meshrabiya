@@ -103,12 +103,16 @@ enum class PowerState {
  * Nodes in THROTTLING or CRITICAL should drop compute roles to cool down.
  */
 @Serializable
+/**
+ * Canonical ThermalState used across the entire Meshrabiya codebase.
+ * Thresholds aligned with AdaptivePowerManager for consistency.
+ */
 enum class ThermalState {
-    COOL,       // <40°C - optimal for all roles
-    WARM,       // 40-50°C - normal operation
-    HOT,        // 50-60°C - reduce compute load
-    THROTTLING, // 60-70°C - CPU throttled, avoid compute
-    CRITICAL    // >70°C - emergency, minimal participation
+    COOL,       // < 35°C - Full performance, optimal for all roles
+    WARM,       // 35-40°C - Minor throttling, normal operation
+    HOT,        // 40-45°C - Moderate throttling, reduce compute load
+    THROTTLING, // 45-50°C - Aggressive throttling (was OVERHEATING)
+    CRITICAL    // > 50°C - Emergency shutdown/minimal participation
 }
 
 /**
