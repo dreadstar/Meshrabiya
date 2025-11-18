@@ -88,11 +88,10 @@ class CoreGossipBroadcastService(
      * Send a storage node request broadcast.
      * Called by DistributedStorageManager when looking for available storage nodes.
      * 
-     * @param request The storage node request details
-     * @param requestId Correlation ID for matching responses
+     * @param request The storage node request details (includes requestId)
      */
-    fun sendStorageNodeRequest(request: com.ustadmobile.meshrabiya.storage.StorageNodeRequest, requestId: String) {
-        val message = MeshEcosystemMessage.StorageNodeRequestMessage(request, requestId)
+    fun sendStorageNodeRequest(request: StorageNodeRequest) {
+        val message = MeshEcosystemMessage.StorageNodeRequestMessage(request)
         sendBroadcast(message)
     }
 
@@ -101,10 +100,9 @@ class CoreGossipBroadcastService(
      * Called by DistributedStorageManager when looking for nodes that have a specific file chunk.
      * 
      * @param fileId The file ID to query for
-     * @param requestId Correlation ID for matching responses
      */
-    fun sendChunkRetrievalQuery(fileId: String, requestId: String) {
-        val query = ChunkRetrievalQuery(fileId, requestId)
+    fun sendChunkRetrievalQuery(fileId: String) {
+        val query = ChunkRetrievalQuery(fileId)
         val message = MeshEcosystemMessage.ChunkRetrievalQueryMessage(query)
         sendBroadcast(message)
     }
@@ -114,34 +112,46 @@ class CoreGossipBroadcastService(
      * Called by DistributedStorageManager to find all nodes storing replicas of a file.
      * 
      * @param fileId The file ID to query replicas for
-     * @param requestId Correlation ID for matching responses
      */
-    fun sendReplicaQuery(fileId: String, requestId: String) {
-        val query = ReplicaQuery(fileId, requestId)
+    fun sendReplicaQuery(fileId: String) {
+        val query = ReplicaQuery(fileId)
         val message = MeshEcosystemMessage.ReplicaQueryMessage(query)
         sendBroadcast(message)
     }
 
-    /**
-     * Send a storage capabilities advertisement.
-     * Called by DistributedStorageManager to advertise this node's storage availability.
-     * 
-     * @param capabilities The storage capabilities to advertise
-     */
-    fun sendStorageAdvertisement(capabilities: com.ustadmobile.meshrabiya.storage.StorageCapabilities) {
-        val message = MeshEcosystemMessage.StorageCapabilitiesMessage(capabilities)
-        sendBroadcast(message)
-    }
+    // DEPRECATED: Storage advertisement superseded by OriginatorMessage with MeshRole.STORAGE
+    // /**
+    //  * Send a storage capabilities advertisement.
+    //  * Called by DistributedStorageManager to advertise this node's storage availability.
+    //  * 
+    //  * @param capabilities The storage capabilities to advertise
+    //  */
+    // fun sendStorageAdvertisement(capabilities: com.ustadmobile.meshrabiya.storage.StorageCapabilities) {
+    //     val message = MeshEcosystemMessage.StorageCapabilitiesMessage(capabilities)
+    //     sendBroadcast(message)
+    // }
 
     /**
      * Send a compute task request broadcast.
      * Called by IntelligentDistributedComputeService when looking for compute nodes.
      * 
-     * @param request The compute task request
-     * @param requestId Correlation ID for matching responses
+     * @param taskId Unique task identifier
+     * @param serviceId Service identifier for the task
+     * @param inputParams Task input parameters
+     * @param metadata Task metadata (timeout, priority, etc.)
      */
-    fun sendComputeTaskRequest(request: com.ustadmobile.meshrabiya.mmcp.MmcpComputeTaskRequest, requestId: String) {
-        val message = request.toMeshEcosystemMessage(requestId)
+    fun sendComputeTaskRequest(
+        taskId: String,
+        serviceId: String,
+        inputParams: Map<String, Any>,
+        metadata: Map<String, String>
+    ) {
+        val message = MeshEcosystemMessage.ComputeTaskRequestMessage(
+            taskId = taskId,
+            serviceId = serviceId,
+            inputParams = inputParams,
+            metadata = metadata
+        )
         sendBroadcast(message)
     }
 

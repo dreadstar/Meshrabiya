@@ -8,8 +8,9 @@ import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalQuery
 import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
 import com.ustadmobile.meshrabiya.vnet.ReplicaQuery
 import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
-import com.ustadmobile.meshrabiya.mmcp.StorageCapabilities
-import com.ustadmobile.meshrabiya.mmcp.AccessPattern
+// DEPRECATED: Storage advertisement superseded by OriginatorMessage with MeshRole.STORAGE
+// import com.ustadmobile.meshrabiya.mmcp.StorageCapabilities
+// import com.ustadmobile.meshrabiya.mmcp.AccessPattern
 import com.ustadmobile.meshrabiya.service.AccessType
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
 import kotlinx.serialization.json.Json
@@ -118,16 +119,17 @@ sealed class MeshEcosystemMessage(
                     response = ReplicaResponse(unpacker.unpackString()),
                     requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
                 )
-                "StorageCapabilities" -> StorageCapabilitiesMessage(
-                    StorageCapabilities(
-                        totalOffered = unpacker.unpackLong(),
-                        currentlyUsed = unpacker.unpackLong(),
-                        replicationFactor = unpacker.unpackInt(),
-                        compressionSupported = unpacker.unpackBoolean(),
-                        encryptionSupported = unpacker.unpackBoolean(),
-                        accessPatterns = List(unpacker.unpackArrayHeader()) { AccessPattern.valueOf(unpacker.unpackString()) }.toSet()
-                    )
-                )
+                // DEPRECATED: Storage capabilities superseded by OriginatorMessage with MeshRole.STORAGE
+                // "StorageCapabilities" -> StorageCapabilitiesMessage(
+                //     StorageCapabilities(
+                //         totalOffered = unpacker.unpackLong(),
+                //         currentlyUsed = unpacker.unpackLong(),
+                //         replicationFactor = unpacker.unpackInt(),
+                //         compressionSupported = unpacker.unpackBoolean(),
+                //         encryptionSupported = unpacker.unpackBoolean(),
+                //         accessPatterns = List(unpacker.unpackArrayHeader()) { AccessPattern.valueOf(unpacker.unpackString()) }.toSet()
+                //     )
+                // )
                 "FilePermissionUpdateMessage" -> FilePermissionUpdateMessage(
                     fileId = unpacker.unpackString(),
                     newRecipientKeyIds = List(unpacker.unpackArrayHeader()) { unpacker.unpackLong() },
@@ -279,21 +281,22 @@ data class ReplicaResponseMessage(
     }
 }
 
-data class StorageCapabilitiesMessage(val capabilities: StorageCapabilities) : MeshEcosystemMessage("StorageCapabilities") {
-    override fun toBytes(): ByteArray {
-        val packer = MessagePack.newDefaultBufferPacker()
-        packer.packString(type)
-        packer.packLong(capabilities.totalOffered)
-        packer.packLong(capabilities.currentlyUsed)
-        packer.packInt(capabilities.replicationFactor)
-        packer.packBoolean(capabilities.compressionSupported)
-        packer.packBoolean(capabilities.encryptionSupported)
-        packer.packArrayHeader(capabilities.accessPatterns.size)
-        capabilities.accessPatterns.forEach { packer.packString(it.name) }
-        packer.close()
-        return packer.toByteArray()
-    }
-}
+// DEPRECATED: Storage capabilities superseded by OriginatorMessage with MeshRole.STORAGE
+// data class StorageCapabilitiesMessage(val capabilities: StorageCapabilities) : MeshEcosystemMessage("StorageCapabilities") {
+//     override fun toBytes(): ByteArray {
+//         val packer = MessagePack.newDefaultBufferPacker()
+//         packer.packString(type)
+//         packer.packLong(capabilities.totalOffered)
+//         packer.packLong(capabilities.currentlyUsed)
+//         packer.packInt(capabilities.replicationFactor)
+//         packer.packBoolean(capabilities.compressionSupported)
+//         packer.packBoolean(capabilities.encryptionSupported)
+//         packer.packArrayHeader(capabilities.accessPatterns.size)
+//         capabilities.accessPatterns.forEach { packer.packString(it.name) }
+//         packer.close()
+//         return packer.toByteArray()
+//     }
+// }
 
 data class FilePermissionUpdateMessage(
     val fileId: String,

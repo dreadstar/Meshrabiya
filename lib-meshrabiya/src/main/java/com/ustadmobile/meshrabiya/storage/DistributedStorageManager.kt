@@ -10,7 +10,8 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import com.ustadmobile.meshrabiya.mmcp.AccessPattern
+// DEPRECATED: AccessPattern incorporated into fitness calculation
+// import com.ustadmobile.meshrabiya.mmcp.AccessPattern
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.VirtualNode

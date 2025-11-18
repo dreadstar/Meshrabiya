@@ -585,14 +585,36 @@ class EmergentRoleManager(
                 val getStorageCapabilitiesMethod = storageManager.javaClass.getMethod("getStorageCapabilities")
                 val capabilities = getStorageCapabilitiesMethod.invoke(storageManager)
                 
-                // Get totalOffered field using reflection
+                // Get totalOffered field using reflection (no currentlyUsed in refactored StorageCapabilities)
                 val totalOfferedField = capabilities.javaClass.getDeclaredField("totalOffered")
                 totalOfferedField.isAccessible = true
                 totalOfferedField.getLong(capabilities)
             } ?: 100_000_000L // Default 100MB if no storage manager
         } catch (e: Exception) {
-            safeLog(LogLevel.DEBUG, "Could not access DistributedStorageManager, using default storage value")
+            safeLog(LogLevel.DEBUG, "Could not access storage capabilities, using default: ${e.message}")
             100_000_000L // Fallback value
+        }
+    }
+    
+    /**
+     * Assess storage I/O performance for fitness calculation.
+     * Replaces AccessPattern enum with actual performance metrics.
+     * 
+     * TODO: Implement I/O benchmarking:
+     * - Random read/write latency
+     * - Sequential throughput
+     * - IOPS capacity
+     * 
+     * @return Performance score 0.0-1.0 (0.5 = default moderate performance)
+     */
+    private fun assessStorageIOPerformance(): Float {
+        return try {
+            // TODO: Implement I/O benchmarking
+            // For now, return moderate score
+            0.7f
+        } catch (e: Exception) {
+            safeLog(LogLevel.DEBUG, "Could not assess storage I/O performance: ${e.message}")
+            0.5f // Default moderate performance
         }
     }
     

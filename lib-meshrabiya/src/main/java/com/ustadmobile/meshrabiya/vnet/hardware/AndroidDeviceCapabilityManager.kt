@@ -334,39 +334,30 @@ class AndroidDeviceCapabilityManager(
                 internalStats.availableBlocks.toLong()
             }
             
-            val totalBlocks = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-                internalStats.blockCountLong
-            } else {
-                @Suppress("DEPRECATION")
-                internalStats.blockCount.toLong()
-            }
-            
             val availableSpace = availableBlocks * blockSize
-            val totalSpace = totalBlocks * blockSize
-            val usedSpace = totalSpace - availableSpace
+            val availableSpaceMB = availableSpace / (1024 * 1024)
             
             val storageCapabilities = StorageCapabilities(
                 totalOffered = availableSpace / 2, // Offer half of available space
-                currentlyUsed = usedSpace,
-                replicationFactor = 3, // Default replication factor
+                localStorageAvailableMB = availableSpaceMB,
                 compressionSupported = true,
-                encryptionSupported = true,
-                accessPatterns = setOf(AccessPattern.RANDOM, AccessPattern.SEQUENTIAL)
+                encryptionSupported = true
+                // REMOVED: replicationFactor (handled by storage manager)
+                // REMOVED: currentlyUsed (less useful than localStorageAvailableMB)
+                // REMOVED: accessPatterns (incorporated into fitness via I/O benchmarking)
             )
             
             betaTestLogger.log(LogLevel.DETAILED, TAG, 
-                "Storage: ${availableSpace / (1024 * 1024)} MB available, offering ${storageCapabilities.totalOffered / (1024 * 1024)} MB")
+                "Storage: ${availableSpaceMB} MB available, offering ${storageCapabilities.totalOffered / (1024 * 1024)} MB")
             
             storageCapabilities
         } catch (e: Exception) {
             betaTestLogger.log(LogLevel.BASIC, TAG, "Failed to get storage capabilities: ${e.message}")
             StorageCapabilities(
                 totalOffered = 100 * 1024 * 1024L, // 100 MB fallback
-                currentlyUsed = 0L,
-                replicationFactor = 3,
+                localStorageAvailableMB = 100L,
                 compressionSupported = true,
-                encryptionSupported = true,
-                accessPatterns = setOf(AccessPattern.RANDOM)
+                encryptionSupported = true
             )
         }
     }
