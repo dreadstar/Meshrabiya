@@ -16,7 +16,9 @@ data class MeshChunk(
     val storedAt: Long = System.currentTimeMillis(),
     // Permission-related fields
     val recipientKeyIds: List<Long> = emptyList(), // PGPPublicKey.keyID values
-    val sessionKeys: Map<Long, ByteArray> = emptyMap() // keyID -> encrypted session key
+    val sessionKeys: Map<Long, ByteArray> = emptyMap(), // keyID -> encrypted session key
+    // Replication tracking - CRITICAL for daisy-chain replication
+    var replicaCount: Int = 0  // Which replica this is (1st, 2nd, 3rd, etc.)
 )
 
 data class MeshFile(

@@ -3,6 +3,7 @@ package com.ustadmobile.meshrabiya.storage
 import android.content.Context
 import android.os.StatFs
 import java.io.File
+import java.security.KeyPairGenerator
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
@@ -76,9 +77,30 @@ class StorageEncryptionManager {
     private val AES_KEY_SIZE = 32 // 256 bits
     private val AES_TRANSFORMATION = "AES/CBC/PKCS5Padding"
     private val IV_SIZE = 16
+    private val RSA_KEY_SIZE = 2048
 
     // In production, store keys securely (e.g., Android Keystore)
     private val secretKey: SecretKey = generateSecretKey()
+    
+    /**
+     * Generate service keypair for storage node encryption.
+     * 
+     * Canonical workflow Step 0: Each storage node has a service keypair.
+     * The public key is included in StorageNodeResponse and used by requesters
+     * to encrypt chunks so the storage node can decrypt them.
+     * 
+     * @return Pair of (publicKey, privateKey) as ByteArray
+     */
+    fun generateServiceKeypair(): Pair<ByteArray, ByteArray> {
+        val keyPairGenerator = KeyPairGenerator.getInstance("RSA")
+        keyPairGenerator.initialize(RSA_KEY_SIZE, SecureRandom())
+        val keyPair = keyPairGenerator.generateKeyPair()
+        
+        return Pair(
+            keyPair.public.encoded,
+            keyPair.private.encoded
+        )
+    }
 
     fun encrypt(data: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(AES_TRANSFORMATION)

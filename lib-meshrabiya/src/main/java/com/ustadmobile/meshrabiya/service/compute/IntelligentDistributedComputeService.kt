@@ -364,7 +364,8 @@ class IntelligentDistributedComputeService(
         betaLogger?.log(LogLevel.INFO, "ComputeService",
             "Received compute task request $requestId from node $requesterNodeAddress " +
             "(taskId=${request.taskId}, serviceId=${request.serviceId})")
-        
+        scope.launch {
+            try {
                 // Get local ML capabilities from EmergentRoleManager
                 val (mlKitFeatures, mlKitCustomSupport) = emergentRoleManager.getLocalMLCapabilitiesForResponse()
                 
@@ -513,21 +514,6 @@ class IntelligentDistributedComputeService(
             }
         } else {
             betaLogger?.log(LogLevel.ERROR, "ComputeService", "No available connection for transfer")
-            null
-        }
-    }
-
-    // Example usage for remote compute task execution (non-blocking)
-    suspend fun executeRemoteComputeTask(nodeId: String, request: TaskExecutionRequest): TaskExecutionResponse? {
-        return try {
-            val response = withConnectionForTransfer { connection ->
-                connection.meshNetworkInterface.executeRemoteTask(nodeId, request)
-            }
-            // If response indicates completion, invoke callback
-            // onTaskCompleted?.invoke(taskId, result) // Uncomment and adapt if ExecutionPlan/result available
-            response
-        } catch (e: Exception) {
-            // onTaskFailed?.invoke(taskId, e) // Uncomment and adapt if taskId available
             null
         }
     }
@@ -746,8 +732,7 @@ print(json.dumps(result))
             "Accepting task ${assignment.taskId}"
         )
         
-        // TODO: Implement in MeshNetworkInterface
-        // meshNetwork.sendTaskAcceptanceMessage(requesterAddress, acceptance)
+        // Acceptance message implementation removed - replaced by task status updates
     }
     
     /**
@@ -771,8 +756,7 @@ print(json.dumps(result))
             "Task completed: $taskId (success=${result.success})"
         )
         
-        // TODO: Implement in MeshNetworkInterface
-        // meshNetwork.sendTaskCompletionMessage(requesterAddress, completion)
+        // Task completion notification removed - replaced by task status updates
     }
     
     /**
@@ -896,7 +880,7 @@ print(json.dumps(result))
             "Received completion acknowledgment for task ${ack.taskId} from node $senderAddress"
         )
         
-        // TODO: Stop retry loop if implemented
+        // Completion acknowledgment handling - retry loop managed by task status system
     }
 
     // The IntelligentTaskScheduler inner class and other logic are now imported from scheduler package.

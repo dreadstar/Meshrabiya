@@ -28,7 +28,6 @@ import com.ustadmobile.meshrabiya.beta.LogLevel
  */
 class StagedSyncManager(
     private val context: Context,
-    private val meshNetwork: MeshNetworkInterface,
     private val onSyncComplete: ((fileId: String, replicaCount: Int) -> Unit)? = null,
     private val onSyncFailed: ((fileId: String, error: String) -> Unit)? = null
 ) {
