@@ -12,8 +12,8 @@ enum class JobType {
     DATA_ANALYSIS,
     ML_PIPELINE,
     SENSOR_FUSION,
-    COLLABORATIVE_FILTERING,
-    DISTRIBUTED_STORAGE
+    COLLABORATIVE_FILTERING
+    // DISTRIBUTED_STORAGE removed as per implementation plan
 }
 
 /**
@@ -46,8 +46,7 @@ enum class SpecializedCapability {
     COMPUTER_VISION,
     SIGNAL_PROCESSING,
     CRYPTOGRAPHY,
-    SCIENTIFIC_COMPUTING,
-    DISTRIBUTED_STORAGE
+    SCIENTIFIC_COMPUTING
 }
 
 // Note: PythonLibrary, InferenceConfig, and Precision are now imported from SupportTypes.kt

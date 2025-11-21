@@ -1,7 +1,16 @@
 package com.ustadmobile.meshrabiya.vnet
 
-import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.service.MeshGossipService
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalQuery
+import com.ustadmobile.meshrabiya.service.ReplicaQuery
+import com.ustadmobile.meshrabiya.service.StorageNodeRequestMessage
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.service.StorageNodeRequest
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalQueryMessage
+import com.ustadmobile.meshrabiya.service.ReplicaQueryMessage
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateMessage
+import com.ustadmobile.meshrabiya.service.EcosystemBroadcastMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -91,7 +100,7 @@ class CoreGossipBroadcastService(
      * @param request The storage node request details (includes requestId)
      */
     fun sendStorageNodeRequest(request: StorageNodeRequest) {
-        val message = MeshEcosystemMessage.StorageNodeRequestMessage(request)
+        val message = StorageNodeRequestMessage(request)
         sendBroadcast(message)
     }
 
@@ -103,7 +112,7 @@ class CoreGossipBroadcastService(
      */
     fun sendChunkRetrievalQuery(fileId: String) {
         val query = ChunkRetrievalQuery(fileId)
-        val message = MeshEcosystemMessage.ChunkRetrievalQueryMessage(query)
+        val message = ChunkRetrievalQueryMessage(query)
         sendBroadcast(message)
     }
 
@@ -115,7 +124,7 @@ class CoreGossipBroadcastService(
      */
     fun sendReplicaQuery(fileId: String) {
         val query = ReplicaQuery(fileId)
-        val message = MeshEcosystemMessage.ReplicaQueryMessage(query)
+        val message = ReplicaQueryMessage(query)
         sendBroadcast(message)
     }
 
@@ -146,7 +155,7 @@ class CoreGossipBroadcastService(
         inputParams: Map<String, Any>,
         metadata: Map<String, String>
     ) {
-        val message = MeshEcosystemMessage.ComputeTaskRequestMessage(
+        val message = ComputeTaskRequestMessage(
             taskId = taskId,
             serviceId = serviceId,
             inputParams = inputParams,
@@ -161,7 +170,7 @@ class CoreGossipBroadcastService(
      * 
      * @param message The permission update message
      */
-    fun sendFilePermissionUpdate(message: MeshEcosystemMessage.FilePermissionUpdateMessage) {
+    fun sendFilePermissionUpdate(message: FilePermissionUpdateMessage) {
         sendBroadcast(message)
     }
 
@@ -171,9 +180,7 @@ class CoreGossipBroadcastService(
      * 
      * @param message The task data access update message
      */
-    fun sendTaskDataAccessUpdate(message: MeshEcosystemMessage.TaskDataAccessUpdateMessage) {
-        sendBroadcast(message)
-    }
+
 
     /**
      * Send a generic ecosystem broadcast.
@@ -190,7 +197,7 @@ class CoreGossipBroadcastService(
         messageType: String,
         payload: ByteArray
     ) {
-        val message = MeshEcosystemMessage.EcosystemBroadcastMessage(
+        val message = EcosystemBroadcastMessage(
             broadcastId = broadcastId,
             senderId = senderId,
             messageType = messageType,

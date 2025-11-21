@@ -44,15 +44,30 @@ class UnifiedMLServiceManager(
     /**
      * Initialize ML services based on device capabilities
      */
-    suspend fun initialize() {
+    suspend fun initialize(localServiceLibrary: LocalDeviceServiceLibrary? = null) {
         withContext(Dispatchers.IO) {
             try {
                 initializeMLKitNativeServices()
                 initializeMLKitCustomServices()
                 // initializeLiteRTServices()
-                
+
+                // Register all available ML Kit services in Service Library if provided
+                localServiceLibrary?.let { lib ->
+                    getAvailableServices().forEach { announcement ->
+                        val manifest = LocalDeviceServiceLibrary.ServiceManifest(
+                            packageId = announcement.serviceId,
+                            serviceType = announcement.serviceType.name,
+                            runtimeRequired = listOf(LocalDeviceServiceLibrary.Runtime.JVM),
+                            runtimeOptional = emptyList(),
+                            deviceProfile = LocalDeviceServiceLibrary.DeviceProfile.FLAGSHIP,
+                            resourceRequirements = announcement.resourceRequirements
+                        )
+                        lib.addService(manifest)
+                    }
+                }
+
                 isInitialized.complete(true)
-                Log.i(TAG, "ML services initialized successfully")
+                Log.i(TAG, "ML services initialized and registered in Service Library")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize ML services", e)
                 isInitialized.complete(false)

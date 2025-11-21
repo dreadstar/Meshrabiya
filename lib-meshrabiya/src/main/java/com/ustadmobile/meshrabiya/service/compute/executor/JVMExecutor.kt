@@ -1,7 +1,11 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
 import android.content.Context
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import java.util.jar.JarFile
@@ -79,22 +83,37 @@ class JVMExecutor(
                     errorType = ExecutionErrorType.INVALID_CODE_BUNDLE
                 )
             
-            // 5. Create isolated classloader and execute
-            // TODO: Integrate with Java SecurityManager and execute main() method
-            // For now, return placeholder success
+            // 5. Create isolated classloader and execute main() method
+            var mainError: String? = null
+            try {
+                val classLoader = createIsolatedClassLoader(jarFile)
+                executeMainMethod(classLoader, mainClassName, arrayOf())
+            } catch (e: Exception) {
+                mainError = e.message
+            }
             val executionTime = System.currentTimeMillis() - startTime
-            
             // 6. Collect output files
             val outputManifest = collectOutputFiles(outputsDir)
-            
-            return ExecutionResult(
-                taskId = context.taskId,
-                success = true,
-                outputManifest = outputManifest,
-                resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
-                executionTimeMs = executionTime,
-                resultMessage = "JVM execution completed successfully"
-            )
+            return if (mainError == null) {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = true,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    executionTimeMs = executionTime,
+                    resultMessage = "JVM execution completed successfully"
+                )
+            } else {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = false,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(),
+                    executionTimeMs = executionTime,
+                    errorMessage = mainError,
+                    errorType = ExecutionErrorType.RUNTIME_ERROR
+                )
+            }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime

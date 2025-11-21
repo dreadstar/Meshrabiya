@@ -35,6 +35,17 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
  */
 class MeshrabiyaApiImpl : MeshrabiyaApi {
 
+    // Store the application context
+    @Volatile
+    private var appContext: Context? = null
+    override fun provideAppContext(context: Context) {
+        appContext = context.applicationContext
+    }
+
+    override fun getAppContext(): Context? {
+        return appContext
+    }
+
     companion object {
         @Volatile
         private var instance: MeshrabiyaApiImpl? = null
@@ -281,10 +292,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // UNUSED SCHEDULER API - Commented 2025-11-12
     // private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
-    private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
-    private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
     private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
-    private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
     private var onFileAddedToDropFolder: ((fileId: String, file: File) -> Unit)? = null
 
     override fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit) {

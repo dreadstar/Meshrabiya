@@ -1,11 +1,18 @@
 package com.ustadmobile.meshrabiya.service
 
-import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
-import com.ustadmobile.meshrabiya.ext.addressToDotNotation
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
@@ -67,8 +74,7 @@ class MeshGossipService(
     // Generic pending request tracking - keyed by requestId, value is collector
     private val pendingRequests = ConcurrentHashMap<String, ResponseCollector<Any>>()
     
-    private val logger: MNetLogger
-        get() = virtualNode.logger
+    private val logger: MNetLogger = MNetLoggerStdout()
 
     /**
      * Helper class to collect multiple responses for a single request with timeout.
@@ -192,27 +198,26 @@ class MeshGossipService(
      * @return Number of neighbors the message was sent to
      */
     fun broadcastMessage(payload: ByteArray): Int {
-        val neighbors = virtualNode.originatingMessageManager.neighbors()
-        
+        val neighbors = virtualNode.neighbors() // Use public accessor
+
         if (neighbors.isEmpty()) {
-            logger.w("broadcastMessage: No neighbors available for broadcast")
+            logger(android.util.Log.WARN, "broadcastMessage: No neighbors available for broadcast")
             return 0
         }
-        
+
         val ecosystemPort = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getEcosystemGossipPort()
-        val fromAddr = virtualNode.address
+        val fromAddr = virtualNode.addressAsInt // Use mesh node address as Int
         var successCount = 0
-        
-        logger.d("broadcastMessage: Broadcasting ${payload.size} bytes to ${neighbors.size} neighbors")
-        
+
+        logger(android.util.Log.DEBUG, "broadcastMessage: Broadcasting ${payload.size} bytes to ${neighbors.size} neighbors")
         neighbors.forEach { (neighborAddr, lastMsg) ->
             try {
                 // Create buffer with space for header
                 val buffer = ByteArray(VirtualPacketHeader.HEADER_SIZE + payload.size)
-                
+
                 // Copy payload after header space
                 System.arraycopy(payload, 0, buffer, VirtualPacketHeader.HEADER_SIZE, payload.size)
-                
+
                 // Create header
                 val header = VirtualPacketHeader(
                     toAddr = neighborAddr,
@@ -224,25 +229,24 @@ class MeshGossipService(
                     maxHops = 1, // Direct neighbor only
                     payloadSize = payload.size
                 )
-                
+
                 // Create packet
                 val packet = VirtualPacket.fromHeaderAndPayloadData(
                     header = header,
                     data = buffer,
                     payloadOffset = VirtualPacketHeader.HEADER_SIZE
                 )
-                
+
                 // Send via neighbor's socket
                 lastMsg.receivedFromSocket.send(packet)
                 successCount++
-                
-                logger.v("broadcastMessage: Sent to neighbor ${neighborAddr.addressToDotNotation()}")
-            } catch (e: Exception) {
-                logger.e("broadcastMessage: Failed to send to neighbor ${neighborAddr.addressToDotNotation()}", e)
+
+                logger(android.util.Log.VERBOSE, "broadcastMessage: Sent to neighbor ${neighborAddr}")
+            } catch (ex: Exception) {
+                logger(android.util.Log.ERROR, "broadcastMessage: Failed to send to neighbor ${neighborAddr}", ex)
             }
         }
-        
-        logger.d("broadcastMessage: Successfully sent to $successCount/${neighbors.size} neighbors")
+        logger(android.util.Log.DEBUG, "broadcastMessage: Successfully sent to $successCount/${neighbors.size} neighbors")
         return successCount
     }
 
@@ -254,3 +258,7 @@ class MeshGossipService(
         pendingRequests.clear()
     }
 }
+
+// Helper extension if needed
+// Only use this for InetAddress, not mesh node addresses (which are Int)
+fun java.net.InetAddress.addressToDotNotation(): String = this.hostAddress

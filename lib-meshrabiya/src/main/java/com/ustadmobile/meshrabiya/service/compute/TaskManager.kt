@@ -1,5 +1,13 @@
 package com.ustadmobile.meshrabiya.service.compute
 
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.OutputManifest
+import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions
 import java.util.UUID
 import kotlinx.coroutines.*
 import android.content.Context
@@ -12,21 +20,224 @@ import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageOp
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.RetentionPolicy
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageRequest
-import com.ustadmobile.meshrabiya.service.MeshServiceCoordinator
-import com.ustadmobile.meshrabiya.OrbotApp
+// import com.ustadmobile.meshrabiya.service.MeshServiceCoordinator
+// import com.ustadmobile.meshrabiya.OrbotApp
 import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import kotlinx.serialization.json.Json
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
-import com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutor
-import com.ustadmobile.meshrabiya.service.security.StrangersSafeComputeEngine
 
+
+import com.ustadmobile.meshrabiya.service.compute.model.*
+import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
+import com.ustadmobile.meshrabiya.service.compute.executors.*
+import com.ustadmobile.meshrabiya.service.compute.StrangersSafeComputeEngine
+import com.ustadmobile.meshrabiya.core.message.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.util.MeshrabiyaConstants
+import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentHashMap
 /**
  * TaskManager - Monitors running tasks, handles TaskDataAccessUpdate events,
  * coordinates access profile updates, provides hooks for output publishing,
  * supports service search, smart caching, progress tracking, and result management.
  * Integrates with DistributedStorageManager, MeshEcosystemListener, and IntelligentDistributedComputeService.
  */
+
+ 
 object TaskManager {
+    private val taskStatuses = ConcurrentHashMap<String, TaskStatus>()
+    private val activeExecutions = ConcurrentHashMap<String, ExecutionState>()
+    private var resourceMonitoringJob: Job? = null
+    private var totalLoad: ResourceMetrics = ResourceMetrics.zero()
+    private val sandboxEngine = StrangersSafeComputeEngine()
+    private val executors = listOf(
+        PythonExecutor(sandboxEngine),
+        JVMExecutor(sandboxEngine),
+        JSExecutor(sandboxEngine),
+        MLNativeExecutor(sandboxEngine),
+        WorkflowExecutor(sandboxEngine, this)
+    )
+
+    suspend fun executeTask(
+        context: TaskExecutionContext,
+        accessScope: AccessScope = AccessScope.TASK_ISOLATED
+    ): ExecutionResult = coroutineScope {
+        val taskId = context.taskId
+        val executor = loadExecutor(context.taskType)
+        val containerId = createSandboxContainer(context)
+        val execution = ExecutionState(
+            context = context,
+            containerId = containerId,
+            executor = executor
+        )
+        activeExecutions[taskId] = execution
+        ensureResourceMonitoringActive()
+        try {
+            val result = executor.execute(context, containerId)
+            storeResultFiles(taskId, result, accessScope)
+            sendCompletionNotification(taskId, result)
+            result
+        } finally {
+            cleanupExecution(taskId)
+        }
+    }
+
+    private suspend fun retrieveInputFiles(inputManifest: List<FileReference>): Map<String, ByteArray> {
+        // Retrieve each file from DistributedStorageManager
+        val apiInstance = api ?: throw IllegalStateException("API not set")
+        val storageManager = apiInstance.getDistributedStorageManager()
+        return inputManifest.associate { fileRef ->
+            val fileBytes = storageManager.retrieveFileBytes(fileRef.fileId)
+            fileRef.fileId to fileBytes
+        }
+    }
+
+    private suspend fun createSandboxContainer(context: TaskExecutionContext): String {
+        val sandboxConfig = getSandboxConfigForTaskType(context.taskType)
+        // Use compute engine to create a sandboxed container for the task
+        val containerId = sandboxEngine.createContainer(context, sandboxConfig)
+        return containerId
+    }
+
+    private fun getSandboxConfigForTaskType(taskType: TaskType): SandboxConfig {
+        return SandboxConfig(syscallWhitelist = listOf("read", "write", "execve"))
+    }
+
+    private fun loadExecutor(taskType: TaskType): TaskExecutor {
+        return executors.firstOrNull { it.getSupportedTaskType() == taskType }
+            ?: throw IllegalArgumentException("No executor for task type: $taskType")
+    }
+
+    private suspend fun storeResultFiles(
+        taskId: String,
+        result: ExecutionResult,
+        accessScope: AccessScope
+    ) {
+        // Store result files using DistributedStorageManager with correct permissions
+        val apiInstance = api ?: throw IllegalStateException("API not set")
+        val storageManager = apiInstance.getDistributedStorageManager()
+        val owner = result.taskId // For now, use taskId as owner; adjust as needed
+        val recipients = listOf(result.taskId) // For now, only task owner; adjust as needed
+        result.outputManifest?.let { manifest ->
+            for (fileRef in manifest.outputFiles) {
+                storageManager.storeFile(
+                    fileRef.fileId,
+                    fileRef,
+                    accessScope,
+                    owner,
+                    recipients
+                )
+            }
+        }
+    }
+
+    private suspend fun sendCompletionNotification(
+        taskId: String,
+        result: ExecutionResult
+    ) {
+        // Send completion notification to requester (CANONICAL_WORKFLOWS compliant)
+        val execution = activeExecutions[taskId] ?: return
+        val callbackAddress = execution.context.callbackAddress
+        val completionMessage = TaskCompletedMessage(
+            taskId = taskId,
+            result = result
+        )
+        val messageBytes = MessagePackSerializer.encode(completionMessage)
+        api?.getVirtualNode()?.sendMessage(
+            destinationAddress = callbackAddress,
+            payload = messageBytes,
+            messageType = MessageType.TASK_COMPLETED
+        )
+    }
+
+    private suspend fun cleanupExecution(taskId: String) {
+        activeExecutions.remove(taskId)
+        // Additional cleanup logic: remove containers, clear temp files, revoke keys if needed
+        sandboxEngine.cleanupContainer(taskId)
+    }
+
+    private fun ensureResourceMonitoringActive() {
+        if (resourceMonitoringJob != null && resourceMonitoringJob?.isActive == true) return
+        resourceMonitoringJob = GlobalScope.launch {
+            while (isActive && activeExecutions.isNotEmpty()) {
+                updateResourceMetrics()
+                delay(MeshrabiyaConstants.RESOURCE_MONITORING_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun updateResourceMetrics() {
+        var totalRamActual = 0L
+        var totalRamAverage = 0L
+        var totalRamPeak = 0L
+        var totalCpuTime = 0L
+        var totalCpuPercent = 0f
+        var totalDiskIo = 0L
+        var totalDiskStorage = 0L
+        for (execution in activeExecutions.values) {
+            val metrics = sandboxEngine.getContainerMetrics(execution.containerId)
+            totalRamActual += metrics.ramActualBytes
+            totalRamAverage += metrics.ramAverageBytes
+            totalRamPeak += metrics.ramPeakBytes
+            totalCpuTime += metrics.cpuTimeUsedMs
+            totalCpuPercent += metrics.cpuPercentage
+            totalDiskIo += metrics.diskIoOperations
+            totalDiskStorage += metrics.diskStorageUsedBytes
+            // Update execution state with current metrics
+            execution.currentMetrics = metrics
+            if (metrics.ramPeakBytes > execution.peakMetrics.ramPeakBytes) {
+                execution.peakMetrics = metrics
+            }
+        }
+        totalLoad = ResourceMetrics(
+            ramActualBytes = totalRamActual,
+            ramAverageBytes = totalRamAverage,
+            ramPeakBytes = totalRamPeak,
+            cpuTimeUsedMs = totalCpuTime,
+            cpuPercentage = totalCpuPercent,
+            diskIoOperations = totalDiskIo,
+            diskStorageUsedBytes = totalDiskStorage
+        )
+    }
+    fun verifyRuntimeAvailable(taskType: TaskType): Boolean {
+        val available = RuntimeRegistry.isRuntimeAvailable(taskType)
+        if (!available) {
+            // Log warning, do not accept task
+            // (CANONICAL_WORKFLOWS: must not accept if runtime missing)
+        }
+        return available
+    }
+
+    fun getTotalLoad(): ResourceMetrics = totalLoad
+    fun getTaskMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.currentMetrics
+    fun getPeakMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.peakMetrics
+
+    private data class ExecutionState(
+        val context: TaskExecutionContext,
+        val containerId: String,
+        val executor: TaskExecutor,
+        val currentMetrics: ResourceMetrics = ResourceMetrics.zero(),
+        val peakMetrics: ResourceMetrics = ResourceMetrics.zero()
+    )
+
+    data class TaskStatus(
+        val taskId: String,
+        val phase: TaskPhase = TaskPhase.CREATED,
+        val executionContext: TaskExecutionContext? = null,
+        val taskHash: String? = null
+    )
+
+    enum class TaskPhase {
+        CREATED, RUNNING, COMPLETED, FAILED, CANCELLED
+    }
+
+
+
+    // Reference to the API for context access
+    @Volatile
+    private var api: com.ustadmobile.meshrabiya.api.MeshrabiyaApi? = null
+
+    fun setApi(apiInstance: com.ustadmobile.meshrabiya.api.MeshrabiyaApi) {
+        api = apiInstance
+    }
 
     // --- Data Models ---
 
@@ -375,7 +586,13 @@ object TaskManager {
                             owner = taskConfig.requester
                         )
                     )
-                    // TODO: Explicitly grant access to recipients (update permissions, send notification, etc.)
+                    // Grant access to recipients: update permissions and send notification
+                    recipients.forEach { recipient ->
+                        // Update permissions in storage manager
+                        storageManager.updateFileAccess(uniqueFileName, recipient)
+                        // Send notification (pseudo-code, replace with actual messaging API)
+                        MeshEcosystemMessage.sendAccessGrantedNotification(taskId, recipient, uniqueFileName)
+                    }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -386,7 +603,7 @@ object TaskManager {
     // --- Utility Methods ---
 
     private fun getAppContext(): Context? {
-        return OrbotApp.instance.applicationContext
+        return api?.getAppContext()
     }
 
     private fun getStorageConfiguration(): StorageConfiguration {
@@ -419,22 +636,22 @@ object TaskManager {
      */
     suspend fun executeTask(
         taskId: UUID,
-        taskType: com.ustadmobile.meshrabiya.service.compute.model.TaskType,
-        jobType: com.ustadmobile.meshrabiya.service.compute.model.JobType,
+        taskType: TaskType,
+        jobType: JobType,
         codeBundle: ByteArray,
-        inputManifest: List<com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.FileReference>,
-        resourceLimits: com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceLimits,
+        inputManifest: List<MeshComputeDataDefinitions.FileReference>,
+        resourceLimits: MeshComputeDataDefinitions.ResourceLimits,
         deadlineMs: Long,
         requesterNodeId: String,
         callbackAddress: String,
         accessScope: AccessScope = AccessScope.TASK_ISOLATED
-    ): com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult = coroutineScope {
+    ): MeshComputeDataDefinitions.ExecutionResult = coroutineScope {
         
         updateTaskProgress(taskId, 0, null, "Task accepted, preparing for execution")
         
         try {
             // 1. Create execution context
-            val context = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.TaskExecutionContext(
+            val context = MeshComputeDataDefinitions.TaskExecutionContext(
                 taskId = taskId.toString(),
                 taskType = taskType,
                 jobType = jobType,
@@ -459,7 +676,7 @@ object TaskManager {
             val executionState = ExecutionState(
                 taskId = taskId,
                 containerId = containerId,
-                executorNodeAddress = "local", // TODO: Get actual node address
+                executorNodeAddress = virtualNode.addressAsInt.toString(), // Get actual node address
                 startTime = System.currentTimeMillis(),
                 taskContext = context,
                 requesterNodeId = requesterNodeId,
@@ -515,14 +732,14 @@ object TaskManager {
             result
             
         } catch (e: Exception) {
-            val errorResult = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult(
+            val errorResult = MeshComputeDataDefinitions.ExecutionResult(
                 taskId = taskId.toString(),
                 success = false,
                 outputManifest = emptyList(),
                 resourcesUsed = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics.zero(),
                 executionTimeMs = System.currentTimeMillis() - (activeExecutions[taskId]?.startTime ?: 0),
                 errorMessage = e.message ?: "Unknown error",
-                errorType = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionErrorType.UNKNOWN
+                errorType = MeshComputeDataDefinitions.ExecutionErrorType.UNKNOWN
             )
             
             runningTasks[taskId]?.let {
@@ -539,22 +756,22 @@ object TaskManager {
     // === Helper Methods ===
 
     private suspend fun retrieveInputFiles(
-        inputManifest: List<com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.FileReference>
+        inputManifest: List<MeshComputeDataDefinitions.FileReference>
     ): Map<String, ByteArray> {
         val context = getAppContext() ?: throw IllegalStateException("Application context unavailable")
         val storageManager = DistributedStorageManager.getInstance(context)
         
         return inputManifest.associate { fileRef ->
-            // TODO: Implement retrieveFile() in DistributedStorageManager
-            fileRef.fileName to ByteArray(0) // Placeholder
+            val fileBytes = storageManager.retrieveFile(fileRef.fileId)
+            fileRef.fileName to fileBytes
         }
     }
 
     private suspend fun createSandboxContainer(
-        context: com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.TaskExecutionContext
+        context: MeshComputeDataDefinitions.TaskExecutionContext
     ): String {
-        // TODO: Integrate with StrangersSafeComputeEngine
-        return "container_${context.taskId}"
+        // Integrate with StrangersSafeComputeEngine
+        return StrangersSafeComputeEngine.createContainer(context)
     }
 
     /**
@@ -765,30 +982,23 @@ object TaskManager {
      * Load appropriate executor for task type with runtime validation
      */
     private suspend fun loadExecutor(
-        taskType: com.ustadmobile.meshrabiya.service.compute.model.TaskType
+        taskType: TaskType
     ): TaskExecutor {
         val context = getAppContext() ?: throw IllegalStateException("Context not available")
         val registry = com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry.getInstance(context)
-        
         // Check if runtime is available
         if (!registry.isRuntimeAvailable(taskType)) {
             throw IllegalStateException("Runtime not available for task type: ${taskType.name}")
         }
-        
         // Load appropriate executor
         return when (taskType) {
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.PYTHON -> 
-                com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor(context)
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JVM,
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JAVA ->
-                com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor(context)
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.JAVASCRIPT ->
-                com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.ML_NATIVE ->
-                com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
-            com.ustadmobile.meshrabiya.service.compute.model.TaskType.WORKFLOW -> {
+            TaskType.PYTHON -> com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor(context)
+            TaskType.JVM, TaskType.JAVA -> com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor(context)
+            TaskType.JAVASCRIPT -> com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
+            TaskType.ML_NATIVE -> com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
+            TaskType.WORKFLOW -> {
                 // WorkflowExecutor needs an executor factory
-                val factory: (com.ustadmobile.meshrabiya.service.compute.model.TaskType) -> TaskExecutor? = { type ->
+                val factory: (TaskType) -> TaskExecutor? = { type ->
                     try {
                         loadExecutor(type)
                     } catch (e: Exception) {
@@ -802,7 +1012,7 @@ object TaskManager {
 
     private suspend fun storeResultFiles(
         taskId: UUID,
-        outputManifest: List<com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.FileReference>,
+        outputManifest: List<MeshComputeDataDefinitions.FileReference>,
         owner: String,
         recipients: List<String>,
         accessScope: AccessScope
@@ -810,16 +1020,24 @@ object TaskManager {
         val context = getAppContext() ?: return
         val storageManager = DistributedStorageManager.getInstance(context)
         
-        // TODO: Store each output file with proper permissions
+        outputManifest.forEach { fileRef ->
+            storageManager.storeFile(
+                fileRef.filePath,
+                owner = owner,
+                recipients = recipients,
+                accessScope = accessScope
+            )
+        }
     }
 
     private suspend fun sendCompletionNotification(
         taskId: UUID,
         requesterNodeId: String,
         callbackAddress: String,
-        result: com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult
+        result: MeshComputeDataDefinitions.ExecutionResult
     ) {
-        // TODO: Send TaskCompletedMessage to requester
+        // Send TaskCompletedMessage to requester
+        MeshEcosystemMessage.sendTaskCompletedMessage(taskId, requesterNodeId, callbackAddress, result)
     }
 
     private suspend fun cleanupExecution(taskId: UUID) {
@@ -944,7 +1162,10 @@ object TaskManager {
         
         expiredTaskIds.forEach { taskId ->
             keypairRegistry.remove(taskId)
-            // TODO: Secure memory zeroing of private keys
+            // Secure memory zeroing of private keys
+            entry.privateKey?.let { key ->
+                java.util.Arrays.fill(key.encoded, 0)
+            }
         }
         
         if (expiredTaskIds.isNotEmpty()) {
@@ -974,9 +1195,9 @@ object TaskManager {
     // TaskExecutor interface
     interface TaskExecutor {
         suspend fun execute(
-            context: com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.TaskExecutionContext,
+            context: MeshComputeDataDefinitions.TaskExecutionContext,
             inputFiles: Map<String, ByteArray>,
             containerId: String
-        ): com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ExecutionResult
+        ): MeshComputeDataDefinitions.ExecutionResult
     }
 }

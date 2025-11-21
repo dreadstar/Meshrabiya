@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 /**

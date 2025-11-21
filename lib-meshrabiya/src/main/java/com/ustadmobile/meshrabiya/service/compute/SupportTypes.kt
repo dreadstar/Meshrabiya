@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.service.compute
 
 import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
+import kotlinx.serialization.Serializable
 
 /**
  * SupportTypes
@@ -10,11 +11,13 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
  * Precision, CPUIntensity definitions.
  * 
  * Note: ThermalState is now imported from hardware package (canonical version).
- * Note: Other files (JobTypes.kt, LibraryEntry.kt, ResourceRequirements.kt, 
- * ServiceManifest.kt) should import these types instead of redefining them.
+ * Note: Other files (JobTypes.kt, ResourceRequirements.kt, ServiceManifest.kt) should import these types instead of redefining them.
+ *
+ * MIGRATION NOTE: LibraryEntry.kt is deprecated and replaced by ServiceLibraryEntry. Do not use LibraryEntry in new code.
  */
 
 data class ResourceRequirements(
+    @Serializable
     val minRAMMB: Int,
     val preferredRAMMB: Int,
     val cpuIntensity: CPUIntensity,

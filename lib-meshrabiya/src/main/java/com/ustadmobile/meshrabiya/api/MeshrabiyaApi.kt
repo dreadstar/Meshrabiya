@@ -24,7 +24,21 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
  * Unified API interface for Meshrabiya module.
  * Exposes all key operations, state, and event registration for UI/control layers.
  */
-interface MeshrabiyaApi {
+
+    /**
+     * Provide application context to the Meshrabiya core (for use by TaskManager, etc.)
+     */
+    fun provideAppContext(context: Context)
+
+    /**
+     * Retrieve the application context for internal use (TaskManager, etc.)
+     */
+    fun getAppContext(): Context?
+
+    /**
+     * Provide application context to the Meshrabiya core (for use by TaskManager, etc.)
+     */
+    fun provideAppContext(context: Context)
 
     // --- Mesh Initialization ---
     fun initMesh(context: Context)

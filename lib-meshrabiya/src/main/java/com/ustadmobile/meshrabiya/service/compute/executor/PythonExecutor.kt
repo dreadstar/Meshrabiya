@@ -1,12 +1,19 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
 import android.content.Context
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
+import com.chaquo.python.PyObject
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
-import java.io.File
-import java.util.zip.ZipInputStream
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.InputStream
+import java.util.zip.ZipInputStream
 
 /**
  * PythonExecutor
@@ -68,22 +75,51 @@ class PythonExecutor(
                 File(inputsDir, filename).writeBytes(data)
             }
             
-            // 4. Execute Python script
-            // TODO: Integrate with Chaquopy Python runtime
-            // For now, return placeholder success
+            // 4. Execute Python script using Chaquopy
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(this.context))
+            }
+            val py = Python.getInstance()
+            val scriptPath = scriptFile.absolutePath
+            val pyResult: PyObject
+            val pyError: String?
+            try {
+                // Set working directory to workspaceDir
+                val sys = py.getModule("sys")
+                sys["path"].callAttr("insert", 0, workspaceDir.absolutePath)
+                sys["argv"] = listOf(scriptPath)
+                val builtins = py.getModule("builtins")
+                builtins["__file__"] = scriptPath
+                val mainModule = py.getModule("__main__")
+                pyResult = py.getModule("runpy").callAttr("run_path", scriptPath, mapOf("run_name" to "__main__"))
+                pyError = null
+            } catch (e: Exception) {
+                pyResult = PyObject.fromJava(null)
+                pyError = e.message
+            }
             val executionTime = System.currentTimeMillis() - startTime
-            
             // 5. Collect output files
             val outputManifest = collectOutputFiles(outputsDir)
-            
-            return ExecutionResult(
-                taskId = context.taskId,
-                success = true,
-                outputManifest = outputManifest,
-                resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
-                executionTimeMs = executionTime,
-                resultMessage = "Python execution completed successfully"
-            )
+            return if (pyError == null) {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = true,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    executionTimeMs = executionTime,
+                    resultMessage = "Python execution completed successfully"
+                )
+            } else {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = false,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(),
+                    executionTimeMs = executionTime,
+                    errorMessage = pyError,
+                    errorType = ExecutionErrorType.RUNTIME_ERROR
+                )
+            }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime

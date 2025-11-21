@@ -22,7 +22,12 @@ import com.ustadmobile.meshrabiya.vnet.wifi.*
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.serialization.json.Json
 import java.io.Closeable
 import java.net.*
@@ -118,7 +123,7 @@ abstract class VirtualNode(
 
     private val messageCounter = AtomicInteger(0)
 
-    private val _state = MutableStateFlow(LocalNodeState())
+    protected open val _state = MutableStateFlow(LocalNodeState())
 
     val state: Flow<LocalNodeState> = _state.asStateFlow()
 
@@ -289,56 +294,25 @@ abstract class VirtualNode(
     
     // IntelligentDistributedComputeService initialized lazily with all dependencies
     protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
-        IntelligentDistributedComputeService(
-            virtualNode = this,
-            // DEPRECATED: ResourceManager replaced by canonical compute task workflows
-            // resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
-            pythonExecutor = createPythonExecutor(),
-            // liteRTEngine = createLiteRTEngine(),
-            emergentRoleManager = emergentRoleManager,
-            betaLogger = com.ustadmobile.meshrabiya.beta.BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
-            )
-        )
+        // IntelligentDistributedComputeService(
+        //     virtualNode = this,
+        //     // DEPRECATED: ResourceManager replaced by canonical compute task workflows
+        //     // resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
+        //     pythonExecutor = createPythonExecutor(),
+        //     // liteRTEngine = createLiteRTEngine(),
+        //     emergentRoleManager = emergentRoleManager,
+        //     betaLogger = com.ustadmobile.meshrabiya.beta.BetaTestLogger.getInstance(
+        //         getContext() ?: throw IllegalStateException("Context required")
+        //     )
+        // )
+        // TODO: Re-enable with canonical compute domain injection only
     }
     
     // Storage service requires additional dependencies (Context, etc.)
     // Will be initialized later via initialize() method when dependencies are available
     protected var distributedStorageManager: DistributedStorageManager? = null
     
-    /**
-     * Creates PythonExecutor instance. Can be overridden by subclasses.
-     */
-    protected open fun createPythonExecutor(): com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor {
-        return object : com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor {
-            override suspend fun executeTask(
-                task: com.ustadmobile.meshrabiya.service.compute.model.ComputeTask.PythonTask
-            ): com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult {
-                // Simple stub implementation - override in subclass for real functionality
-                return com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult.Failed(
-                    taskId = task.taskId,
-                    error = "PythonExecutor not implemented"
-                )
-            }
-        }
-    }
-    
-    /**
-     * Creates LiteRTEngine instance. Can be overridden by subclasses.
-     */
-    // protected open fun createLiteRTEngine(): com.ustadmobile.meshrabiya.service.compute.executor.LiteRTEngine {
-    //     return object : com.ustadmobile.meshrabiya.service.compute.executor.LiteRTEngine {
-    //         override suspend fun executeTask(
-    //             task: com.ustadmobile.meshrabiya.service.compute.model.ComputeTask.LiteRTTask
-    //         ): com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult {
-    //             // Simple stub implementation - override in subclass for real functionality
-    //             return com.ustadmobile.meshrabiya.service.compute.executor.TaskExecutionResult.Failed(
-    //                 taskId = task.taskId,
-    //                 error = "LiteRTEngine not implemented"
-    //             )
-    //         }
-    //     }
-    // }
+    // Deprecated: PythonExecutor and LiteRTEngine stubs removed. Canonical compute logic is implemented in IntelligentDistributedComputeService and PythonExecutor domain files.
     
 
     init {
@@ -597,9 +571,9 @@ abstract class VirtualNode(
         }
     }
 
-    // Deduplication cache for broadcast packets
-    private val seenBroadcasts = ConcurrentHashMap<String, Long>()
-    private val broadcastTtlMs: Long = 60_000L
+    // Deduplication cache for broadcast packets (moved to MeshEcosystemListener)
+    // private val seenBroadcasts = ConcurrentHashMap<String, Long>()
+    // private val broadcastTtlMs: Long = 60_000L
 
     override fun route(
         packet: VirtualPacket,
@@ -662,28 +636,29 @@ abstract class VirtualNode(
             }else {
                 val toAddr = packet.header.toAddr
                 packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
+                // Deduplication for broadcast packets moved to MeshEcosystemListener
                 if(toAddr == ADDR_BROADCAST) {
-                    val broadcastId = computeBroadcastId(packet)
-                    val now = System.currentTimeMillis()
-                    val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
-                    if (prev == null) {
-                        val meshRoles = emergentRoleManager.getCurrentMeshRoles()
-                        if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
-                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER)")
-                            originatingMessageManager.neighbors().filter {
-                                it.first != fromLastHop && it.first != packet.header.fromAddr
-                            }.forEach {
-                                logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
-                                it.second.receivedFromSocket.send(
-                                    nextHopAddress = it.second.lastHopRealInetAddr,
-                                    nextHopPort = it.second.lastHopRealPort,
-                                    virtualPacket = packet,
-                                )
-                            }
-                        } else {
-                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
-                        }
-                    }
+                    // val broadcastId = computeBroadcastId(packet)
+                    // val now = System.currentTimeMillis()
+                    // val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
+                    // if (prev == null) {
+                    //     val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                    //     if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
+                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER)")
+                    //         originatingMessageManager.neighbors().filter {
+                    //             it.first != fromLastHop && it.first != packet.header.fromAddr
+                    //         }.forEach {
+                    //             logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
+                    //             it.second.receivedFromSocket.send(
+                    //                 nextHopAddress = it.second.lastHopRealInetAddr,
+                    //                 nextHopPort = it.second.lastHopRealPort,
+                    //                 virtualPacket = packet,
+                    //             )
+                    //         }
+                    //     } else {
+                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
+                    //     }
+                    // }
                 }else {
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)

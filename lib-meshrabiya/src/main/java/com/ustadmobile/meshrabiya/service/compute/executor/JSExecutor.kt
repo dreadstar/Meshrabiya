@@ -1,7 +1,12 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import android.content.Context
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
+import com.eclipsesource.v8.V8
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import java.util.zip.ZipInputStream
@@ -73,22 +78,39 @@ class JSExecutor(
                 File(inputsDir, filename).writeBytes(data)
             }
             
-            // 4. Execute JavaScript
-            // TODO: Integrate with J2V8 JavaScript runtime
-            // For now, return placeholder success
+            // 4. Execute JavaScript using J2V8
+            var jsError: String? = null
+            try {
+                val v8 = V8.createV8Runtime(null, workspaceDir.absolutePath)
+                val script = scriptFile.readText()
+                v8.executeVoidScript(script)
+                v8.release()
+            } catch (e: Exception) {
+                jsError = e.message
+            }
             val executionTime = System.currentTimeMillis() - startTime
-            
             // 5. Collect output files
             val outputManifest = collectOutputFiles(outputsDir)
-            
-            return ExecutionResult(
-                taskId = context.taskId,
-                success = true,
-                outputManifest = outputManifest,
-                resourcesUsed = ResourceMetrics.zero(),
-                executionTimeMs = executionTime,
-                resultMessage = "JavaScript execution completed successfully"
-            )
+            return if (jsError == null) {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = true,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(),
+                    executionTimeMs = executionTime,
+                    resultMessage = "JavaScript execution completed successfully"
+                )
+            } else {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = false,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(),
+                    executionTimeMs = executionTime,
+                    errorMessage = jsError,
+                    errorType = ExecutionErrorType.RUNTIME_ERROR
+                )
+            }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime

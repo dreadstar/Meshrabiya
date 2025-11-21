@@ -1,9 +1,12 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
-import android.content.Context
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.*
-import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import java.io.File
+import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -68,27 +71,46 @@ class MLNativeExecutor(
                 File(inputsDir, filename).writeBytes(data)
             }
             
-            // 4. Run inference
-            // TODO: Integrate with TensorFlow Lite interpreter
-            // - Load model
-            // - Allocate tensors
-            // - Copy input data to input tensors
-            // - Invoke interpreter
-            // - Copy output tensors to output files
-            
+            // 4. Run inference using TensorFlow Lite
+            var mlError: String? = null
+            try {
+                val interpreter = Interpreter(modelFile)
+                // For demonstration, assume single input/output tensor, float32
+                val inputTensor = inputFiles.values.firstOrNull()?.let { bytesToFloatArray(it) }
+                val outputTensor = FloatArray(inputTensor?.size ?: 1)
+                if (inputTensor != null) {
+                    interpreter.run(inputTensor, outputTensor)
+                    // Write output tensor to outputs dir
+                    val outFile = File(outputsDir, "output_tensor.bin")
+                    outFile.writeBytes(floatArrayToBytes(outputTensor))
+                }
+                interpreter.close()
+            } catch (e: Exception) {
+                mlError = e.message
+            }
             val executionTime = System.currentTimeMillis() - startTime
-            
             // 5. Collect output files (tensor results)
             val outputManifest = collectOutputFiles(outputsDir)
-            
-            return ExecutionResult(
-                taskId = context.taskId,
-                success = true,
-                outputManifest = outputManifest,
-                resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
-                executionTimeMs = executionTime,
-                resultMessage = "ML inference completed successfully"
-            )
+            return if (mlError == null) {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = true,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    executionTimeMs = executionTime,
+                    resultMessage = "ML inference completed successfully"
+                )
+            } else {
+                ExecutionResult(
+                    taskId = context.taskId,
+                    success = false,
+                    outputManifest = outputManifest,
+                    resourcesUsed = ResourceMetrics.zero(),
+                    executionTimeMs = executionTime,
+                    errorMessage = mlError,
+                    errorType = ExecutionErrorType.RUNTIME_ERROR
+                )
+            }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime

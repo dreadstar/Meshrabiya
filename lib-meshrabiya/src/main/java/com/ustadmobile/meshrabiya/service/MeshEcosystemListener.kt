@@ -1,5 +1,15 @@
 package com.ustadmobile.meshrabiya.service
 
+import com.ustadmobile.meshrabiya.service.StorageNodeRequestMessage
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalQueryMessage
+import com.ustadmobile.meshrabiya.service.ReplicaQueryMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateMessage
+import com.ustadmobile.meshrabiya.service.EcosystemBroadcastMessage
+import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
+import com.ustadmobile.meshrabiya.service.TaskScheduledMessage
+import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse
+import com.ustadmobile.meshrabiya.service.ReplicaResponse
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
@@ -7,18 +17,18 @@ import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeS
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
 import com.ustadmobile.meshrabiya.service.StorageNodeResponseMessage
 import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponseMessage
 import com.ustadmobile.meshrabiya.service.ReplicaResponseMessage
 import com.ustadmobile.meshrabiya.service.ComputeNodeResponseMessage
-import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
-import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
-import com.ustadmobile.meshrabiya.service.TaskDataAccessUpdateMessage
-import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
-import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
-import com.ustadmobile.meshrabiya.vnet.StorageNodeResponse
-import com.ustadmobile.meshrabiya.vnet.ReplicaResponse
-import com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse
+import com.ustadmobile.meshrabiya.service.StorageNodeResponse
+// ...existing code...
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+import com.ustadmobile.meshrabiya.storage.RecipientType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,10 +57,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - DistributedStorageManager (registered handler)
  * - IntelligentDistributedComputeService (registered handler)
  */
+
 class MeshEcosystemListener(
     private val virtualNode: VirtualNode,
     connectionPoolSize: Int = MeshrabiyaConstants.getConnectionPoolSize()
 ) {
+    // Deduplication cache for broadcast messages
+    private val seenBroadcasts = mutableSetOf<String>()
+    private val broadcastTtlMs: Long = 60_000L
+    private val broadcastTimestamps = mutableMapOf<String, Long>()
 
     private val connectionPool = MeshConnectionPool(virtualNode, poolSize = connectionPoolSize)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -95,6 +110,25 @@ class MeshEcosystemListener(
      * @param message The deserialized MeshEcosystemMessage
      */
     fun routeMessage(senderId: Int, message: MeshEcosystemMessage) {
+        // Deduplication for broadcast messages (by unique broadcastId or taskId)
+        val maybeBroadcastId = when (message) {
+            is TaskScheduledMessage -> message.taskId
+            is TaskAssignmentMessage -> message.taskId
+            is EcosystemBroadcastMessage -> message.broadcastId
+            else -> null
+        }
+        if (maybeBroadcastId != null) {
+            val now = System.currentTimeMillis()
+            // Clean up old entries
+            broadcastTimestamps.entries.removeIf { now - it.value > broadcastTtlMs }
+            if (seenBroadcasts.contains(maybeBroadcastId)) {
+                // Already seen, skip routing
+                return
+            } else {
+                seenBroadcasts.add(maybeBroadcastId)
+                broadcastTimestamps[maybeBroadcastId] = now
+            }
+        }
         if (isShutdown.get()) {
             return
         }
@@ -141,7 +175,7 @@ class MeshEcosystemListener(
             is ComputeTaskRequestMessage -> {
                 if (currentRoles.contains(MeshRole.COMPUTE_NODE)) {
                     // This node evaluates if it can handle the task and sends response
-                    val requestId = message.metadata["requestId"] as? String ?: message.taskId
+                    val requestId = message.taskId
                     routeIncomingComputeTaskRequest(requestId, senderId, message)
                 }
             }
@@ -154,11 +188,7 @@ class MeshEcosystemListener(
             }
 
             // === COMPUTE METADATA/PERMISSIONS ===
-            is TaskDataAccessUpdateMessage -> {
-                if (currentRoles.contains(MeshRole.COMPUTE_NODE)) {
-                    routeTaskDataAccessUpdate(message)
-                }
-            }
+            // (No compute metadata/permissions message types currently handled)
 
             // === DATA TRANSFERS ===
             is ChunkTransferMessage -> {
@@ -236,12 +266,8 @@ class MeshEcosystemListener(
         }
     }
 
-    /**
-     * Route task data access update to IntelligentDistributedComputeService.
-     */
-    private fun routeTaskDataAccessUpdate(updateMsg: TaskDataAccessUpdateMessage) {
-        computeService?.handleTaskDataAccessUpdate(updateMsg)
-    }
+    // ...existing code...
+
 
     /**
      * Handles inbound chunk/file transfer events.

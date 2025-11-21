@@ -1,3 +1,4 @@
+
 package com.ustadmobile.meshrabiya.storage
 
 import android.content.Context
@@ -57,19 +58,19 @@ class StorageParticipationManager(
             betaLogger.log(LogLevel.INFO, "Storage", "Enabling storage participation")
             // Configure distributed storage with current allocations
             val config = createStorageConfig()
-            distributedStorageManager.configureStorageParticipation(config)
+                configureStorageParticipation(config)
             
             val totalMB = getTotalAllocatedMB()
             betaLogger.log(LogLevel.INFO, "Storage", "Storage participation enabled with ${totalMB}MB allocated")
         } else {
             betaLogger.log(LogLevel.INFO, "Storage", "Disabling storage participation")
             // Disable storage participation
-            val disabledConfig = StorageParticipationConfig(
+            val disabledConfig = DistributedStorageManager.StorageParticipationConfig(
                 participationEnabled = false,
                 totalQuota = 0L,
                 allowedDirectories = emptyList()
             )
-            distributedStorageManager.configureStorageParticipation(disabledConfig)
+                configureStorageParticipation(disabledConfig)
             betaLogger.log(LogLevel.INFO, "Storage", "Storage participation disabled")
         }
         
@@ -137,7 +138,7 @@ class StorageParticipationManager(
     /**
      * Get current storage statistics for UI display
      */
-    fun getStorageStats(): StorageStats {
+    fun getStorageStats(): DistributedStorageManager.StorageStats {
         return distributedStorageManager.storageStats.value
     }
     
@@ -233,12 +234,12 @@ class StorageParticipationManager(
         _storageAllocations.value = defaultAllocations
     }
     
-    private fun createStorageConfig(): StorageParticipationConfig {
+    private fun createStorageConfig(): DistributedStorageManager.StorageParticipationConfig {
         val enabledAllocations = _storageAllocations.value.filter { it.enabled }
         val totalQuota = enabledAllocations.sumOf { it.allocatedMB } * 1024 * 1024 // Convert to bytes
         val allowedDirectories = enabledAllocations.map { it.devicePath }
         
-        return StorageParticipationConfig(
+        return DistributedStorageManager.StorageParticipationConfig(
             participationEnabled = _participationEnabled.value,
             totalQuota = totalQuota,
             allowedDirectories = allowedDirectories,

@@ -8,14 +8,28 @@ import com.ustadmobile.meshrabiya.service.ml.MLServiceWrapper
 import com.ustadmobile.meshrabiya.service.ml.MLServiceInput
 import com.ustadmobile.meshrabiya.service.ml.MLServiceResult
 
+import android.graphics.Bitmap
+import org.tensorflow.lite.Interpreter
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.io.File
+import java.io.FileInputStream
+import java.io.IOException
 
 class MLKitCustomWrapper(
     private val serviceId: String,
     private val modelPath: String
 ) : MLServiceWrapper {
+    private var interpreter: Interpreter? = null
+
     override fun isAvailable(): Boolean {
-        // In production, check if model file exists and is loadable
-        return true
+        // Check if model file exists and is loadable
+        return try {
+            val file = File(modelPath)
+            file.exists() && file.length() > 0
+        } catch (e: Exception) {
+            false
+        }
     }
 
     override fun getServiceName(): String {
@@ -23,13 +37,51 @@ class MLKitCustomWrapper(
     }
 
     override suspend fun process(input: MLServiceInput): MLServiceResult {
-        // TODO: Use ML Kit Custom Model APIs for real inference
+        // Real ML Kit custom model inference using TensorFlow Lite Interpreter
         return try {
-            // Placeholder for actual ML Kit custom model inference
-            MLServiceResult.success(mapOf<String, Any>("labels" to listOf("label1", "label2")))
+            if (interpreter == null) {
+                interpreter = Interpreter(loadModelFile(modelPath))
+            }
+            val bitmap = input.bitmap
+            if (bitmap == null) {
+                return MLServiceResult.error("Input bitmap required for custom model inference")
+            }
+            val inputBuffer = convertBitmapToByteBuffer(bitmap)
+            val outputMap = HashMap<Int, Any>()
+            // Example: output for classification (adjust shape as needed)
+            val outputArray = Array(1) { FloatArray(100) } // Assume 100 labels
+            interpreter?.run(inputBuffer, outputArray)
+            val labels = outputArray[0].mapIndexed { idx, score ->
+                if (score > 0.5f) "label$idx" else null
+            }.filterNotNull()
+            MLServiceResult.success(mapOf("labels" to labels, "scores" to outputArray[0].toList()))
         } catch (e: Exception) {
             MLServiceResult.error("Custom model inference failed: ${e.message}")
         }
+    }
+
+    private fun loadModelFile(path: String): ByteBuffer {
+        val file = File(path)
+        val inputStream = FileInputStream(file)
+        val fileChannel = inputStream.channel
+        val mappedByteBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())
+        inputStream.close()
+        return mappedByteBuffer
+    }
+
+    private fun convertBitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
+        val inputSize = bitmap.width * bitmap.height * 3 // RGB
+        val byteBuffer = ByteBuffer.allocateDirect(inputSize)
+        byteBuffer.order(ByteOrder.nativeOrder())
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        for (pixel in pixels) {
+            byteBuffer.put(((pixel shr 16) and 0xFF).toByte()) // R
+            byteBuffer.put(((pixel shr 8) and 0xFF).toByte())  // G
+            byteBuffer.put((pixel and 0xFF).toByte())         // B
+        }
+        byteBuffer.rewind()
+        return byteBuffer
     }
 
     override fun getServiceAnnouncement(): ServiceAnnouncement {

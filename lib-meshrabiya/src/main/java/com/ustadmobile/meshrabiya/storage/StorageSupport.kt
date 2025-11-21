@@ -1,3 +1,4 @@
+
 package com.ustadmobile.meshrabiya.storage
 
 import android.content.Context
@@ -16,11 +17,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class StorageQuotaManager(
     private val context: Context,
-    private var configuration: StorageConfiguration
+    private var configuration: DistributedStorageManager.StorageConfiguration
 ) {
     private val directoryQuotas = ConcurrentHashMap<String, Long>()
 
-    fun updateConfiguration(config: StorageParticipationConfig) {
+    fun updateConfiguration(config: DistributedStorageManager.StorageParticipationConfig) {
         for (directory in config.allowedDirectories) {
             directoryQuotas[directory] = calculateDirectoryQuota(directory, config.totalQuota)
         }

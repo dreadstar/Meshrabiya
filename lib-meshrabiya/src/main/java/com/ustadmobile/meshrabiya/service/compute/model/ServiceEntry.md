@@ -1,6 +1,6 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import kotlinx.serialization.Serializable
 
 /**

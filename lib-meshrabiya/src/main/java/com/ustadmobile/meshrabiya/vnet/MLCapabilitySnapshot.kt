@@ -84,37 +84,3 @@ data class MLComputeCapability(
      */
     val lastAnnouncedAt: Long = System.currentTimeMillis()
 )
-
-/**
- * Mesh-wide ML intelligence tracking.
- * 
- * Aggregates ML capabilities across all mesh nodes and tracks service assignments.
- */
-@Serializable
-data class MLMeshIntelligence(
-    /**
-     * ML capability snapshots for all known nodes (key: node address)
-     */
-/**
- * Mesh-wide ML intelligence tracking.
- * 
- * Aggregates ML Kit capabilities across mesh nodes. Compute task lifecycle
- * handles node selection at request time (no pre-assignment of primary/backup servers).
- */
-@Serializable
-data class MLMeshIntelligence(
-    /**
-     * ML capability snapshots for all known nodes (key: node address)
-     */
-    val nodeCapabilities: Map<Int, MLCapabilitySnapshot> = emptyMap(),
-    
-    /**
-     * Total number of ML Kit capable nodes
-     */
-    val totalMLCapableNodes: Int = 0,
-    
-    /**
-     * Timestamp of last intelligence update
-     */
-    val timestamp: Long = System.currentTimeMillis()
-)

@@ -9,17 +9,15 @@ import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
 import com.ustadmobile.meshrabiya.service.MeshGossipService
-import com.ustadmobile.meshrabiya.service.MeshGossipService.TaskDataAccessUpdateMessage
+
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import android.content.Context
 import androidx.appcompat.app.AlertDialog
 import android.widget.ArrayAdapter
-// import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
+import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import java.util.concurrent.ConcurrentHashMap
-// UNUSED SCHEDULER IMPORT - Commented 2025-11-12
-// import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 
 /**
  * Main service class for intelligent distributed compute.
@@ -76,10 +74,7 @@ class IntelligentDistributedComputeService(
         // }
     }
 
-    fun handleTaskDataAccessUpdate(updateMsg: TaskDataAccessUpdateMessage) {
-        betaLogger?.log(LogLevel.INFO, "ComputeService", "Received TaskDataAccessUpdate: $updateMsg")
-        // TODO: Implement actual permission update and job trigger logic
-    }
+
 
     // ============================================================================
     // CLIENT-SIDE TASK REQUEST TRACKING & SELECTION
@@ -410,94 +405,122 @@ class IntelligentDistributedComputeService(
         }
     }
 
-    val builtinLibraryEntries: List<LibraryEntry> = listOf(
-        LibraryEntry.PythonServiceEntry(
-            serviceId = "builtin_image_preprocessing",
-            scriptCode = generateImagePreprocessingScript(),
-            libraries = setOf(PythonLibrary.OPENCV, PythonLibrary.NUMPY, PythonLibrary.JSON, PythonLibrary.BASE64),
-            manifest = ServiceManifest(
-                serviceType = ServiceType.PYTHON,
+    // val builtinLibraryEntries: List<LibraryEntry> = listOf(
+    //     LibraryEntry.PythonServiceEntry(
+    //         serviceId = "builtin_image_preprocessing",
+    //         scriptCode = generateImagePreprocessingScript(),
+    //         libraries = setOf(PythonLibrary.OPENCV, PythonLibrary.NUMPY, PythonLibrary.JSON, PythonLibrary.BASE64),
+    //         manifest = ServiceManifest(
+    //             serviceType = ServiceType.PYTHON,
+    //             version = "1.0.0",
+    //             author = "Orbot Team",
+    //             signature = null,
+    //             resourceRequirements = ResourceRequirements(
+    //                 minRAMMB = 512,
+    //                 preferredRAMMB = 1024,
+    //                 cpuIntensity = CPUIntensity.MODERATE
+    //             ),
+    //             builtin = true
+    //         ),
+    //         executionProfile = ExecutionProfile(deterministic = true),
+    //         inputs = listOf(ServiceInput("images", "List<Base64Image>", true)),
+    //         outputs = listOf(ServiceOutput("processed_tensors", "List<Base64Tensor>")),
+    //         capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
+    //     ),
+    //     // LibraryEntry.LiteRTServiceEntry(
+    //     //     serviceId = "builtin_mobilenet_v3_inference",
+    //     //     modelId = "mobilenet_v3_quantized",
+    //     //     modelConfig = LiteRTConfig(useGPU = true, useNNAPI = true, numThreads = 2),
+    //     //     manifest = ServiceManifest(
+    //     //         serviceType = ServiceType.LITERT,
+    //     //         version = "1.0.0",
+    //     //         author = "Orbot Team",
+    //     //         signature = null,
+    //     //         resourceRequirements = ResourceRequirements(
+    //     //             minRAMMB = 256,
+    //     //             preferredRAMMB = 512,
+    //     //             cpuIntensity = CPUIntensity.LIGHT,
+    //     //             requiresGPU = true
+    //     //         ),
+    //     //         builtin = true
+    //     //     ),
+    //     //     executionProfile = ExecutionProfile(deterministic = true),
+    //     //     inputs = listOf(ServiceInput("input_tensors", "List<Base64Tensor>", true)),
+    //     //     outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
+    //     //     capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
+    //     // ),
+    //     LibraryEntry.HybridServiceEntry(
+    //         serviceId = "builtin_hybrid_image_pipeline",
+    //         pythonPreprocessing = null,
+    //         // liteRTInference = LibraryEntry.LiteRTServiceEntry(
+    //         //     serviceId = "builtin_mobilenet_v3_inference",
+    //         //     modelId = "mobilenet_v3_quantized",
+    //         //     modelConfig = LiteRTConfig(useGPU = true, useNNAPI = true, numThreads = 2),
+    //         //     manifest = ServiceManifest(
+    //         //         serviceType = ServiceType.LITERT,
+    //         //         version = "1.0.0",
+    //         //         author = "Orbot Team",
+    //         //         signature = null,
+    //         //         resourceRequirements = ResourceRequirements(
+    //         //             minRAMMB = 256,
+    //         //             preferredRAMMB = 512,
+    //         //             cpuIntensity = CPUIntensity.LIGHT,
+    //         //             requiresGPU = true
+    //         //         ),
+    //         //         builtin = true
+    //         //     ),
+    //         //     executionProfile = ExecutionProfile(deterministic = true),
+    //         //     inputs = listOf(ServiceInput("input_tensors", "List<Base64Tensor>", true)),
+    //         //     outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
+    //         //     capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
+    //         // ),
+    //         pythonPostprocessing = null,
+    //         manifest = ServiceManifest(
+    //             serviceType = ServiceType.HYBRID,
+    //             version = "1.0.0",
+    //             author = "Orbot Team",
+    //             signature = null,
+    //             resourceRequirements = ResourceRequirements(
+    //                 minRAMMB = 512,
+    //                 preferredRAMMB = 1024,
+    //                 cpuIntensity = CPUIntensity.MODERATE
+    //             ),
+    //             builtin = true
+    //         ),
+    //         executionProfile = ExecutionProfile(deterministic = true),
+    //         inputs = listOf(ServiceInput("images", "List<Base64Image>", true)),
+    //         outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
+    //         capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
+    //     )
+    // )
+        val builtinLibraryEntries: List<ServiceLibraryEntry> = listOf(
+            ServiceLibraryEntry(
+                serviceId = "builtin_image_preprocessing",
+                name = "Image Preprocessing",
+                description = "Preprocesses images for ML tasks using OpenCV and NumPy.",
                 version = "1.0.0",
-                author = "Orbot Team",
-                signature = null,
+                maintainer = MaintainerInfo(
+                    onionAddress = "",
+                    displayName = "Orbot Team",
+                    publicKeyEd25519 = "",
+                    i2pSiteAddress = "",
+                    reputationScore = 1.0,
+                    endorsements = emptyList()
+                ),
+                torrentMagnetLink = "",
+                serviceBundleHash = "",
+                signature = "",
+                categories = listOf("ML", "CV"),
                 resourceRequirements = ResourceRequirements(
                     minRAMMB = 512,
                     preferredRAMMB = 1024,
                     cpuIntensity = CPUIntensity.MODERATE
                 ),
-                builtin = true
-            ),
-            executionProfile = ExecutionProfile(deterministic = true),
-            inputs = listOf(ServiceInput("images", "List<Base64Image>", true)),
-            outputs = listOf(ServiceOutput("processed_tensors", "List<Base64Tensor>")),
-            capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
-        ),
-        // LibraryEntry.LiteRTServiceEntry(
-        //     serviceId = "builtin_mobilenet_v3_inference",
-        //     modelId = "mobilenet_v3_quantized",
-        //     modelConfig = LiteRTConfig(useGPU = true, useNNAPI = true, numThreads = 2),
-        //     manifest = ServiceManifest(
-        //         serviceType = ServiceType.LITERT,
-        //         version = "1.0.0",
-        //         author = "Orbot Team",
-        //         signature = null,
-        //         resourceRequirements = ResourceRequirements(
-        //             minRAMMB = 256,
-        //             preferredRAMMB = 512,
-        //             cpuIntensity = CPUIntensity.LIGHT,
-        //             requiresGPU = true
-        //         ),
-        //         builtin = true
-        //     ),
-        //     executionProfile = ExecutionProfile(deterministic = true),
-        //     inputs = listOf(ServiceInput("input_tensors", "List<Base64Tensor>", true)),
-        //     outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
-        //     capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
-        // ),
-        LibraryEntry.HybridServiceEntry(
-            serviceId = "builtin_hybrid_image_pipeline",
-            pythonPreprocessing = null,
-            // liteRTInference = LibraryEntry.LiteRTServiceEntry(
-            //     serviceId = "builtin_mobilenet_v3_inference",
-            //     modelId = "mobilenet_v3_quantized",
-            //     modelConfig = LiteRTConfig(useGPU = true, useNNAPI = true, numThreads = 2),
-            //     manifest = ServiceManifest(
-            //         serviceType = ServiceType.LITERT,
-            //         version = "1.0.0",
-            //         author = "Orbot Team",
-            //         signature = null,
-            //         resourceRequirements = ResourceRequirements(
-            //             minRAMMB = 256,
-            //             preferredRAMMB = 512,
-            //             cpuIntensity = CPUIntensity.LIGHT,
-            //             requiresGPU = true
-            //         ),
-            //         builtin = true
-            //     ),
-            //     executionProfile = ExecutionProfile(deterministic = true),
-            //     inputs = listOf(ServiceInput("input_tensors", "List<Base64Tensor>", true)),
-            //     outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
-            //     capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
-            // ),
-            pythonPostprocessing = null,
-            manifest = ServiceManifest(
-                serviceType = ServiceType.HYBRID,
-                version = "1.0.0",
-                author = "Orbot Team",
-                signature = null,
-                resourceRequirements = ResourceRequirements(
-                    minRAMMB = 512,
-                    preferredRAMMB = 1024,
-                    cpuIntensity = CPUIntensity.MODERATE
-                ),
-                builtin = true
-            ),
-            executionProfile = ExecutionProfile(deterministic = true),
-            inputs = listOf(ServiceInput("images", "List<Base64Image>", true)),
-            outputs = listOf(ServiceOutput("inference_results", "List<FloatArray>")),
-            capabilities = setOf(ServiceCapability.ML, ServiceCapability.CV)
+                auditReports = emptyList()
+            )
+            // TODO: Add additional ServiceLibraryEntry instances for other built-in services as needed.
+            // TODO: Integrate ML Kit service wrappers and distributed service logic in future iterations.
         )
-    )
 
     // Helper for chunk/file transfer using connection pool and async I/O
     suspend fun <T> withConnectionForTransfer(action: suspend (MeshConnectionPool.Connection) -> T): T? {

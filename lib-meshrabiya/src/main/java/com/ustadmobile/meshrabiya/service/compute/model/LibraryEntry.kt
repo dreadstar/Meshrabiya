@@ -15,31 +15,29 @@ data class ServiceSearchResult(
     val nodeId: String
 )
 
+
 /**
- * Converts a LibraryEntry and nodeId to a ServiceSearchResult.
+ * Converts a ServiceLibraryEntry and nodeId to a ServiceSearchResult.
  */
-fun toSearchResult(entry: LibraryEntry, nodeId: String): ServiceSearchResult {
+fun toSearchResult(entry: ServiceLibraryEntry, nodeId: String): ServiceSearchResult {
     return ServiceSearchResult(
         serviceId = entry.serviceId,
-        manifest = entry.manifest,
-        executionProfile = entry.executionProfile,
-        capabilities = entry.capabilities,
+        manifest = ServiceManifest(
+            serviceType = ServiceType.PYTHON, // TODO: Map actual type
+            version = entry.version,
+            author = entry.maintainer.displayName,
+            signature = entry.signature,
+            resourceRequirements = entry.resourceRequirements,
+            builtin = false // TODO: Map actual value
+        ),
+        executionProfile = ExecutionProfile(deterministic = true), // TODO: Map actual profile
+        capabilities = entry.categories.map { ServiceCapability.valueOf(it) }.toSet(), // TODO: Map actual capabilities
         nodeId = nodeId
     )
 }
 
-/**
- * Sealed class representing a library entry for a distributed compute service.
- * Subclasses represent different service types and their specific properties.
- */
-sealed class LibraryEntry {
-    abstract val serviceId: String
-    abstract val manifest: ServiceManifest
-    abstract val executionProfile: ExecutionProfile
-    abstract val inputs: List<ServiceInput>
-    abstract val outputs: List<ServiceOutput>
-    abstract val capabilities: Set<ServiceCapability>
-
+// DEPRECATED: Legacy LibraryEntry model. All usages should migrate to ServiceLibraryEntry.
+// sealed class LibraryEntry { ... }
     /**
      * Python service entry.
      */

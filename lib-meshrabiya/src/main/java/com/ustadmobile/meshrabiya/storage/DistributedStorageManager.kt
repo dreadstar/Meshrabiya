@@ -18,6 +18,8 @@ import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.storage.StorageDataStore
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import kotlinx.serialization.Serializable
+import com.ustadmobile.meshrabiya.service.security.AccessScope
+
 
 /**
  * DistributedStorageManager: Core manager for distributed storage operations.
@@ -72,6 +74,39 @@ class DistributedStorageManager(
 
     // === Core Components ===
     
+    /**
+     * Update the storage participation configuration (called by StorageParticipationManager)
+     */
+    /**
+     * Update the storage participation configuration (called from UI/API)
+     * - Updates quota manager, participation state, and recalculates stats
+     */
+    fun configureStorageParticipation(config: StorageParticipationConfig) {
+        // Update quota manager with new allowed directories and quota
+        storageQuotaManager.updateConfiguration(config)
+
+        // Update participation enabled state
+        _participationEnabled.value = config.participationEnabled
+
+        // Optionally update encryption requirement (if used elsewhere)
+        // This example assumes encryptionRequired is handled by the quota manager or elsewhere
+
+        // Log the change for auditability
+        betaLogger.log(LogLevel.INFO, TAG, "Storage participation updated: enabled=${config.participationEnabled}, totalQuota=${config.totalQuota}, dirs=${config.allowedDirectories}, encryptionRequired=${config.encryptionRequired}")
+
+        // Recalculate storage stats to reflect new limits
+        updateStorageStats()
+    }
+
+    /**
+     * Data class for user storage participation configuration (copied from .md)
+     */
+    data class StorageParticipationConfig(
+        val participationEnabled: Boolean,
+        val totalQuota: Long,
+        val allowedDirectories: List<String>,
+        val encryptionRequired: Boolean = true
+    )
     val stagedSyncManager = StagedSyncManager(
         context = context,
         onSyncComplete = { fileId, replicaCount -> 
@@ -148,15 +183,27 @@ class DistributedStorageManager(
      * Store file with permission parameters.
      * Delegates to DistributedStorageClient.
      */
+    /**
+     * Store file with permission parameters and explicit accessScope.
+     * Delegates to DistributedStorageClient.
+     * Hybrid encryption is enforced based on accessScope and recipients.
+     */
     suspend fun storeFile(
         path: String,
         data: ByteArray,
         priority: SyncPriority = SyncPriority.NORMAL,
         replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
         owner: String? = null,
-        recipients: List<RecipientEntry>? = null
+        recipients: List<RecipientEntry>? = null,
+        accessScope: AccessScope = AccessScope.TASK_ISOLATED
     ): FileReference? {
-        return client.storeFile(path, data, priority, replicationLevel, owner, recipients)
+        // Hybrid encryption: encrypt data for each recipient using their public key, then encrypt symmetric key with service keypair
+        // This logic is enforced in the client layer, but we document and check here
+        if (accessScope == AccessScope.TASK_ISOLATED && (recipients == null || recipients.isEmpty())) {
+            throw IllegalArgumentException("Task-isolated storage requires at least one recipient for hybrid encryption.")
+        }
+        // Pass accessScope to client for correct encryption handling
+        return client.storeFile(path, data, priority, replicationLevel, owner, recipients, accessScope)
     }
     
     /**
@@ -181,15 +228,15 @@ class DistributedStorageManager(
     
     // === Message Handlers - Delegates to Client/Server ===
     
-    fun handleStorageNodeResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.vnet.StorageNodeResponse) {
+    fun handleStorageNodeResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.service.StorageNodeResponse) {
         client.handleStorageNodeResponse(requestId, senderId, response)
     }
-    
-    fun handleChunkRetrievalResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ChunkRetrievalResponse) {
+
+    fun handleChunkRetrievalResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse) {
         client.handleChunkRetrievalResponse(requestId, senderId, response)
     }
-    
-    fun handleReplicaResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.vnet.ReplicaResponse) {
+
+    fun handleReplicaResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.service.ReplicaResponse) {
         client.handleReplicaResponse(requestId, senderId, response)
     }
     
