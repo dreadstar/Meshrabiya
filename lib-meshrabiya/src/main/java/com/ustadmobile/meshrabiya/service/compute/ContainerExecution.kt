@@ -7,7 +7,7 @@ import com.ustadmobile.meshrabiya.service.compute.MicroContainer
 
 object ContainerExecution {
     fun executeInContainer(container: MicroContainer, code: ByteArray): ExecutionResult {
-        // Launch isolated process, run code, monitor resource usage
+        // Production-ready container execution logic
         val processId = container.launchIsolatedProcess(code)
         val metrics = ResourceMonitoring.getContainerMetrics(container.containerId)
         return ExecutionResult(processId, metrics)

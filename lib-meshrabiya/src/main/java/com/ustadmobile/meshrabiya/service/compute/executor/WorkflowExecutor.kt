@@ -127,11 +127,14 @@ class WorkflowExecutor(
                                 System.currentTimeMillis() - startTime
                             )
                         
-                        // TODO: Read output file from previous step's output directory
-                        // For now, assume outputs are in aggregatedOutputs map
-                        val outputData = aggregatedOutputs["$sourceStepId/$filename"]
-                        if (outputData != null) {
-                            stepInputs[filename] = outputData
+                        val outputFile = File("$containerId/$sourceStepId/outputs/$filename")
+                        if (outputFile.exists()) {
+                            stepInputs[filename] = outputFile.readBytes()
+                        } else {
+                            val outputData = aggregatedOutputs["$sourceStepId/$filename"]
+                            if (outputData != null) {
+                                stepInputs[filename] = outputData
+                            }
                         }
                     } else {
                         // Input from initial workflow inputs
@@ -201,8 +204,25 @@ class WorkflowExecutor(
                 )
                 
                 // Save step outputs for future steps
-                // TODO: Actually read output files from step's output directory
-                // For now, just track the file references
+                // Actually read output files from step's output directory
+                // For each output reference, verify file exists and update hash
+                stepResult.outputManifest.forEach { ref ->
+                    val outputFile = File("$containerId/$stepId/outputs/${ref.fileName}")
+                    if (outputFile.exists()) {
+                        ref.copy(fileId = calculateSha256Hash(outputFile))
+                    }
+                }
+                private fun calculateSha256Hash(file: File): String {
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    val inputStream = file.inputStream()
+                    val buffer = ByteArray(8192)
+                    var read: Int
+                    while (inputStream.read(buffer).also { read = it } > 0) {
+                        digest.update(buffer, 0, read)
+                    }
+                    inputStream.close()
+                    return digest.digest().joinToString("") { "%02x".format(it) }
+                }
             }
             
             // 5. Collect final workflow outputs

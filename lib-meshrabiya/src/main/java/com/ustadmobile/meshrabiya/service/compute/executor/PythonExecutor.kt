@@ -214,11 +214,24 @@ class PythonExecutor(
         return outputsDir.listFiles()?.mapNotNull { file ->
             if (file.isFile) {
                 FileReference(
-                    fileId = file.name, // TODO: Calculate SHA-256 hash
+                    fileId = calculateSha256Hash(file),
                     fileName = file.name,
                     sizeBytes = file.length()
                 )
             } else null
         } ?: emptyList()
+    }
+
+    private fun calculateSha256Hash(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val inputStream = file.inputStream()
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (inputStream.read(buffer).also { read = it } > 0) {
+            digest.update(buffer, 0, read)
+        }
+        inputStream.close()
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
     }
 }

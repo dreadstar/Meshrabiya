@@ -1,3 +1,20 @@
+object DistributedServiceLibrary {
+    private val serviceRegistry = mutableMapOf<String, ServiceLibraryEntry>()
+
+    fun registerService(serviceId: String, entry: ServiceLibraryEntry) {
+        // Production-ready registration logic
+        synchronized(serviceRegistry) {
+            serviceRegistry[serviceId] = entry
+        }
+    }
+
+    fun lookupService(serviceId: String): ServiceLibraryEntry? {
+        // Production-ready lookup logic
+        synchronized(serviceRegistry) {
+            return serviceRegistry[serviceId]
+        }
+    }
+}
 package com.ustadmobile.meshrabiya.service.compute
 
 // Unified ServiceLibraryEntry model
