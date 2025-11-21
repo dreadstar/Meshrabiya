@@ -11,7 +11,7 @@ import kotlinx.serialization.Serializable
 import java.io.File
 import java.security.SecureRandom
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
-import com.ustadmobile.meshrabiya.service.security.DistributedServiceLibrary.ServiceLibraryEntry
+import com.ustadmobile.meshrabiya.service.compute.ServiceLibraryEntry
 
 /**
  * STRANGERS-SAFE COMPUTE CLOUD
