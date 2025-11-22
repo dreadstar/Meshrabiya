@@ -1,32 +1,26 @@
 package com.ustadmobile.meshrabiya.service
 
-import com.ustadmobile.meshrabiya.service.StorageNodeRequestMessage
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.service.ChunkRetrievalQueryMessage
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponseMessage
 import com.ustadmobile.meshrabiya.service.ReplicaQueryMessage
+import com.ustadmobile.meshrabiya.service.ReplicaResponseMessage
 import com.ustadmobile.meshrabiya.service.FilePermissionUpdateMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
 import com.ustadmobile.meshrabiya.service.EcosystemBroadcastMessage
 import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
 import com.ustadmobile.meshrabiya.service.TaskScheduledMessage
 import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
-import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse
-import com.ustadmobile.meshrabiya.service.ReplicaResponse
-import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
-import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.service.ComputeNodeResponseMessage
+import com.ustadmobile.meshrabiya.service.StorageNodeResponseMessage
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.MeshRole
-import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
-import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
 import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
-import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
-import com.ustadmobile.meshrabiya.service.StorageNodeResponseMessage
-import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponseMessage
-import com.ustadmobile.meshrabiya.service.ReplicaResponseMessage
-import com.ustadmobile.meshrabiya.service.ComputeNodeResponseMessage
 import com.ustadmobile.meshrabiya.service.StorageNodeResponse
-// ...existing code...
 import com.ustadmobile.meshrabiya.storage.RecipientEntry
 import com.ustadmobile.meshrabiya.storage.RecipientType
 import kotlinx.coroutines.CoroutineScope
@@ -265,9 +259,6 @@ class MeshEcosystemListener(
             storageManager?.handlePermissionUpdateConfirmation(confirmation)
         }
     }
-
-    // ...existing code...
-
 
     /**
      * Handles inbound chunk/file transfer events.

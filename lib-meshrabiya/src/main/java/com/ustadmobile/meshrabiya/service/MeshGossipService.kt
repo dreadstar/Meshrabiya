@@ -238,7 +238,11 @@ class MeshGossipService(
                 )
 
                 // Send via neighbor's socket
-                lastMsg.receivedFromSocket.send(packet)
+                lastMsg.receivedFromSocket.send(
+                    virtualNode.getInetAddressFor(neighborAddr),      // The InetAddress of the neighbor
+                    ecosystemPort,     // The gossip port (Int)
+                    packet             // The VirtualPacket to send
+                )
                 successCount++
 
                 logger(android.util.Log.VERBOSE, "broadcastMessage: Sent to neighbor ${neighborAddr}")

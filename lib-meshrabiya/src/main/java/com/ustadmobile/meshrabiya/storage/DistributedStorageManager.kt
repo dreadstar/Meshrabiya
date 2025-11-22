@@ -18,6 +18,8 @@ import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.storage.StorageDataStore
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import kotlinx.serialization.Serializable
+import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
 import com.ustadmobile.meshrabiya.service.security.AccessScope
 
 
@@ -203,7 +205,7 @@ class DistributedStorageManager(
             throw IllegalArgumentException("Task-isolated storage requires at least one recipient for hybrid encryption.")
         }
         // Pass accessScope to client for correct encryption handling
-        return client.storeFile(path, data, priority, replicationLevel, owner, recipients, accessScope)
+            return client.storeFile(path, data, priority, replicationLevel, owner, recipients)
     }
     
     /**
@@ -240,11 +242,11 @@ class DistributedStorageManager(
         client.handleReplicaResponse(requestId, senderId, response)
     }
     
-    fun handlePermissionUpdateConfirmation(confirmation: com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage) {
+    fun handlePermissionUpdateConfirmation(confirmation: FilePermissionUpdateConfirmationMessage) {
         client.handlePermissionUpdateConfirmation(confirmation)
     }
     
-    fun handleIncomingChunkTransfer(senderId: Int, chunkTransfer: com.ustadmobile.meshrabiya.service.ChunkTransferMessage) {
+    fun handleIncomingChunkTransfer(senderId: Int, chunkTransfer: ChunkTransferMessage) {
         server.handleIncomingChunkTransfer(senderId, chunkTransfer)
     }
     

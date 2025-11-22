@@ -1,73 +1,198 @@
 package com.ustadmobile.meshrabiya.service.compute
 
-// Resource metrics and monitoring for running containers
+import kotlinx.coroutines.*
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+import com.ustadmobile.meshrabiya.service.compute.model.JobType
+import com.ustadmobile.meshrabiya.util.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.log.betaLogger
+import com.ustadmobile.meshrabiya.log.LogLevel
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Centralized resource monitoring for all executing tasks and containers.
+ * Tracks total node load, per-task metrics, peak usage, and detects resource limit violations.
+ * Provides metrics for node capability calculations, enforcement, billing, and completion notifications.
+ */
 object ResourceMonitoring {
-    data class ResourceMetrics(
-        val ramUsedBytes: Long,
-        val cpuUsedPercent: Double,
-        val diskUsedBytes: Long,
-        val networkSentBytes: Long = 0L,
-        val networkReceivedBytes: Long = 0L
-    )
 
-    fun getContainerMetrics(containerId: String): ResourceMetrics {
-        val pid = extractPidFromContainerId(containerId)
-        // Production-ready resource monitoring logic
-        // Collect system metrics using Android APIs and custom sensors
-        val cpuUsage = getCpuUsage()
-        val memoryUsage = getMemoryUsage()
-        val batteryLevel = getBatteryLevel(context)
-        val networkStats = getNetworkStats(context)
-        return ResourceMetrics(
-            ramUsedBytes = readContainerMemoryUsage(pid),
-            cpuUsedPercent = cpuUsage,
-            diskUsedBytes = readContainerDiskUsage(pid),
-            networkSentBytes = networkStats.upload,
-            networkReceivedBytes = networkStats.download
-        )
-    }
+	private val activeExecutions: ConcurrentHashMap<String, ExecutionState> = ConcurrentHashMap()
+	private var resourceMonitoringJob: Job? = null
+	private var totalLoad: ResourceMetrics = ResourceMetrics()
 
-    fun extractPidFromContainerId(containerId: String): Int {
-        return containerId.split("_").lastOrNull()?.toIntOrNull() ?: 0
-    }
+	/**
+	 * Start the resource monitoring loop.
+	 */
+	fun startMonitoring(scope: CoroutineScope) {
+		if (resourceMonitoringJob?.isActive == true) return
+		resourceMonitoringJob = scope.launch(Dispatchers.Default) {
+			while (isActive) {
+				updateResourceMetrics()
+				delay(MeshrabiyaConstants.RESOURCE_MONITORING_INTERVAL_MS)
+			}
+		}
+	}
 
-    fun readContainerMemoryUsage(pid: Int): Long {
-        // Actual memory usage collection
-        // Use /proc/$pid/status VmRSS
-        return 0L // Replace with actual logic
-    }
+	/**
+	 * Stop the resource monitoring loop.
+	 */
+	fun stopMonitoring() {
+		resourceMonitoringJob?.cancel()
+		resourceMonitoringJob = null
+	}
 
-    fun readContainerCpuUsage(pid: Int): Double {
-        // Actual CPU usage collection
-        // Use /proc/$pid/stat
-        return 0.0 // Replace with actual logic
-    }
+	/**
+	 * Polls and updates metrics for all active tasks/containers.
+	 */
+	suspend fun updateResourceMetrics() {
+		var totalRamActual = 0L
+		var totalCpuActual = 0f
+		var totalDiskActual = 0L
+		var totalNetworkActual = 0L
+		val now = System.currentTimeMillis()
 
-    fun readContainerDiskUsage(pid: Int): Long {
-        // Actual disk usage collection
-        // Use /proc/$pid/io write_bytes
-        return 0L // Replace with actual logic
-            // Use android.os.Process and system files to calculate CPU usage
-            // ...implementation...
-            return 0.15 // Example value, replace with actual calculation
-        }
+		for ((taskId, execution) in activeExecutions) {
+			// Simulate polling metrics from container/task engine
+			val metrics = pollMetricsForTask(taskId)
+			execution.currentMetrics = metrics.copy(timestamp = now)
+			// Update peak metrics
+			execution.peakMetrics = updatePeakMetrics(execution.peakMetrics, metrics)
+			// Check for violations
+			checkResourceLimitViolations(execution)
+			totalRamActual += metrics.memoryUsedBytes
+			totalCpuActual += metrics.cpuUsagePercent
+			totalDiskActual += metrics.diskStorageUsedBytes
+			totalNetworkActual += metrics.networkUsedBytes
+		}
+		totalLoad = ResourceMetrics(
+			timestamp = now,
+			memoryUsedBytes = totalRamActual,
+			cpuUsagePercent = totalCpuActual,
+			diskStorageUsedBytes = totalDiskActual,
+			networkUsedBytes = totalNetworkActual
+		)
+	}
 
-        private fun getMemoryUsage(): Double {
-            // Use ActivityManager and system files to calculate memory usage
-            // ...implementation...
-            return 0.45 // Example value, replace with actual calculation
-        }
+	/**
+	 * Simulate polling metrics for a given task/container.
+	 * Replace with actual integration to container/task engine.
+	 */
+	private fun pollMetricsForTask(taskId: String): ResourceMetrics {
+		// TODO: Integrate with StrangersSafeComputeEngine, JVMExecutor, PythonExecutor, etc.
+		// For now, return dummy metrics
+		return ResourceMetrics(
+			memoryUsedBytes = (64 * 1024 * 1024), // 64MB
+			cpuUsagePercent = 10f,
+			diskStorageUsedBytes = (10 * 1024 * 1024), // 10MB
+			networkUsedBytes = (1 * 1024 * 1024) // 1MB
+		)
+	}
 
-        private fun getBatteryLevel(context: Context): Double {
-            // Use BatteryManager to get battery level
-            // ...implementation...
-            return 0.80 // Example value, replace with actual calculation
-        }
+	/**
+	 * Update peak metrics for a task.
+	 */
+	private fun updatePeakMetrics(oldPeak: ResourceMetrics?, current: ResourceMetrics): ResourceMetrics {
+		if (oldPeak == null) return current
+		return ResourceMetrics(
+			timestamp = current.timestamp,
+			memoryUsedBytes = maxOf(oldPeak.memoryUsedBytes, current.memoryUsedBytes),
+			cpuUsagePercent = maxOf(oldPeak.cpuUsagePercent, current.cpuUsagePercent),
+			diskStorageUsedBytes = maxOf(oldPeak.diskStorageUsedBytes, current.diskStorageUsedBytes),
+			networkUsedBytes = maxOf(oldPeak.networkUsedBytes, current.networkUsedBytes)
+		)
+	}
 
-        private fun getNetworkStats(context: Context): NetworkStats {
-            // Use ConnectivityManager and TrafficStats to get network statistics
-            // ...implementation...
-            return NetworkStats(upload = 1024, download = 2048) // Example values
-        }
-    }
+	/**
+	 * Checks for violations and triggers enforcement.
+	 */
+	private suspend fun checkResourceLimitViolations(execution: ExecutionState) {
+		val limits = execution.context.resourceLimits
+		val metrics = execution.currentMetrics
+		if (limits == null || metrics == null) return
+
+		var violation: ExecutionErrorType? = null
+		if (metrics.memoryUsedBytes > limits.maxMemoryBytes) {
+			violation = ExecutionErrorType.MEMORY_LIMIT_EXCEEDED
+		} else if (metrics.cpuUsagePercent > limits.maxCpuPercent) {
+			violation = ExecutionErrorType.CPU_LIMIT_EXCEEDED
+		} else if (metrics.diskStorageUsedBytes > limits.maxDiskBytes) {
+			violation = ExecutionErrorType.DISK_LIMIT_EXCEEDED
+		} else if (metrics.networkUsedBytes > limits.maxNetworkBytes) {
+			violation = ExecutionErrorType.NETWORK_LIMIT_EXCEEDED
+		}
+		if (violation != null) {
+			terminateTask(execution.context.taskId, violation)
+		}
+	}
+
+	/**
+	 * Terminates a task and cleans up.
+	 */
+	private suspend fun terminateTask(taskId: String, errorType: ExecutionErrorType) {
+		val execution = activeExecutions[taskId] ?: return
+		// TODO: Integrate with TaskManager, container engine, etc.
+		betaLogger.log(LogLevel.ERROR, "ResourceMonitoring", "Terminating task $taskId due to $errorType")
+		execution.terminated = true
+		execution.errorType = errorType
+		cleanupExecution(taskId)
+		// TODO: Send completion notification with errorType
+	}
+
+	/**
+	 * Cleans up execution state for a task.
+	 */
+	private fun cleanupExecution(taskId: String) {
+		activeExecutions.remove(taskId)
+	}
+
+	/**
+	 * Returns aggregate node load.
+	 */
+	fun getTotalLoad(): ResourceMetrics {
+		return totalLoad
+	}
+
+	/**
+	 * Returns current metrics for a task.
+	 */
+	fun getTaskMetrics(taskId: String): ResourceMetrics? {
+		return activeExecutions[taskId]?.currentMetrics
+	}
+
+	/**
+	 * Returns peak metrics for a task.
+	 */
+	fun getPeakMetrics(taskId: String): ResourceMetrics? {
+		return activeExecutions[taskId]?.peakMetrics
+	}
+
+	/**
+	 * Registers a new execution for monitoring.
+	 */
+	fun registerExecution(context: TaskExecutionContext, limits: ResourceLimits?) {
+		activeExecutions[context.taskId] = ExecutionState(context, limits)
+	}
+
+	/**
+	 * Unregisters an execution (after completion or termination).
+	 */
+	fun unregisterExecution(taskId: String) {
+		activeExecutions.remove(taskId)
+	}
+
+	/**
+	 * Data class for tracking execution state.
+	 */
+	data class ExecutionState(
+		val context: TaskExecutionContext,
+		val resourceLimits: ResourceLimits? = null,
+		var currentMetrics: ResourceMetrics? = null,
+		var peakMetrics: ResourceMetrics? = null,
+		var terminated: Boolean = false,
+		var errorType: ExecutionErrorType? = null
+	)
 }
+

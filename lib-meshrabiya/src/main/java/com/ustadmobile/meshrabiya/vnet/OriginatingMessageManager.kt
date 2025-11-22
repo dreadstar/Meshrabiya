@@ -387,7 +387,8 @@ class OriginatingMessageManager(
                 hopCount = virtualPacket.header.hopCount,
                 lastHopRealInetAddr = receivedFromRealInetAddr,
                 receivedFromSocket = receivedFromSocket,
-                lastHopRealPort = datagramPacket.port
+                lastHopRealPort = datagramPacket.port,
+                neighborAddr = virtualNode.getInetAddressFor(virtualPacket.header.fromAddr)
             )
             
             // === ENHANCED: BUILD TOPOLOGY MAP WITH ROLES ===

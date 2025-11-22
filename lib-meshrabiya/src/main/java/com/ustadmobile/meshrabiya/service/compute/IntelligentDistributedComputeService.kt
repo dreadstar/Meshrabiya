@@ -884,8 +884,7 @@ print(json.dumps(result))
             "Sending completion acknowledgment for task $taskId to node $executorAddress"
         )
         
-        // TODO: Implement in MeshNetworkInterface
-        // meshNetwork.sendTaskCompletionAckMessage(executorAddress, ack)
+        // TODO: Implement sending of completion notification 
     }
     
     /**

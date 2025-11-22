@@ -11,6 +11,7 @@ import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import com.ustadmobile.meshrabiya.service.StorageNodeRequest
 import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
+import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
 import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.service.StorageNodeResponse
 import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse
@@ -46,7 +47,7 @@ class DistributedStorageClient(
     private val pendingStorageNodeRequests = ConcurrentLinkedQueue<PendingStorageNodeRequest>()
     private val pendingChunkRetrievals = ConcurrentHashMap<String, MutableList<ChunkRetrievalResponse>>()
     private val pendingReplicaResponses = ConcurrentHashMap<String, MutableList<ReplicaResponse>>()
-    private val pendingPermissionConfirmations = ConcurrentHashMap<String, MutableList<com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage>>()
+    private val pendingPermissionConfirmations = ConcurrentHashMap<String, MutableList<FilePermissionUpdateConfirmationMessage>>()
     
     data class PendingStorageNodeRequest(
         val request: StorageNodeRequest,
@@ -96,7 +97,7 @@ class DistributedStorageClient(
         )
     }
     
-    fun handlePermissionUpdateConfirmation(confirmation: com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage) {
+    fun handlePermissionUpdateConfirmation(confirmation: FilePermissionUpdateConfirmationMessage) {
         val fileId = confirmation.fileId
         pendingPermissionConfirmations.computeIfAbsent(fileId) { mutableListOf() }.add(confirmation)
     }

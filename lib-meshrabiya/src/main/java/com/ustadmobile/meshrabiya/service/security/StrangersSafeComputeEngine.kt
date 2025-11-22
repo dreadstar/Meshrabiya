@@ -12,7 +12,12 @@ import java.io.File
 import java.security.SecureRandom
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.service.compute.ServiceLibraryEntry
+import android.os.Process
+import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions
 
+
+
+const val TAG = "StrangersSafeCompute"
 /**
  * STRANGERS-SAFE COMPUTE CLOUD
  * 
@@ -25,8 +30,10 @@ import com.ustadmobile.meshrabiya.service.compute.ServiceLibraryEntry
  */
 class StrangersSafeComputeEngine(private val context: Context) {
     
+    // private const val TAG = "StrangersSafeComputeEngine"
+
     companion object {
-        private const val TAG = "StrangersSafeCompute"
+        const val TAG = "StrangersSafeCompute"
         private const val COMPUTE_PROCESS_TIMEOUT = 30_000L // 30 seconds max
     private const val MAX_MEMORY_MB = 64L // 64MB RAM limit
         private const val MAX_CPU_PERCENT = 25 // 25% CPU max
@@ -483,7 +490,7 @@ class StrangersSafeComputeEngine(private val context: Context) {
     
     data class ExecutionResult(val output: ByteArray)
     
-    private fun verifyCodeBundle(bundle: ByteArray): CodeVerification = 
+        private fun verifyCodeBundle(bundle: ByteArray): CodeVerification {
         // If bundle is a ServiceLibraryEntry, use its fields
         if (bundle is ServiceLibraryEntry) {
             val codeHash = bundle.serviceBundleHash
@@ -521,8 +528,9 @@ class StrangersSafeComputeEngine(private val context: Context) {
             val signerOnion = "unknown.onion"
             return CodeVerification(isValid, codeHash, signerOnion)
         }
+    }
     
-    private fun extractExecutionTrace(container: MicroContainer): StrangersTrustEngine.ExecutionTrace =
+    private fun extractExecutionTrace(container: MicroContainer): StrangersTrustEngine.ExecutionTrace {
         val now = System.currentTimeMillis()
         val pid = container.processId
         val memoryUsed = readContainerMemoryUsage(pid)
@@ -535,21 +543,16 @@ class StrangersSafeComputeEngine(private val context: Context) {
             cpuTimeUsed = cpuTimeUsed,
             syscallsUsed = syscallsUsed
         )
+    }
     
     private fun killContainer(container: MicroContainer) {
-        try {
-            Process.killProcess(container.processId)
-            Log.i(TAG, "Killed container ${container.containerId} (PID ${container.processId})")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to kill container ${container.containerId}", e)
-        }
+    try {
+        Process.killProcess(container.processId)
+        Log.i(TAG, "Killed container ${container.containerId} (PID ${container.processId})")
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to kill container ${container.containerId}", e)
     }
-        try {
-            Process.killProcess(container.processId)
-            Log.i(TAG, "Killed container ${container.containerId} (PID ${container.processId})")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error killing container ${container.containerId}", e)
-        }
+}
     private fun cleanupContainer(container: MicroContainer) {
         try {
             File(container.communicationPipe.inputPipe).delete()
@@ -560,23 +563,13 @@ class StrangersSafeComputeEngine(private val context: Context) {
             Log.e(TAG, "Failed to clean up container ${container.containerId}", e)
         }
     }
-        try {
-            File(container.communicationPipe.inputPipe).delete()
-            File(container.communicationPipe.outputPipe).delete()
-            File(container.communicationPipe.errorPipe).delete()
-            Log.i(TAG, "Cleaned up container ${container.containerId}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cleaning up container ${container.containerId}", e)
-        }
+
     private fun generateContainerId(): String = "container_${System.currentTimeMillis()}"
     private fun calculateHash(data: ByteArray): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         val hashBytes = digest.digest(data)
         return hashBytes.joinToString("") { "%02x".format(it) }
     }
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    val hashBytes = digest.digest(data)
-    return hashBytes.joinToString("") { "%02x".format(it) }
 }
 
 /**
@@ -896,19 +889,7 @@ class DistributedServiceLibrary {
         }
     }
     
-    /**
-     * Kill a container process
-     * @param containerId Container identifier
-     */
-    fun killContainer(containerId: String) {
-        try {
-            val pid = extractPidFromContainerId(containerId)
-            Process.killProcess(pid)
-            Log.i(TAG, "Killed container $containerId (PID $pid)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error killing container $containerId", e)
-        }
-    }
+ 
     
     /**
      * Extract process ID from container ID

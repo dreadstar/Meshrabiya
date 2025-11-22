@@ -1,3 +1,6 @@
+package com.ustadmobile.meshrabiya.service.compute
+import com.ustadmobile.meshrabiya.service.compute.ServiceLibraryEntry
+
 object DistributedServiceLibrary {
     private val serviceRegistry = mutableMapOf<String, ServiceLibraryEntry>()
 
@@ -15,7 +18,7 @@ object DistributedServiceLibrary {
         }
     }
 }
-package com.ustadmobile.meshrabiya.service.compute
+
 
 // Unified ServiceLibraryEntry model
 open class ServiceLibraryEntry {
@@ -47,3 +50,4 @@ class WorkflowServiceEntry : ServiceLibraryEntry() {}
  * - Extensible cryptographic schemes: Design trust logic to support future cryptographic algorithms with minimal impact on app size and complexity.
  * - Resource requirements and audit reports: Always include these as part of ServiceLibraryEntry for runtime and distributed workflows.
  */
+

@@ -62,6 +62,8 @@ fun randomApipaAddr(): Int {
 
 fun randomApipaInetAddr() = InetAddress.getByAddress(randomApipaAddr().addressToByteArray())
 
+
+
 /**
  * Mashrabiya Node
  *
@@ -84,7 +86,7 @@ abstract class VirtualNode(
 ): VirtualRouter, Closeable, HasNodeState {
 
     val addressAsInt: Int = address.requireAddressAsInt()
-    
+    fun getInetAddressFor(addr: Int) = InetAddress.getByAddress(addr.addressToByteArray())
     /**
      * Provides context for service initialization.
      * Must be implemented by platform-specific subclasses (e.g., AndroidVirtualNode).
@@ -152,6 +154,7 @@ abstract class VirtualNode(
         val lastHopRealInetAddr: InetAddress,
         val receivedFromSocket: VirtualNodeDatagramSocket,
         val lastHopRealPort: Int,
+        val neighborAddr: InetAddress,
     )
 
     @Suppress("unused")
