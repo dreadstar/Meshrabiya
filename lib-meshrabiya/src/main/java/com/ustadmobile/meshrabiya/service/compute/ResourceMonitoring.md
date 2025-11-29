@@ -7,7 +7,7 @@ import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
-import com.ustadmobile.meshrabiya.util.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.log.betaLogger
 import com.ustadmobile.meshrabiya.log.LogLevel
 import java.util.concurrent.ConcurrentHashMap
@@ -69,39 +69,40 @@ object ResourceMonitoring {
 		}
 		totalLoad = ResourceMetrics(
 			timestamp = now,
-			memoryUsedBytes = totalRamActual,
-			cpuUsagePercent = totalCpuActual,
-			diskStorageUsedBytes = totalDiskActual,
-			networkUsedBytes = totalNetworkActual
+			ramActualBytes = totalRamActual,
+			 cpuPercentage = totalCpuActual,
+			 diskStorageUsedBytes = totalDiskActual,
+			 networkUsedBytes = totalNetworkActual
 		)
 	}
 
 	/**
 	 * Simulate polling metrics for a given task/container.
 	 * Replace with actual integration to container/task engine.
+	 * Uses canonical ResourceMetrics property names.
 	 */
 	private fun pollMetricsForTask(taskId: String): ResourceMetrics {
 		// TODO: Integrate with StrangersSafeComputeEngine, JVMExecutor, PythonExecutor, etc.
 		// For now, return dummy metrics
 		return ResourceMetrics(
-			memoryUsedBytes = (64 * 1024 * 1024), // 64MB
-			cpuUsagePercent = 10f,
-			diskStorageUsedBytes = (10 * 1024 * 1024), // 10MB
-			networkUsedBytes = (1 * 1024 * 1024) // 1MB
+			 ramActualBytes = (64 * 1024 * 1024), // 64MB
+			 cpuPercentage = 10f,
+			 diskStorageUsedBytes = (10 * 1024 * 1024), // 10MB
+			 networkUsedBytes = (1 * 1024 * 1024) // 1MB
 		)
 	}
 
 	/**
-	 * Update peak metrics for a task.
+	 * Update peak metrics for a task using canonical ResourceMetrics property names.
 	 */
 	private fun updatePeakMetrics(oldPeak: ResourceMetrics?, current: ResourceMetrics): ResourceMetrics {
 		if (oldPeak == null) return current
 		return ResourceMetrics(
 			timestamp = current.timestamp,
-			memoryUsedBytes = maxOf(oldPeak.memoryUsedBytes, current.memoryUsedBytes),
-			cpuUsagePercent = maxOf(oldPeak.cpuUsagePercent, current.cpuUsagePercent),
-			diskStorageUsedBytes = maxOf(oldPeak.diskStorageUsedBytes, current.diskStorageUsedBytes),
-			networkUsedBytes = maxOf(oldPeak.networkUsedBytes, current.networkUsedBytes)
+			 ramActualBytes = maxOf(oldPeak.ramActualBytes, current.ramActualBytes),
+			 cpuPercentage = maxOf(oldPeak.cpuPercentage, current.cpuPercentage),
+			 diskStorageUsedBytes = maxOf(oldPeak.diskStorageUsedBytes, current.diskStorageUsedBytes),
+			 networkUsedBytes = maxOf(oldPeak.networkUsedBytes, current.networkUsedBytes)
 		)
 	}
 
@@ -156,14 +157,14 @@ object ResourceMonitoring {
 	}
 
 	/**
-	 * Returns current metrics for a task.
+	 * Returns current metrics for a task using canonical ResourceMetrics property names.
 	 */
 	fun getTaskMetrics(taskId: String): ResourceMetrics? {
 		return activeExecutions[taskId]?.currentMetrics
 	}
 
 	/**
-	 * Returns peak metrics for a task.
+	 * Returns peak metrics for a task using canonical ResourceMetrics property names.
 	 */
 	fun getPeakMetrics(taskId: String): ResourceMetrics? {
 		return activeExecutions[taskId]?.peakMetrics
@@ -186,13 +187,18 @@ object ResourceMonitoring {
 	/**
 	 * Data class for tracking execution state.
 	 */
-	data class ExecutionState(
-		val context: TaskExecutionContext,
-		val resourceLimits: ResourceLimits? = null,
-		var currentMetrics: ResourceMetrics? = null,
-		var peakMetrics: ResourceMetrics? = null,
-		var terminated: Boolean = false,
-		var errorType: ExecutionErrorType? = null
-	)
+	// Phase 2: Execution state tracking
+    data class ExecutionState(
+        val taskId: UUID,
+        val containerId: String,
+        val executorNodeAddress: String,
+        val startTime: Long,
+        val taskContext: TaskExecutionContext,
+        val requesterNodeId: String,
+        val callbackAddress: String,
+        // Phase 2.2: Resource monitoring fields
+        val resourceMetrics: ResourceMetrics = ResourceMetrics.zero(),
+        val lastMetricUpdate: Long = 0L
+    )
 }
 

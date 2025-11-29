@@ -1,39 +1,56 @@
 package com.ustadmobile.meshrabiya.service.compute
 
-import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
 import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
+import com.ustadmobile.meshrabiya.service.compute.model.ExecutionState
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.OutputManifest
-import com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions
+import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
 import java.util.UUID
 import kotlinx.coroutines.*
 import android.content.Context
 import android.net.Uri
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.storage.StorageConfiguration
+// import com.ustadmobile.meshrabiya.storage.StorageConfiguration
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageAccessPolicy
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageOperation
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.RetentionPolicy
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
+import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
 import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageRequest
-// import com.ustadmobile.meshrabiya.service.MeshServiceCoordinator
-// import com.ustadmobile.meshrabiya.OrbotApp
-import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import kotlinx.serialization.json.Json
-
-
 import com.ustadmobile.meshrabiya.service.compute.model.*
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
-import com.ustadmobile.meshrabiya.service.compute.executors.*
-import com.ustadmobile.meshrabiya.service.compute.StrangersSafeComputeEngine
-import com.ustadmobile.meshrabiya.core.message.MeshEcosystemMessage
-import com.ustadmobile.meshrabiya.util.MeshrabiyaConstants
+// import com.ustadmobile.meshrabiya.service.compute.executors.*
+// import com.ustadmobile.meshrabiya.service.compute.StrangersSafeComputeEngine
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
+// import com.ustadmobile.meshrabiya.service.compute.ResourceMonitoring.ExecutionState
+// import com.ustadmobile.meshrabiya.storage.StorageConfiguration
+import com.ustadmobile.meshrabiya.service.security.StrangersSafeComputeEngine
+import com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApi
+// import com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor
+import com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor
+import com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor
+import com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor
+import org.msgpack.core.MessagePack
+import org.msgpack.core.MessageUnpacker
+import org.msgpack.core.MessageBufferPacker
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceLibraryEntry
+// import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.SandboxConfig
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceSearchResult
+
+import com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry
+// import com.ustadmobile.meshrabiya.service.compute.model.ExecutionState
+import com.ustadmobile.meshrabiya.service.security.MobileServiceSandbox.SandboxConfig
+import com.ustadmobile.meshrabiya.service.MessageType
+
+
 /**
  * TaskManager - Monitors running tasks, handles TaskDataAccessUpdate events,
  * coordinates access profile updates, provides hooks for output publishing,
@@ -44,12 +61,12 @@ import java.util.concurrent.ConcurrentHashMap
  
 object TaskManager {
     private val taskStatuses = ConcurrentHashMap<String, TaskStatus>()
-    private val activeExecutions = ConcurrentHashMap<String, ExecutionState>()
-    private var resourceMonitoringJob: Job? = null
+    // private val activeExecutions = ConcurrentHashMap<String, ExecutionState>()
+    // private var resourceMonitoringJob: Job? = null
     private var totalLoad: ResourceMetrics = ResourceMetrics.zero()
     private val sandboxEngine = StrangersSafeComputeEngine()
     private val executors = listOf(
-        PythonExecutor(sandboxEngine),
+        // PythonExecutor(sandboxEngine),
         JVMExecutor(sandboxEngine),
         JSExecutor(sandboxEngine),
         MLNativeExecutor(sandboxEngine),
@@ -63,15 +80,15 @@ object TaskManager {
         val taskId = context.taskId
         val executor = loadExecutor(context.taskType)
         val containerId = createSandboxContainer(context)
-        val execution = ExecutionState(
-            context = context,
-            containerId = containerId,
-            executor = executor
-        )
-        activeExecutions[taskId] = execution
-        ensureResourceMonitoringActive()
+        // val execution = ExecutionState(
+        //     context = context,
+        //     containerId = containerId,
+        //     executor = executor
+        // )
+        // activeExecutions[taskId] = execution
+        // ensureResourceMonitoringActive()
         try {
-            val result = executor.execute(context, containerId)
+            // val result = executor.execute(context, containerId)
             storeResultFiles(taskId, result, accessScope)
             sendCompletionNotification(taskId, result)
             result
@@ -80,15 +97,7 @@ object TaskManager {
         }
     }
 
-    private suspend fun retrieveInputFiles(inputManifest: List<FileReference>): Map<String, ByteArray> {
-        // Retrieve each file from DistributedStorageManager
-        val apiInstance = api ?: throw IllegalStateException("API not set")
-        val storageManager = apiInstance.getDistributedStorageManager()
-        return inputManifest.associate { fileRef ->
-            val fileBytes = storageManager.retrieveFileBytes(fileRef.fileId)
-            fileRef.fileId to fileBytes
-        }
-    }
+
 
     private suspend fun createSandboxContainer(context: TaskExecutionContext): String {
         val sandboxConfig = getSandboxConfigForTaskType(context.taskType)
@@ -97,13 +106,53 @@ object TaskManager {
         return containerId
     }
 
+    // private suspend fun createSandboxContainer(
+    //     context: TaskExecutionContext
+    // ): String {
+    //     // Integrate with StrangersSafeComputeEngine
+    //     return StrangersSafeComputeEngine.createContainer(context)
+    // }
+
     private fun getSandboxConfigForTaskType(taskType: TaskType): SandboxConfig {
         return SandboxConfig(syscallWhitelist = listOf("read", "write", "execve"))
     }
 
-    private fun loadExecutor(taskType: TaskType): TaskExecutor {
-        return executors.firstOrNull { it.getSupportedTaskType() == taskType }
-            ?: throw IllegalArgumentException("No executor for task type: $taskType")
+    // private fun loadExecutor(taskType: TaskType): TaskExecutor {
+    //     return executors.firstOrNull { it.getSupportedTaskType() == taskType }
+    //         ?: throw IllegalArgumentException("No executor for task type: $taskType")
+    // }
+
+    /**
+     * Phase 3: Runtime Management
+     * Load appropriate executor for task type with runtime validation
+     */
+    private suspend fun loadExecutor(
+        taskType: TaskType
+    ): TaskExecutor {
+        val context = getAppContext() ?: throw IllegalStateException("Context not available")
+        val registry = com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry.getInstance(context)
+        // Check if runtime is available
+        if (!registry.isRuntimeAvailable(taskType)) {
+            throw IllegalStateException("Runtime not available for task type: ${taskType.name}")
+        }
+        // Load appropriate executor
+        return when (taskType) {
+            // TaskType.PYTHON -> PythonExecutor(context)
+            TaskType.JVM, TaskType.JAVA -> JVMExecutor(context)
+            TaskType.JAVASCRIPT -> com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
+            TaskType.ML_NATIVE -> com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
+            TaskType.WORKFLOW -> {
+                // WorkflowExecutor needs an executor factory
+                val factory: (TaskType) -> TaskExecutor? = { type ->
+                    try {
+                        loadExecutor(type)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor(context, factory)
+            }
+        }
     }
 
     private suspend fun storeResultFiles(
@@ -134,7 +183,7 @@ object TaskManager {
         result: ExecutionResult
     ) {
         // Send completion notification to requester (CANONICAL_WORKFLOWS compliant)
-        val execution = activeExecutions[taskId] ?: return
+        // val execution = activeExecutions[taskId] ?: return
         val callbackAddress = execution.context.callbackAddress
         val completionMessage = TaskCompletedMessage(
             taskId = taskId,
@@ -149,54 +198,74 @@ object TaskManager {
     }
 
     private suspend fun cleanupExecution(taskId: String) {
-        activeExecutions.remove(taskId)
+        // activeExecutions.remove(taskId)
         // Additional cleanup logic: remove containers, clear temp files, revoke keys if needed
         sandboxEngine.cleanupContainer(taskId)
     }
 
-    private fun ensureResourceMonitoringActive() {
-        if (resourceMonitoringJob != null && resourceMonitoringJob?.isActive == true) return
-        resourceMonitoringJob = GlobalScope.launch {
-            while (isActive && activeExecutions.isNotEmpty()) {
-                updateResourceMetrics()
-                delay(MeshrabiyaConstants.RESOURCE_MONITORING_INTERVAL_MS)
-            }
-        }
-    }
+    // private fun ensureResourceMonitoringActive() {
+    //     if (resourceMonitoringJob != null && resourceMonitoringJob?.isActive == true) return
+    //     resourceMonitoringJob = GlobalScope.launch {
+    //         while (isActive && activeExecutions.isNotEmpty()) {
+    //             updateResourceMetrics()
+    //             delay(MeshrabiyaConstants.RESOURCE_MONITORING_INTERVAL_MS)
+    //         }
+    //     }
+    // }
 
-    private suspend fun updateResourceMetrics() {
-        var totalRamActual = 0L
-        var totalRamAverage = 0L
-        var totalRamPeak = 0L
-        var totalCpuTime = 0L
-        var totalCpuPercent = 0f
-        var totalDiskIo = 0L
-        var totalDiskStorage = 0L
-        for (execution in activeExecutions.values) {
-            val metrics = sandboxEngine.getContainerMetrics(execution.containerId)
-            totalRamActual += metrics.ramActualBytes
-            totalRamAverage += metrics.ramAverageBytes
-            totalRamPeak += metrics.ramPeakBytes
-            totalCpuTime += metrics.cpuTimeUsedMs
-            totalCpuPercent += metrics.cpuPercentage
-            totalDiskIo += metrics.diskIoOperations
-            totalDiskStorage += metrics.diskStorageUsedBytes
-            // Update execution state with current metrics
-            execution.currentMetrics = metrics
-            if (metrics.ramPeakBytes > execution.peakMetrics.ramPeakBytes) {
-                execution.peakMetrics = metrics
-            }
-        }
-        totalLoad = ResourceMetrics(
-            ramActualBytes = totalRamActual,
-            ramAverageBytes = totalRamAverage,
-            ramPeakBytes = totalRamPeak,
-            cpuTimeUsedMs = totalCpuTime,
-            cpuPercentage = totalCpuPercent,
-            diskIoOperations = totalDiskIo,
-            diskStorageUsedBytes = totalDiskStorage
-        )
-    }
+    /**
+     * Phase 2.2: Resource Monitoring
+     * Ensures the background resource monitoring loop is running
+     */
+    // private suspend fun ensureResourceMonitoringActive() {
+    //     if (resourceMonitoringJob?.isActive == true) return
+        
+    //     resourceMonitoringJob = CoroutineScope(Dispatchers.IO).launch {
+    //         while (isActive) {
+    //             try {
+    //                 updateResourceMetrics()
+    //                 checkResourceLimitViolations()
+    //                 delay(1000) // Poll every second
+    //             } catch (e: Exception) {
+    //                 // Log error and continue monitoring
+    //             }
+    //         }
+    //     }
+    // }
+
+    // private suspend fun updateResourceMetrics() {
+    //     var totalRamActual = 0L
+    //     var totalRamAverage = 0L
+    //     var totalRamPeak = 0L
+    //     var totalCpuTime = 0L
+    //     var totalCpuPercent = 0f
+    //     var totalDiskIo = 0L
+    //     var totalDiskStorage = 0L
+    //     for (execution in activeExecutions.values) {
+    //         val metrics = sandboxEngine.getContainerMetrics(execution.containerId)
+    //         totalRamActual += metrics.ramActualBytes
+    //         totalRamAverage += metrics.ramAverageBytes
+    //         totalRamPeak += metrics.ramPeakBytes
+    //         totalCpuTime += metrics.cpuTimeUsedMs
+    //         totalCpuPercent += metrics.cpuPercentage
+    //         totalDiskIo += metrics.diskIoOperations
+    //         totalDiskStorage += metrics.diskStorageUsedBytes
+    //         // Update execution state with current metrics
+    //         execution.currentMetrics = metrics
+    //         if (metrics.ramPeakBytes > execution.peakMetrics.ramPeakBytes) {
+    //             execution.peakMetrics = metrics
+    //         }
+    //     }
+    //     totalLoad = ResourceMetrics(
+    //         ramActualBytes = totalRamActual,
+    //         ramAverageBytes = totalRamAverage,
+    //         ramPeakBytes = totalRamPeak,
+    //         cpuTimeUsedMs = totalCpuTime,
+    //         cpuPercentage = totalCpuPercent,
+    //         diskIoOperations = totalDiskIo,
+    //         diskStorageUsedBytes = totalDiskStorage
+    //     )
+    // }
     fun verifyRuntimeAvailable(taskType: TaskType): Boolean {
         val available = RuntimeRegistry.isRuntimeAvailable(taskType)
         if (!available) {
@@ -206,17 +275,11 @@ object TaskManager {
         return available
     }
 
-    fun getTotalLoad(): ResourceMetrics = totalLoad
-    fun getTaskMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.currentMetrics
-    fun getPeakMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.peakMetrics
+    // fun getTotalLoad(): ResourceMetrics = totalLoad
+    // fun getTaskMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.currentMetrics
+    // fun getPeakMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.peakMetrics
 
-    private data class ExecutionState(
-        val context: TaskExecutionContext,
-        val containerId: String,
-        val executor: TaskExecutor,
-        val currentMetrics: ResourceMetrics = ResourceMetrics.zero(),
-        val peakMetrics: ResourceMetrics = ResourceMetrics.zero()
-    )
+
 
     data class TaskStatus(
         val taskId: String,
@@ -233,7 +296,7 @@ object TaskManager {
 
     // Reference to the API for context access
     @Volatile
-    private var api: com.ustadmobile.meshrabiya.api.MeshrabiyaApi? = null
+    private var api: MeshrabiyaApi? = null
 
     fun setApi(apiInstance: com.ustadmobile.meshrabiya.api.MeshrabiyaApi) {
         api = apiInstance
@@ -312,25 +375,13 @@ object TaskManager {
     private val completedTasks = mutableListOf<TaskStatus>()
     private val outputAuditTrail = mutableListOf<OutputPublishAudit>()
 
-    // Phase 2: Execution state tracking
-    data class ExecutionState(
-        val taskId: UUID,
-        val containerId: String,
-        val executorNodeAddress: String,
-        val startTime: Long,
-        val taskContext: TaskExecutionContext,
-        val requesterNodeId: String,
-        val callbackAddress: String,
-        // Phase 2.2: Resource monitoring fields
-        val resourceMetrics: ResourceMetrics = ResourceMetrics.zero(),
-        val lastMetricUpdate: Long = 0L
-    )
+    
 
-    private val activeExecutions = mutableMapOf<UUID, ExecutionState>()
+    // private val activeExecutions = mutableMapOf<UUID, ExecutionState>()
     private val containerToTask = mutableMapOf<String, UUID>()
     
     // Phase 2.2: Resource monitoring state
-    private var resourceMonitoringJob: Job? = null
+    // private var resourceMonitoringJob: Job? = null
     private val peakMetrics = mutableMapOf<String, ResourceMetrics>()
 
     // Phase 4.2: Task keypair management
@@ -606,13 +657,13 @@ object TaskManager {
         return api?.getAppContext()
     }
 
-    private fun getStorageConfiguration(): StorageConfiguration {
-        return try {
-            StorageConfiguration()
-        } catch (e: Exception) {
-            StorageConfiguration(defaultReplicationFactor = 1)
-        }
-    }
+    // private fun getStorageConfiguration(): StorageConfiguration {
+    //     return try {
+    //         StorageConfiguration()
+    //     } catch (e: Exception) {
+    //         StorageConfiguration(defaultReplicationFactor = 1)
+    //     }
+    // }
 
     fun getRunningTasks(): List<TaskStatus> = runningTasks.values.toList()
     fun getCompletedTasks(): List<TaskStatus> = completedTasks
@@ -639,25 +690,25 @@ object TaskManager {
         taskType: TaskType,
         jobType: JobType,
         codeBundle: ByteArray,
-        inputManifest: List<MeshComputeDataDefinitions.FileReference>,
-        resourceLimits: MeshComputeDataDefinitions.ResourceLimits,
+        inputManifest: List<FileReference>,
+        // resourceLimits: ResourceLimits, // Deprecated and removed
         deadlineMs: Long,
         requesterNodeId: String,
         callbackAddress: String,
         accessScope: AccessScope = AccessScope.TASK_ISOLATED
-    ): MeshComputeDataDefinitions.ExecutionResult = coroutineScope {
+    ): ExecutionResult = coroutineScope {
         
         updateTaskProgress(taskId, 0, null, "Task accepted, preparing for execution")
         
         try {
             // 1. Create execution context
-            val context = MeshComputeDataDefinitions.TaskExecutionContext(
+            val context = TaskExecutionContext(
                 taskId = taskId.toString(),
                 taskType = taskType,
                 jobType = jobType,
                 codeBundle = codeBundle,
                 inputManifest = inputManifest,
-                resourceLimits = resourceLimits,
+                // resourceLimits = resourceLimits, // Deprecated and removed
                 deadlineMs = deadlineMs,
                 requesterNodeId = requesterNodeId,
                 callbackAddress = callbackAddress,
@@ -688,7 +739,7 @@ object TaskManager {
             containerToTask[containerId] = taskId
             
             // 5. Start resource monitoring if not already running
-            ensureResourceMonitoringActive()
+            // ensureResourceMonitoringActive()
             
             // 6. Load executor
             updateTaskProgress(taskId, 50, null, "Loading executor")
@@ -732,14 +783,14 @@ object TaskManager {
             result
             
         } catch (e: Exception) {
-            val errorResult = MeshComputeDataDefinitions.ExecutionResult(
+            val errorResult = ExecutionResult(
                 taskId = taskId.toString(),
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = com.ustadmobile.meshrabiya.service.compute.model.MeshComputeDataDefinitions.ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = System.currentTimeMillis() - (activeExecutions[taskId]?.startTime ?: 0),
                 errorMessage = e.message ?: "Unknown error",
-                errorType = MeshComputeDataDefinitions.ExecutionErrorType.UNKNOWN
+                errorType = ExecutionErrorType.UNKNOWN
             )
             
             runningTasks[taskId]?.let {
@@ -756,7 +807,7 @@ object TaskManager {
     // === Helper Methods ===
 
     private suspend fun retrieveInputFiles(
-        inputManifest: List<MeshComputeDataDefinitions.FileReference>
+        inputManifest: List<FileReference>
     ): Map<String, ByteArray> {
         val context = getAppContext() ?: throw IllegalStateException("Application context unavailable")
         val storageManager = DistributedStorageManager.getInstance(context)
@@ -767,117 +818,94 @@ object TaskManager {
         }
     }
 
-    private suspend fun createSandboxContainer(
-        context: MeshComputeDataDefinitions.TaskExecutionContext
-    ): String {
-        // Integrate with StrangersSafeComputeEngine
-        return StrangersSafeComputeEngine.createContainer(context)
-    }
+    
 
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Ensures the background resource monitoring loop is running
-     */
-    private suspend fun ensureResourceMonitoringActive() {
-        if (resourceMonitoringJob?.isActive == true) return
-        
-        resourceMonitoringJob = CoroutineScope(Dispatchers.IO).launch {
-            while (isActive) {
-                try {
-                    updateResourceMetrics()
-                    checkResourceLimitViolations()
-                    delay(1000) // Poll every second
-                } catch (e: Exception) {
-                    // Log error and continue monitoring
-                }
-            }
-        }
-    }
+    
     
     /**
      * Phase 2.2: Resource Monitoring
      * Updates resource metrics for all active containers
      */
-    private suspend fun updateResourceMetrics() {
-        val context = getAppContext() ?: return
-        val computeEngine = StrangersSafeComputeEngine.getInstance(context)
+    // private suspend fun updateResourceMetrics() {
+    //     val context = getAppContext() ?: return
+    //     val computeEngine = StrangersSafeComputeEngine.getInstance(context)
         
-        for ((taskId, execution) in activeExecutions) {
-            try {
-                val metrics = computeEngine.getContainerMetrics(execution.containerId)
+    //     for ((taskId, execution) in activeExecutions) {
+    //         try {
+    //             val metrics = computeEngine.getContainerMetrics(execution.containerId)
                 
-                // Update execution state with latest metrics
-                activeExecutions[taskId] = execution.copy(
-                    resourceMetrics = metrics,
-                    lastMetricUpdate = System.currentTimeMillis()
-                )
+    //             // Update execution state with latest metrics
+    //             activeExecutions[taskId] = execution.copy(
+    //                 resourceMetrics = metrics,
+    //                 lastMetricUpdate = System.currentTimeMillis()
+    //             )
                 
-                // Update peak metrics
-                peakMetrics[execution.containerId] = ResourceMetrics(
-                    ramUsedBytes = maxOf(
-                        peakMetrics[execution.containerId]?.ramUsedBytes ?: 0L,
-                        metrics.ramUsedBytes
-                    ),
-                    cpuUsedPercent = maxOf(
-                        peakMetrics[execution.containerId]?.cpuUsedPercent ?: 0.0,
-                        metrics.cpuUsedPercent
-                    ),
-                    diskUsedBytes = maxOf(
-                        peakMetrics[execution.containerId]?.diskUsedBytes ?: 0L,
-                        metrics.diskUsedBytes
-                    ),
-                    networkSentBytes = metrics.networkSentBytes,
-                    networkReceivedBytes = metrics.networkReceivedBytes
-                )
+    //             // Update peak metrics
+    //             peakMetrics[execution.containerId] = ResourceMetrics(
+    //                 ramUsedBytes = maxOf(
+    //                     peakMetrics[execution.containerId]?.ramUsedBytes ?: 0L,
+    //                     metrics.ramUsedBytes
+    //                 ),
+    //                 cpuUsedPercent = maxOf(
+    //                     peakMetrics[execution.containerId]?.cpuUsedPercent ?: 0.0,
+    //                     metrics.cpuUsedPercent
+    //                 ),
+    //                 diskUsedBytes = maxOf(
+    //                     peakMetrics[execution.containerId]?.diskUsedBytes ?: 0L,
+    //                     metrics.diskUsedBytes
+    //                 ),
+    //                 networkSentBytes = metrics.networkSentBytes,
+    //                 networkReceivedBytes = metrics.networkReceivedBytes
+    //             )
                 
-            } catch (e: Exception) {
-                // Log error, continue to next container
-            }
-        }
-    }
+    //         } catch (e: Exception) {
+    //             // Log error, continue to next container
+    //         }
+    //     }
+    // }
     
     /**
      * Phase 2.2: Resource Monitoring
      * Checks all active tasks for resource limit violations and terminates violators
      */
-    private suspend fun checkResourceLimitViolations() {
-        val tasksToTerminate = mutableListOf<UUID>()
+    // private suspend fun checkResourceLimitViolations() {
+    //     val tasksToTerminate = mutableListOf<UUID>()
         
-        for ((taskId, execution) in activeExecutions) {
-            val limits = execution.taskContext.resourceLimits
-            val metrics = execution.resourceMetrics
+    //     for ((taskId, execution) in activeExecutions) {
+    //         // val limits = execution.taskContext.resourceLimits // Deprecated and removed
+    //         val metrics = execution.resourceMetrics
             
-            // Check memory limit
-            if (metrics.ramUsedBytes > limits.maxMemoryBytes) {
-                tasksToTerminate.add(taskId)
-                continue
-            }
+    //         // Check memory limit
+    //         if (metrics.ramUsedBytes > limits.maxMemoryBytes) {
+    //             tasksToTerminate.add(taskId)
+    //             continue
+    //         }
             
-            // Check CPU limit (average over monitoring window)
-            if (metrics.cpuUsedPercent > limits.maxCpuPercent) {
-                tasksToTerminate.add(taskId)
-                continue
-            }
+    //         // Check CPU limit (average over monitoring window)
+    //         if (metrics.cpuUsedPercent > limits.maxCpuPercent) {
+    //             tasksToTerminate.add(taskId)
+    //             continue
+    //         }
             
-            // Check disk limit
-            if (metrics.diskUsedBytes > limits.maxDiskBytes) {
-                tasksToTerminate.add(taskId)
-                continue
-            }
+    //         // Check disk limit
+    //         if (metrics.diskUsedBytes > limits.maxDiskBytes) {
+    //             tasksToTerminate.add(taskId)
+    //             continue
+    //         }
             
-            // Check execution time limit
-            val executionTime = System.currentTimeMillis() - execution.startTime
-            if (executionTime > limits.maxExecutionTimeMs) {
-                tasksToTerminate.add(taskId)
-                continue
-            }
-        }
+    //         // Check execution time limit
+    //         val executionTime = System.currentTimeMillis() - execution.startTime
+    //         if (executionTime > limits.maxExecutionTimeMs) {
+    //             tasksToTerminate.add(taskId)
+    //             continue
+    //         }
+    //     }
         
-        // Terminate violating tasks
-        for (taskId in tasksToTerminate) {
-            terminateTask(taskId, ExecutionErrorType.OUT_OF_MEMORY) // Or appropriate error type
-        }
-    }
+    //     // Terminate violating tasks
+    //     for (taskId in tasksToTerminate) {
+    //         terminateTask(taskId, ExecutionErrorType.OUT_OF_MEMORY) // Or appropriate error type
+    //     }
+    // }
     
     /**
      * Phase 2.2: Resource Monitoring
@@ -897,7 +925,7 @@ object TaskManager {
                 taskId = taskId.toString(),
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = execution.resourceMetrics,
+                // resourcesUsed = execution.resourceMetrics,
                 executionTimeMs = System.currentTimeMillis() - execution.startTime,
                 errorMessage = when (errorType) {
                     ExecutionErrorType.TIMEOUT -> "Task execution exceeded time limit"
@@ -934,85 +962,54 @@ object TaskManager {
     }
     
     /**
-     * Phase 2.2: Resource Monitoring
+     * Phase 2.2: Resource Monitoring - DEPRECATED  becacuse not available jave <9
      * Public API: Get current total resource load across all executing tasks
      */
-    fun getTotalLoad(): ResourceMetrics {
-        var totalRam = 0L
-        var maxCpu = 0.0
-        var totalDisk = 0L
-        var totalNetSent = 0L
-        var totalNetRecv = 0L
+    // fun getTotalLoad(): ResourceMetrics {
+    //     var totalRam = 0L
+    //     var maxCpu = 0.0
+    //     var totalDisk = 0L
+    //     var totalNetSent = 0L
+    //     var totalNetRecv = 0L
         
-        for (execution in activeExecutions.values) {
-            totalRam += execution.resourceMetrics.ramUsedBytes
-            maxCpu = maxOf(maxCpu, execution.resourceMetrics.cpuUsedPercent)
-            totalDisk += execution.resourceMetrics.diskUsedBytes
-            totalNetSent += execution.resourceMetrics.networkSentBytes
-            totalNetRecv += execution.resourceMetrics.networkReceivedBytes
-        }
+    //     for (execution in activeExecutions.values) {
+    //         totalRam += execution.resourceMetrics.ramUsedBytes
+    //         maxCpu = maxOf(maxCpu, execution.resourceMetrics.cpuUsedPercent)
+    //         totalDisk += execution.resourceMetrics.diskUsedBytes
+    //         totalNetSent += execution.resourceMetrics.networkSentBytes
+    //         totalNetRecv += execution.resourceMetrics.networkReceivedBytes
+    //     }
         
-        return ResourceMetrics(
-            ramUsedBytes = totalRam,
-            cpuUsedPercent = maxCpu,
-            diskUsedBytes = totalDisk,
-            networkSentBytes = totalNetSent,
-            networkReceivedBytes = totalNetRecv
-        )
-    }
+    //     return ResourceMetrics(
+    //         ramUsedBytes = totalRam,
+    //         cpuUsedPercent = maxCpu,
+    //         diskUsedBytes = totalDisk,
+    //         networkSentBytes = totalNetSent,
+    //         networkReceivedBytes = totalNetRecv
+    //     )
+    // }
     
     /**
-     * Phase 2.2: Resource Monitoring
+     * Phase 2.2: Resource Monitoring - DEPRECATED  becacuse not available jave <9
      * Public API: Get resource metrics for a specific task
      */
-    fun getTaskMetrics(taskId: UUID): ResourceMetrics? {
-        return activeExecutions[taskId]?.resourceMetrics
-    }
+    // fun getTaskMetrics(taskId: UUID): ResourceMetrics? {
+    //     return activeExecutions[taskId]?.resourceMetrics
+    // }
     
     /**
      * Phase 2.2: Resource Monitoring
      * Public API: Get peak resource metrics for a container
      */
-    fun getPeakMetrics(containerId: String): ResourceMetrics? {
-        return peakMetrics[containerId]
-    }
+    // fun getPeakMetrics(containerId: String): ResourceMetrics? {
+    //     return peakMetrics[containerId]
+    // }
 
-    /**
-     * Phase 3: Runtime Management
-     * Load appropriate executor for task type with runtime validation
-     */
-    private suspend fun loadExecutor(
-        taskType: TaskType
-    ): TaskExecutor {
-        val context = getAppContext() ?: throw IllegalStateException("Context not available")
-        val registry = com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry.getInstance(context)
-        // Check if runtime is available
-        if (!registry.isRuntimeAvailable(taskType)) {
-            throw IllegalStateException("Runtime not available for task type: ${taskType.name}")
-        }
-        // Load appropriate executor
-        return when (taskType) {
-            TaskType.PYTHON -> com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor(context)
-            TaskType.JVM, TaskType.JAVA -> com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor(context)
-            TaskType.JAVASCRIPT -> com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
-            TaskType.ML_NATIVE -> com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
-            TaskType.WORKFLOW -> {
-                // WorkflowExecutor needs an executor factory
-                val factory: (TaskType) -> TaskExecutor? = { type ->
-                    try {
-                        loadExecutor(type)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-                com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor(context, factory)
-            }
-        }
-    }
+    
 
     private suspend fun storeResultFiles(
         taskId: UUID,
-        outputManifest: List<MeshComputeDataDefinitions.FileReference>,
+        outputManifest: List<FileReference>,
         owner: String,
         recipients: List<String>,
         accessScope: AccessScope
@@ -1034,7 +1031,7 @@ object TaskManager {
         taskId: UUID,
         requesterNodeId: String,
         callbackAddress: String,
-        result: MeshComputeDataDefinitions.ExecutionResult
+        result: ExecutionResult
     ) {
         // Send TaskCompletedMessage to requester
         MeshEcosystemMessage.sendTaskCompletedMessage(taskId, requesterNodeId, callbackAddress, result)
@@ -1195,9 +1192,9 @@ object TaskManager {
     // TaskExecutor interface
     interface TaskExecutor {
         suspend fun execute(
-            context: MeshComputeDataDefinitions.TaskExecutionContext,
+            context: TaskExecutionContext,
             inputFiles: Map<String, ByteArray>,
             containerId: String
-        ): MeshComputeDataDefinitions.ExecutionResult
+        ): ExecutionResult
     }
 }

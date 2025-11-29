@@ -3,6 +3,8 @@ package com.ustadmobile.meshrabiya.vnet
 import android.util.Log
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
+import com.ustadmobile.meshrabiya.ext.addressToByteArray
+
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage  // NEW: Import official message type
@@ -41,6 +43,7 @@ import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import java.util.concurrent.atomic.AtomicInteger
 import com.ustadmobile.meshrabiya.vnet.HasNodeState
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 
 class OriginatingMessageManager(
     private val localNodeInetAddr: InetAddress,
@@ -388,7 +391,7 @@ class OriginatingMessageManager(
                 lastHopRealInetAddr = receivedFromRealInetAddr,
                 receivedFromSocket = receivedFromSocket,
                 lastHopRealPort = datagramPacket.port,
-                neighborAddr = virtualNode.getInetAddressFor(virtualPacket.header.fromAddr)
+                neighborAddr =  InetAddress.getByAddress(virtualPacket.header.fromAddr.addressToByteArray())
             )
             
             // === ENHANCED: BUILD TOPOLOGY MAP WITH ROLES ===

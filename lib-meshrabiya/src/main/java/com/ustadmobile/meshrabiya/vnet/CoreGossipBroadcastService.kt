@@ -1,5 +1,7 @@
-package com.ustadmobile.meshrabiya.vnet
 
+
+package com.ustadmobile.meshrabiya.vnet
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.service.ChunkRetrievalQuery
 import com.ustadmobile.meshrabiya.service.ReplicaQuery
@@ -38,10 +40,10 @@ import java.util.concurrent.ConcurrentHashMap
  * - DistributedStorageManager (sends storage broadcasts)
  * - IntelligentDistributedComputeService (sends compute broadcasts)
  */
-class CoreGossipBroadcastService(
-    private val meshGossipService: MeshGossipService,
-    private val broadcastTtlMs: Long = 60_000L
-) {
+class CoreGossipBroadcastService private constructor() {
+
+    private val meshGossipService: MeshGossipService = MeshGossipService.getInstance()
+    private val broadcastTtlMs: Long = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getBroadcastTtlMs()
 
     private val seenBroadcasts = ConcurrentHashMap<String, Long>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -257,4 +259,13 @@ class CoreGossipBroadcastService(
      * Check if service is shutdown.
      */
     fun isShutdown(): Boolean = isShutdown
+
+    companion object {
+        @Volatile private var instance: CoreGossipBroadcastService? = null
+        fun getInstance(): CoreGossipBroadcastService {
+            return instance ?: synchronized(this) {
+                instance ?: CoreGossipBroadcastService().also { instance = it }
+            }
+        }
+    }
 }

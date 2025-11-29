@@ -1,9 +1,7 @@
 package com.ustadmobile.meshrabiya.service.compute.model
-
 import kotlinx.serialization.Serializable
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.AccessScope
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
-
+import java.util.UUID
 /**
  * MESH COMPUTE DATA DEFINITIONS
  * 
@@ -25,7 +23,7 @@ data class TaskExecutionContext(
     val jobType: JobType,
     val codeBundle: ByteArray,           // Language-agnostic archive
     val inputManifest: List<FileReference>, // References to input files in DistributedStorage
-    val resourceLimits: ResourceLimits,
+    // val resourceLimits: ResourceLimits, // Deprecated and removed
     val deadlineMs: Long,
     val requesterNodeId: String,         // Task owner (for result permissions)
     val callbackAddress: String,         // For completion notification
@@ -58,14 +56,14 @@ data class FileReference(
  * 
  * Per-task resource constraints for sandboxing
  */
-@Serializable
-data class ResourceLimits(
-    val maxMemoryBytes: Long,
-    val maxCpuTimeMs: Long,
-    val maxDiskBytes: Long,
-    val maxExecutionTimeMs: Long,
-    val allowNetworkAccess: Boolean = false // Always false for untrusted code
-)
+// @Serializable
+// data class ResourceLimits(
+//     val maxMemoryBytes: Long,
+//     val maxCpuTimeMs: Long,
+//     val maxDiskBytes: Long,
+//     val maxExecutionTimeMs: Long,
+//     val allowNetworkAccess: Boolean = false // Always false for untrusted code
+// )
 
 /**
  * RESOURCE METRICS
@@ -81,7 +79,8 @@ data class ResourceMetrics(
     val cpuTimeUsedMs: Long,
     val cpuPercentage: Float,
     val diskIoOperations: Long,
-    val diskStorageUsedBytes: Long
+    val diskStorageUsedBytes: Long,
+    val networkUsedBytes: Long = 0
 ) {
     companion object {
         fun zero() = ResourceMetrics(
@@ -91,7 +90,8 @@ data class ResourceMetrics(
             cpuTimeUsedMs = 0,
             cpuPercentage = 0f,
             diskIoOperations = 0,
-            diskStorageUsedBytes = 0
+            diskStorageUsedBytes = 0,
+            networkUsedBytes = 0
         )
     }
 }
@@ -107,10 +107,24 @@ data class ExecutionResult(
     val success: Boolean,
     val outputManifest: List<FileReference>, // Zero or more output files
     val resultMessage: String? = null,       // Optional task-defined message
-    val resourcesUsed: ResourceMetrics,
+    // val resourcesUsed: ResourceMetrics,
     val executionTimeMs: Long,
     val errorMessage: String? = null,
     val errorType: ExecutionErrorType? = null
+)
+
+
+data class ExecutionState(
+    val taskId: UUID,
+    val containerId: String,
+    val executorNodeAddress: String,
+    val startTime: Long,
+    val taskContext: TaskExecutionContext,
+    val requesterNodeId: String,
+    val callbackAddress: String,
+    // Phase 2.2: Resource monitoring fields
+    // val resourceMetrics: ResourceMetrics = ResourceMetrics.zero(),
+    val lastMetricUpdate: Long = 0L
 )
 
 /**
@@ -142,7 +156,8 @@ enum class ExecutionErrorType {
     INVALID_CODE_BUNDLE,
     
     /** Unknown error */
-    UNKNOWN
+    UNKNOWN,
+    DISK_FULL
 }
 
 /**
@@ -157,3 +172,9 @@ data class OutputManifest(
     val totalSizeBytes: Long,
     val createdAtMs: Long = System.currentTimeMillis()
 )
+
+enum class AccessScope {
+        TASK_ISOLATED,  // Can only access files created by this task
+        SERVICE_SHARED, // Can access files from other tasks of same service
+        MESH_GLOBAL     // Can access any files (dangerous, usually not allowed)
+    }

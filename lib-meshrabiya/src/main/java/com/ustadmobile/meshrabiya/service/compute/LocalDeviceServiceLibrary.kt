@@ -3,11 +3,11 @@ package com.ustadmobile.meshrabiya.service.compute
 import android.content.Context
 import android.content.SharedPreferences
 import com.ustadmobile.meshrabiya.service.compute.ResourceRequirements
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
-import com.ustadmobile.meshrabiya.service.compute.model.ServiceCategory
-import com.ustadmobile.meshrabiya.service.compute.model.ServiceEntry
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceCategory
+// import com.ustadmobile.meshrabiya.service.compute.model.ServiceEntry
 import com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -15,6 +15,10 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.math.min
+import kotlin.jvm.Volatile
+import com.ustadmobile.meshrabiya.service.compute.model.ServiceManifest
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceLibraryEntry
+
 
 /**
  * LocalDeviceServiceLibrary
@@ -32,15 +36,7 @@ object LocalDeviceServiceLibrary {
     enum class DeviceProfile { FLAGSHIP, MID_RANGE, BUDGET }
     enum class Runtime { JVM, NATIVE, PYTHON, NODEJS, RUST, GO, WASM }
 
-    @Serializable
-    data class ServiceManifest(
-        val packageId: String,
-        val serviceType: String,
-        val runtimeRequired: List<Runtime>,
-        val runtimeOptional: List<Runtime>,
-        val deviceProfile: DeviceProfile,
-        val resourceRequirements: ResourceRequirements
-    )
+   
 
     private const val TAG = "LocalDeviceServiceLibrary"
     private const val PREFS_NAME = "local_device_service_library"
@@ -60,7 +56,7 @@ object LocalDeviceServiceLibrary {
     /**
      * In-memory compute service entries (Phase 3.2)
      */
-    private val computeServiceEntries = mutableListOf<ServiceEntry>()
+    private val computeServiceEntries = mutableListOf<ServiceLibraryEntry>()
     
     /**
      * Initialize the LocalDeviceServiceLibrary singleton.
@@ -147,8 +143,8 @@ object LocalDeviceServiceLibrary {
      * 
      * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN_PART3.md Section 7.2
      */
-    fun getBuiltInComputeServices(): List<ServiceEntry> {
-        val services = mutableListOf<ServiceEntry>()
+    fun getBuiltInComputeServices(): List<ServiceLibraryEntry> {
+        val services = mutableListOf<ServiceLibraryEntry>()
         
         // Get available runtimes from RuntimeRegistry
         val availableRuntimes = runtimeRegistry.getAvailableRuntimes()
@@ -161,7 +157,7 @@ object LocalDeviceServiceLibrary {
             
             supportedJobs.forEach { jobType ->
                 services.add(
-                    ServiceEntry(
+                    ServiceLibraryEntry(
                         serviceName = "${taskType.name}_${jobType.name}_COMPUTE",
                         host = "localhost",
                         port = 0, // No port for compute services
@@ -199,7 +195,7 @@ object LocalDeviceServiceLibrary {
             TaskType.JVM, TaskType.JAVA -> listOf(
                 JobType.DATA_ANALYSIS,
                 JobType.COLLABORATIVE_FILTERING,
-                JobType.DISTRIBUTED_STORAGE
+                // JobType.DISTRIBUTED_STORAGE
             )
             
             TaskType.JAVASCRIPT -> listOf(
@@ -216,7 +212,7 @@ object LocalDeviceServiceLibrary {
             TaskType.WORKFLOW -> listOf(
                 JobType.ML_PIPELINE,
                 JobType.COLLABORATIVE_FILTERING,
-                JobType.DISTRIBUTED_STORAGE
+                // JobType.DISTRIBUTED_STORAGE
             )
         }
     }
@@ -244,20 +240,20 @@ object LocalDeviceServiceLibrary {
      * 
      * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN_PART3.md Section 7.2
      */
-    private fun estimateNodeCapacity(): ResourceMetrics {
-        val runtime = java.lang.Runtime.getRuntime()
-        val dataDir = File("/data")
+    // private fun estimateNodeCapacity(): ResourceMetrics {
+    //     val runtime = java.lang.Runtime.getRuntime()
+    //     val dataDir = File("/data")
         
-        return ResourceMetrics(
-            ramActualBytes = 0,
-            ramAverageBytes = 0,
-            ramPeakBytes = runtime.maxMemory(),
-            cpuTimeUsedMs = 0,
-            cpuPercentage = 0f,
-            diskIoOperations = 0,
-            diskStorageUsedBytes = if (dataDir.exists()) dataDir.freeSpace else 0L
-        )
-    }
+    //     return ResourceMetrics(
+    //         ramActualBytes = 0,
+    //         ramAverageBytes = 0,
+    //         ramPeakBytes = runtime.maxMemory(),
+    //         cpuTimeUsedMs = 0,
+    //         cpuPercentage = 0f,
+    //         diskIoOperations = 0,
+    //         diskStorageUsedBytes = if (dataDir.exists()) dataDir.freeSpace else 0L
+    //     )
+    // }
     
     // ========================================
     // Phase 3.2: Persistence Layer
@@ -298,7 +294,7 @@ object LocalDeviceServiceLibrary {
         
         try {
             if (json != null) {
-                val services = Json.decodeFromString<List<ServiceEntry>>(json)
+                val services = Json.decodeFromString<List<ServiceLibraryEntry>>(json)
                 computeServiceEntries.clear()
                 computeServiceEntries.addAll(services)
                 
@@ -338,7 +334,7 @@ object LocalDeviceServiceLibrary {
      * 
      * Retrieve all available compute service entries.
      */
-    fun getComputeServices(): List<ServiceEntry> {
+    fun getComputeServices(): List<ServiceLibraryEntry> {
         return computeServiceEntries.toList()
     }
     
@@ -347,7 +343,7 @@ object LocalDeviceServiceLibrary {
      * 
      * Query compute services that support a specific task type.
      */
-    fun findServicesByTaskType(taskType: TaskType): List<ServiceEntry> {
+    fun findServicesByTaskType(taskType: TaskType): List<ServiceLibraryEntry> {
         return computeServiceEntries.filter { taskType in it.taskTypes }
     }
     
@@ -356,7 +352,7 @@ object LocalDeviceServiceLibrary {
      * 
      * Query compute services that support a specific job type.
      */
-    fun findServicesByJobType(jobType: JobType): List<ServiceEntry> {
+    fun findServicesByJobType(jobType: JobType): List<ServiceLibraryEntry> {
         return computeServiceEntries.filter { jobType in it.jobTypes }
     }
 }

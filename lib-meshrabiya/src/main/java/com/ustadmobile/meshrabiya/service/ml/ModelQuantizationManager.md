@@ -2,8 +2,8 @@ package com.ustadmobile.meshrabiya.service.ml
 
 import android.content.Context
 import android.util.Log
-// import com.google.ai.edge.litert.CompiledModel
-// import com.google.ai.edge.litert.Accelerator
+import com.google.ai.edge.litert.CompiledModel
+import com.google.ai.edge.litert.Accelerator
 import com.ustadmobile.meshrabiya.model.DeviceCapabilities
 import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ResourceRequirements

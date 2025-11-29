@@ -287,7 +287,7 @@ abstract class VirtualNode(
     protected val meshGossipService: MeshGossipService = MeshGossipService.initialize(this)
     
     protected val coreGossipBroadcastService: CoreGossipBroadcastService = 
-        CoreGossipBroadcastService(meshGossipService)
+        CoreGossipBroadcastService.getInstance()
     
     
     // MeshEcosystemListener depends on emergentRoleManager and meshGossipService

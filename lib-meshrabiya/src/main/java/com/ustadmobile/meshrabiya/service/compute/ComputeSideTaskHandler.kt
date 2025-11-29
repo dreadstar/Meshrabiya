@@ -1,7 +1,7 @@
 package com.ustadmobile.meshrabiya.service.compute
 
 import android.content.Context
-import com.ustadmobile.meshrabiya.service.compute.model.TaskAssignmentMessage
+import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
 import com.ustadmobile.meshrabiya.service.TaskScheduledMessage
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 import kotlinx.coroutines.Dispatchers

@@ -347,10 +347,10 @@ data class StabilityCheckResult(
 /**
  * Execution result
  */
-data class ExecutionResult(
-    val success: Boolean,
-    val error: String? = null
-)
+// data class ExecutionResult(
+//     val success: Boolean,
+//     val error: String? = null
+// )
 
 /**
  * Cleanup status

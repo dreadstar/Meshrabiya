@@ -77,7 +77,7 @@ class JVMExecutor(
                     taskId = context.taskId,
                     success = false,
                     outputManifest = emptyList(),
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = System.currentTimeMillis() - startTime,
                     errorMessage = "No Main-Class attribute in JAR manifest",
                     errorType = ExecutionErrorType.INVALID_CODE_BUNDLE
@@ -99,7 +99,7 @@ class JVMExecutor(
                     taskId = context.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    // resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
                     executionTimeMs = executionTime,
                     resultMessage = "JVM execution completed successfully"
                 )
@@ -108,7 +108,7 @@ class JVMExecutor(
                     taskId = context.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
                     errorMessage = mainError,
                     errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -121,7 +121,7 @@ class JVMExecutor(
                 taskId = context.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "JVM execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -211,5 +211,5 @@ class JVMExecutor(
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    }
+    
 }

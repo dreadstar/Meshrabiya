@@ -2,7 +2,9 @@ package com.ustadmobile.meshrabiya.service.compute
 
 import kotlinx.coroutines.*
 import java.util.UUID
-
+import com.ustadmobile.meshrabiya.service.compute.model.ComputeTask
+import com.ustadmobile.meshrabiya.service.compute.model.TaskResult
+import com.ustadmobile.meshrabiya.service.compute.model.TaskStatus
 /**
  * TaskLifecycleManager - Manages enhanced task lifecycle with keypair support.
  * 
@@ -215,57 +217,7 @@ object TaskLifecycleManager {
         return false
     }
     
-    /**
-     * Enhanced task status enum with keypair lifecycle states.
-     */
-    enum class TaskStatus {
-        PENDING,
-        ASSIGNED,
-        KEYPAIR_GENERATED,
-        SCHEDULED,
-        RUNNING,
-        COMPLETED,
-        FAILED,
-        CANCELLED
-    }
     
-    /**
-     * Task data class.
-     */
-    data class ComputeTask(
-        val taskId: String,
-        val taskType: com.ustadmobile.meshrabiya.service.compute.model.TaskType,
-        val jobType: com.ustadmobile.meshrabiya.service.compute.model.JobType,
-        val inputFiles: List<String>,
-        val codeBundle: ByteArray,
-        val metadata: Map<String, Any> = emptyMap()
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            other as ComputeTask
-            if (taskId != other.taskId) return false
-            if (!codeBundle.contentEquals(other.codeBundle)) return false
-            return true
-        }
-        
-        override fun hashCode(): Int {
-            var result = taskId.hashCode()
-            result = 31 * result + codeBundle.contentHashCode()
-            return result
-        }
-    }
-    
-    /**
-     * Task result data class.
-     */
-    data class TaskResult(
-        val taskId: String,
-        val status: TaskStatus,
-        val executionTimeMs: Long,
-        val outputFiles: List<String>,
-        val error: String?
-    )
     
     /**
      * Task execution exception.

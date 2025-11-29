@@ -13,10 +13,17 @@ import kotlinx.serialization.json.Json
 import android.content.Context
 
 import com.ustadmobile.meshrabiya.model.DeviceCapabilities
-import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
+// import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.model.ExecutionProfile
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import java.security.MessageDigest
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
+import  com.ustadmobile.meshrabiya.service.compute.model.ServiceManifest
 
 /**
  * DECENTRALIZED SERVICE SIGNING using Ed25519 keys
@@ -55,21 +62,6 @@ class DecentralizedServiceSigning {
          */
     }
     
-    @Serializable
-    data class ServiceManifest(
-        val serviceId: String,
-        val name: String,
-        val version: String,
-        val author: AuthorInfo,
-        val signature: SignatureInfo,
-        val serviceType: String,
-        val capabilities: List<String>,
-        @Contextual val resourceRequirements: ResourceRequirements,
-        val files: List<FileHash>, // Hash of each file for integrity
-        val builtin: Boolean = false, // True for built-in functions, disables signature/author/files
-        val inputs: List<InputDef> = emptyList(),
-        val outputs: List<OutputDef> = emptyList()
-    )
     
     @Serializable
     data class InputDef(
@@ -115,7 +107,7 @@ class DecentralizedServiceSigning {
         serviceFiles: Map<String, ByteArray>, // path -> content
         authorKeyPair: Pair<PrivateKey, PublicKey>,
         authorOnionAddress: String,
-        metadata: ServiceAnnouncement
+        // metadata: ServiceAnnouncement
     ): ByteArray {
         
         // 1. Calculate hashes of all service files
@@ -150,7 +142,7 @@ class DecentralizedServiceSigning {
             ),
             serviceType = metadata.serviceType.name,
             capabilities = metadata.capabilities,
-            resourceRequirements = metadata.resourceRequirements,
+            // resourceRequirements = metadata.resourceRequirements,
             files = fileHashes
         )
         
@@ -395,31 +387,31 @@ class MeshServiceDistribution(
      * 4. Automatic replication to nearby nodes
      */
     
-    fun announceService(signedBundle: ByteArray, manifest: DecentralizedServiceSigning.ServiceManifest) {
-        // Add service announcement to originator message
-            val serviceAnnouncement = ServiceAnnouncement(
-                serviceId = manifest.serviceId,
-                serviceType = ServiceAnnouncement.ServiceType.valueOf(manifest.serviceType.uppercase()),
-                version = manifest.version,
-                sizeKB = signedBundle.size / 1024,
-                capabilities = manifest.capabilities,
-                resourceRequirements = manifest.resourceRequirements,
-                executionProfile = ExecutionProfile(
-                    profileName = "mesh-distributed-service",
-                    cpuCores = 1,
-                    gpuEnabled = false,
-                    memoryMB = 0,
-                    storageMB = signedBundle.size / 1024
-                )
-            )
+    // fun announceService(signedBundle: ByteArray, manifest: DecentralizedServiceSigning.ServiceManifest) {
+    //     // Add service announcement to originator message
+    //         val serviceAnnouncement = ServiceAnnouncement(
+    //             serviceId = manifest.serviceId,
+    //             serviceType = ServiceAnnouncement.ServiceType.valueOf(manifest.serviceType.uppercase()),
+    //             version = manifest.version,
+    //             sizeKB = signedBundle.size / 1024,
+    //             capabilities = manifest.capabilities,
+    //             resourceRequirements = manifest.resourceRequirements,
+    //             executionProfile = ExecutionProfile(
+    //                 profileName = "mesh-distributed-service",
+    //                 cpuCores = 1,
+    //                 gpuEnabled = false,
+    //                 memoryMB = 0,
+    //                 storageMB = signedBundle.size / 1024
+    //             )
+    //         )
         
-        // This would integrate with existing service announcement system
-        meshNode.announceService(serviceAnnouncement, signedBundle)
-    }
+    //     // This would integrate with existing service announcement system
+    //     // meshNode.announceService(serviceAnnouncement, signedBundle)
+    // }
     
-    fun requestService(serviceId: String, requesterOnionAddress: String): ByteArray? {
-        // Request service bundle from mesh
-        // Uses existing mesh routing to find service host
-        return meshNode.requestServiceBundle(serviceId, requesterOnionAddress)
-    }
+    // fun requestService(serviceId: String, requesterOnionAddress: String): ByteArray? {
+    //     // Request service bundle from mesh
+    //     // Uses existing mesh routing to find service host
+    //     return meshNode.requestServiceBundle(serviceId, requesterOnionAddress)
+    // }
 }

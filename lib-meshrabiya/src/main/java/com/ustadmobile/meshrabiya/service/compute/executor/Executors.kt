@@ -9,10 +9,10 @@ import com.ustadmobile.meshrabiya.service.compute.model.*
  * 
  * See: PythonExecutor.kt (Phase 2 implementation) which implements TaskExecutor
  */
-@Deprecated("Use TaskExecutor interface instead", ReplaceWith("TaskExecutor"))
-interface PythonExecutorLegacy {
-    suspend fun executeTask(task: ComputeTask.PythonTask): TaskExecutionResult
-}
+// @Deprecated("Use TaskExecutor interface instead", ReplaceWith("TaskExecutor"))
+// interface PythonExecutorLegacy {
+//     suspend fun executeTask(task: ComputeTask.PythonTask): TaskExecutionResult
+// }
 
 /**
  * Interface for executing LiteRT compute tasks.

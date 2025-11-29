@@ -10,6 +10,14 @@ import java.io.FileOutputStream
 import java.net.URL
 import java.util.zip.ZipInputStream
 
+
+/**
+    * Progress callback for installation
+    * @param progress 0-100 percentage
+    * @param message Status message
+    */
+typealias ProgressCallback = (progress: Int, message: String) -> Unit
+
 /**
  * RuntimeInstaller
  * 
@@ -45,12 +53,6 @@ class RuntimeInstaller(
         private const val GOOGLE_MAVEN = "https://maven.google.com"
     }
     
-    /**
-     * Progress callback for installation
-     * @param progress 0-100 percentage
-     * @param message Status message
-     */
-    typealias ProgressCallback = (progress: Int, message: String) -> Unit
     
     private val registry = RuntimeRegistry.getInstance(context)
     private val runtimesDir = File(context.filesDir, "runtimes")

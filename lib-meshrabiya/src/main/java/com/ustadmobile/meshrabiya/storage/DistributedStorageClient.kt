@@ -32,7 +32,6 @@ import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 class DistributedStorageClient(
     private val manager: DistributedStorageManager,
     private val virtualNode: VirtualNode,
-    private val coreGossipBroadcastService: CoreGossipBroadcastService,
     private val connectionPool: MeshConnectionPool
 ) {
     companion object {
@@ -383,7 +382,7 @@ class DistributedStorageClient(
         )
         pendingStorageNodeRequests.add(pending)
         
-        coreGossipBroadcastService.sendStorageNodeRequest(request)
+        CoreGossipBroadcastService.getInstance().sendStorageNodeRequest(request)
         
         manager.betaLogger.log(
             LogLevel.DEBUG,

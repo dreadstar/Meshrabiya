@@ -2,7 +2,7 @@ package com.ustadmobile.meshrabiya.service.compute.executor
 
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import android.content.Context
@@ -87,7 +87,7 @@ class WorkflowExecutor(
             // 4. Execute steps in order
             val stepResults = mutableMapOf<String, ExecutionResult>()
             val aggregatedOutputs = mutableMapOf<String, ByteArray>()
-            var totalResourceUsage = ResourceMetrics.zero()
+            // var totalResourceUsage = ResourceMetrics.zero()
             
             for (stepElement in steps) {
                 val step = stepElement.jsonObject
@@ -167,7 +167,7 @@ class WorkflowExecutor(
                             mimeType = "application/octet-stream"
                         )
                     },
-                    resourceLimits = context.resourceLimits
+                    // resourceLimits = context.resourceLimits
                 )
                 
                 // Execute sub-task
@@ -195,13 +195,13 @@ class WorkflowExecutor(
                 }
                 
                 // Aggregate resource usage
-                totalResourceUsage = ResourceMetrics(
-                    ramUsedBytes = totalResourceUsage.ramUsedBytes + stepResult.resourcesUsed.ramUsedBytes,
-                    cpuUsedPercent = maxOf(totalResourceUsage.cpuUsedPercent, stepResult.resourcesUsed.cpuUsedPercent),
-                    diskUsedBytes = totalResourceUsage.diskUsedBytes + stepResult.resourcesUsed.diskUsedBytes,
-                    networkSentBytes = totalResourceUsage.networkSentBytes + stepResult.resourcesUsed.networkSentBytes,
-                    networkReceivedBytes = totalResourceUsage.networkReceivedBytes + stepResult.resourcesUsed.networkReceivedBytes
-                )
+                // totalResourceUsage = ResourceMetrics(
+                //     ramUsedBytes = totalResourceUsage.ramUsedBytes + stepResult.resourcesUsed.ramUsedBytes,
+                //     cpuUsedPercent = maxOf(totalResourceUsage.cpuUsedPercent, stepResult.resourcesUsed.cpuUsedPercent),
+                //     diskUsedBytes = totalResourceUsage.diskUsedBytes + stepResult.resourcesUsed.diskUsedBytes,
+                //     networkSentBytes = totalResourceUsage.networkSentBytes + stepResult.resourcesUsed.networkSentBytes,
+                //     networkReceivedBytes = totalResourceUsage.networkReceivedBytes + stepResult.resourcesUsed.networkReceivedBytes
+                // )
                 
                 // Save step outputs for future steps
                 // Actually read output files from step's output directory
@@ -212,17 +212,7 @@ class WorkflowExecutor(
                         ref.copy(fileId = calculateSha256Hash(outputFile))
                     }
                 }
-                private fun calculateSha256Hash(file: File): String {
-                    val digest = java.security.MessageDigest.getInstance("SHA-256")
-                    val inputStream = file.inputStream()
-                    val buffer = ByteArray(8192)
-                    var read: Int
-                    while (inputStream.read(buffer).also { read = it } > 0) {
-                        digest.update(buffer, 0, read)
-                    }
-                    inputStream.close()
-                    return digest.digest().joinToString("") { "%02x".format(it) }
-                }
+                
             }
             
             // 5. Collect final workflow outputs
@@ -234,7 +224,7 @@ class WorkflowExecutor(
                 taskId = context.taskId,
                 success = true,
                 outputManifest = finalOutputs,
-                resourcesUsed = totalResourceUsage,
+                // resourcesUsed = totalResourceUsage,
                 executionTimeMs = executionTime,
                 resultMessage = "Workflow completed successfully (${stepResults.size} steps)"
             )
@@ -245,7 +235,7 @@ class WorkflowExecutor(
                 taskId = context.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "Workflow execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -256,6 +246,18 @@ class WorkflowExecutor(
         }
     }
     
+    private fun calculateSha256Hash(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val inputStream = file.inputStream()
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (inputStream.read(buffer).also { read = it } > 0) {
+            digest.update(buffer, 0, read)
+        }
+        inputStream.close()
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     override fun validateCodeBundle(codeBundle: ByteArray): Boolean {
         return try {
             val json = String(codeBundle)
@@ -323,7 +325,7 @@ class WorkflowExecutor(
             taskId = taskId,
             success = false,
             outputManifest = emptyList(),
-            resourcesUsed = ResourceMetrics.zero(),
+            // resourcesUsed = ResourceMetrics.zero(),
             executionTimeMs = executionTime,
             errorMessage = message,
             errorType = ExecutionErrorType.RUNTIME_ERROR

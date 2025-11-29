@@ -6,6 +6,13 @@ import android.content.Context
 import android.content.SharedPreferences
 
 object MeshrabiyaConstants {
+    private const val DEFAULT_BROADCAST_TTL_MS = 60_000L
+    fun getBroadcastTtlMs(): Long {
+        return prefs?.getLong("broadcast_ttl_ms", DEFAULT_BROADCAST_TTL_MS) ?: DEFAULT_BROADCAST_TTL_MS
+    }
+    fun setBroadcastTtlMs(ttl: Long) {
+        prefs?.edit()?.putLong("broadcast_ttl_ms", ttl)?.apply()
+    }
     const val LOG_TAG = "Meshrabiya"
     const val VERSION = "0.1d11"
     val UUID_BUSY = UUID(0, 0)

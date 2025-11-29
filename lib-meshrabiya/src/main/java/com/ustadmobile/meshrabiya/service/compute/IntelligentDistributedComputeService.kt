@@ -1,15 +1,15 @@
 package com.ustadmobile.meshrabiya.service.compute
 
 import kotlinx.coroutines.*
-import com.ustadmobile.meshrabiya.service.compute.model.*
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
 import com.ustadmobile.meshrabiya.service.compute.mesh.*
 import com.ustadmobile.meshrabiya.service.compute.scheduler.*
 import com.ustadmobile.meshrabiya.service.compute.executor.*
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
 import com.ustadmobile.meshrabiya.service.MeshGossipService
-
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
@@ -18,6 +18,19 @@ import androidx.appcompat.app.AlertDialog
 import android.widget.ArrayAdapter
 import com.ustadmobile.meshrabiya.service.storage.StorageDropFolderManager
 import java.util.concurrent.ConcurrentHashMap
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
+import com.ustadmobile.meshrabiya.service.compute.model.TaskAcceptanceMessage
+import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
+import com.ustadmobile.meshrabiya.service.compute.model.LocalComputeTaskRequest
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceLibraryEntry
+import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.MaintainerInfo
+import com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry
+import com.ustadmobile.meshrabiya.service.compute.model.TaskResult
+import com.ustadmobile.meshrabiya.service.compute.model.TaskRejectionMessage
+import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
+import com.ustadmobile.meshrabiya.service.compute.model.TaskCompletionAckMessage
+import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 
 /**
  * Main service class for intelligent distributed compute.
@@ -31,7 +44,7 @@ class IntelligentDistributedComputeService(
     // DEPRECATED: ResourceManager replaced by canonical compute task request/execution workflows
     // Client nodes schedule tasks directly with compute nodes; TaskManager handles execution lifecycle
     // private val resourceManager: ResourceManager,
-    private val pythonExecutor: PythonExecutor,
+    // private val pythonExecutor: PythonExecutor,
     // private val liteRTEngine: LiteRTEngine,
     private val emergentRoleManager: com.ustadmobile.meshrabiya.vnet.EmergentRoleManager,
     private val betaLogger: BetaTestLogger? = null
@@ -58,6 +71,8 @@ class IntelligentDistributedComputeService(
     private val activeJobCount = java.util.concurrent.atomic.AtomicInteger(0)
     
     private val connectionPool = MeshConnectionPool(virtualNode, poolSize = 8)
+
+    // Use singleton CoreGossipBroadcastService for canonical ecosystem messaging
 
     fun registerWithEcosystemListener(listener: MeshEcosystemListener) {
         meshEcosystemListener = listener
@@ -113,17 +128,17 @@ class IntelligentDistributedComputeService(
     fun processTaskRequest(localRequest: LocalComputeTaskRequest) {
         val taskId = localRequest.mmcpRequest.taskId
         activeRequests[taskId] = TrackedRequest(localRequest)
-        
         scope.launch {
             betaLogger?.log(LogLevel.INFO, "ComputeService", 
-                "Broadcasting compute task request $taskId (timeout=${MeshrabiyaConstants.getTimeoutMs()}ms)")
-            
-            val responses = virtualNode.getMeshGossipService().broadcastComputeTaskRequestSync(
-                localRequest.mmcpRequest,
-                MeshrabiyaConstants.getTimeoutMs()
+                "Broadcasting compute task request $taskId (timeout=${MeshrabiyaConstants.getTimeoutMs()}ms) via CoreGossipBroadcastService")
+            // Use canonical broadcast via singleton CoreGossipBroadcastService
+            CoreGossipBroadcastService.getInstance(virtualNode.getMeshGossipService()).sendComputeTaskRequest(
+                taskId = localRequest.mmcpRequest.taskId,
+                serviceId = localRequest.mmcpRequest.serviceId,
+                inputParams = localRequest.mmcpRequest.inputParams,
+                metadata = localRequest.mmcpRequest.metadata
             )
-            
-            handleComputeNodeResponses(localRequest, responses)
+            // Responses will be handled asynchronously via MeshEcosystemListener
         }
     }
 
@@ -262,14 +277,14 @@ class IntelligentDistributedComputeService(
             delay(backoffMs)
             
             betaLogger?.log(LogLevel.INFO, "ComputeService",
-                "Re-broadcasting task $taskId (retry ${tracked.retryCount}/$maxRetries)")
-            
-            val responses = virtualNode.getMeshGossipService().broadcastComputeTaskRequestSync(
-                localRequest.mmcpRequest,
-                MeshrabiyaConstants.getTimeoutMs()
+                "Re-broadcasting task $taskId (retry ${tracked.retryCount}/$maxRetries) via CoreGossipBroadcastService")
+            CoreGossipBroadcastService.getInstance(virtualNode.getMeshGossipService()).sendComputeTaskRequest(
+                taskId = localRequest.mmcpRequest.taskId,
+                serviceId = localRequest.mmcpRequest.serviceId,
+                inputParams = localRequest.mmcpRequest.inputParams,
+                metadata = localRequest.mmcpRequest.metadata
             )
-            
-            handleComputeNodeResponses(localRequest, responses)
+            // Responses will be handled asynchronously via MeshEcosystemListener
         }
     }
     
@@ -305,12 +320,13 @@ class IntelligentDistributedComputeService(
                     jobType = localRequest.mmcpRequest.jobType,
                     codeBundle = localRequest.mmcpRequest.codeBundle,
                     inputFiles = localRequest.mmcpRequest.inputFileIds,
-                    resourceLimits = ResourceLimits(
-                        maxMemoryMB = localRequest.mmcpRequest.resourceLimits?.maxMemoryMB ?: 512,
-                        maxCpuPercent = localRequest.mmcpRequest.resourceLimits?.maxCpuPercent ?: 80,
-                        maxExecutionTimeMs = localRequest.mmcpRequest.resourceLimits?.maxExecutionTimeMs ?: 60000,
-                        maxDiskMB = localRequest.mmcpRequest.resourceLimits?.maxDiskMB ?: 100
-                    ),
+                    // resourceLimits = ResourceLimits(
+                    //     maxMemoryBytes = (localRequest.mmcpRequest.resourceLimits?.maxMemoryMB ?: 512) * 1024 * 1024L,
+                    //     maxCpuTimeMs = localRequest.mmcpRequest.resourceLimits?.maxCpuTimeMs ?: 60000L,
+                    //     maxDiskBytes = (localRequest.mmcpRequest.resourceLimits?.maxDiskMB ?: 100) * 1024 * 1024L,
+                    //     maxExecutionTimeMs = localRequest.mmcpRequest.resourceLimits?.maxExecutionTimeMs ?: 60000L,
+                    //     allowNetworkAccess = false
+                    // ),
                     timestamp = System.currentTimeMillis()
                 )
                 
@@ -667,14 +683,17 @@ print(json.dumps(result))
                     val result = TaskResult(
                         success = true,
                         outputManifest = emptyList(),
-                        metrics = ExecutionMetrics(
-                            executionTimeMs = 1000,
-                            cpuUsagePercent = 50f,
-                            peakMemoryBytes = 100 * 1024 * 1024,
-                            diskIoBytes = 0
-                        ),
-                        errorMessage = null,
-                        errorDetails = null
+                        // metrics = ResourceMetrics(
+                        //     ramActualBytes = 100 * 1024 * 1024,
+                        //     ramAverageBytes = 100 * 1024 * 1024,
+                        //     ramPeakBytes = 100 * 1024 * 1024,
+                        //     cpuTimeUsedMs = 1000,
+                        //     cpuPercentage = 50f,
+                        //     diskIoOperations = 0,
+                        //     diskStorageUsedBytes = 0,
+                        //     networkUsedBytes = 0
+                        // ),
+                        errorMessage = null
                     )
                     
                     sendTaskCompletion(senderAddress, assignment.taskId, result)
@@ -689,9 +708,17 @@ print(json.dumps(result))
                     val errorResult = TaskResult(
                         success = false,
                         outputManifest = emptyList(),
-                        metrics = ExecutionMetrics(0, 0f, 0, 0),
-                        errorMessage = e.message,
-                        errorDetails = e.stackTraceToString()
+                        // metrics = ResourceMetrics(
+                        //     ramActualBytes = 0,
+                        //     ramAverageBytes = 0,
+                        //     ramPeakBytes = 0,
+                        //     cpuTimeUsedMs = 0,
+                        //     cpuPercentage = 0f,
+                        //     diskIoOperations = 0,
+                        //     diskStorageUsedBytes = 0,
+                        //     networkUsedBytes = 0
+                        // ),
+                        errorMessage = e.message
                     )
                     
                     sendTaskCompletion(senderAddress, assignment.taskId, errorResult)

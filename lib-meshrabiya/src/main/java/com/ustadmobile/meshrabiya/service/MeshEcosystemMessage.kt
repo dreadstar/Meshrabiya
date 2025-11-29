@@ -1050,7 +1050,7 @@ data class TaskAssignmentMessage(
     val taskType: String,  // PYTHON, JAVA, JVM, JAVASCRIPT, ML_NATIVE, WORKFLOW
     val jobType: String,   // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
     val executionContext: Map<String, Any>,  // Includes working directory, environment vars, etc.
-    val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
+    // val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
     val inputFiles: List<Map<String, String>>,  // List of {fileId, storageRef, accessScope}
     val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
     val priority: String = "NORMAL",

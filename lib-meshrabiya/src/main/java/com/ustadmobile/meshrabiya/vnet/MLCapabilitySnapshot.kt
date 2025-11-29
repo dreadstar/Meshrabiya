@@ -1,6 +1,8 @@
 package com.ustadmobile.meshrabiya.vnet
 
 import kotlinx.serialization.Serializable
+import com.google.ai.edge.litert.CompiledModel
+import com.google.ai.edge.litert.Accelerator
 
 /**
  * Snapshot of ML-specific capabilities for a mesh node.

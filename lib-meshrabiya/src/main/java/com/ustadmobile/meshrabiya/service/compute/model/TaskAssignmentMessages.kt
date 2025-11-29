@@ -1,7 +1,9 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
+import com.ustadmobile.meshrabiya.service.compute.model.JobType
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits // Deprecated and removed
 import kotlinx.serialization.Serializable
 
 /**
@@ -30,7 +32,7 @@ data class TaskAssignmentMessage(
     val jobType: JobType,
     val codeBundle: ByteArray?,
     val inputFiles: List<String>,
-    val resourceLimits: ResourceLimits,
+    // val resourceLimits: ResourceLimits, // Deprecated and removed
     val timestamp: Long
 ) {
     override fun equals(other: Any?): Boolean {
@@ -48,7 +50,7 @@ data class TaskAssignmentMessage(
             if (!codeBundle.contentEquals(other.codeBundle)) return false
         } else if (other.codeBundle != null) return false
         if (inputFiles != other.inputFiles) return false
-        if (resourceLimits != other.resourceLimits) return false
+        // if (resourceLimits != other.resourceLimits) return false // Deprecated and removed
         if (timestamp != other.timestamp) return false
 
         return true
@@ -63,7 +65,7 @@ data class TaskAssignmentMessage(
         result = 31 * result + jobType.hashCode()
         result = 31 * result + (codeBundle?.contentHashCode() ?: 0)
         result = 31 * result + inputFiles.hashCode()
-        result = 31 * result + resourceLimits.hashCode()
+        // result = 31 * result + resourceLimits.hashCode() // Deprecated and removed
         result = 31 * result + timestamp.hashCode()
         return result
     }
@@ -99,26 +101,13 @@ data class TaskAcceptanceMessage(
  *
  * Sent from compute node to scheduler upon task completion (success or failure).
  */
-@Serializable
-data class TaskCompletedMessage(
-    val taskId: String,
-    val result: TaskResult,
-    val timestamp: Long = System.currentTimeMillis()
-)
+// @Serializable
+// data class TaskCompletedMessage(
+//     val taskId: String,
+//     val result: TaskResult,
+//     val timestamp: Long = System.currentTimeMillis()
+// )
 
-/**
- * TaskResult
- *
- * Encapsulates task execution result with output files, metrics, and error details.
- */
-@Serializable
-data class TaskResult(
-    val success: Boolean,
-    val outputManifest: List<FileReference>,
-    val metrics: ExecutionMetrics,
-    val errorMessage: String? = null,
-    val errorDetails: String? = null
-)
 
 /**
  * TaskCompletionAckMessage

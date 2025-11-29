@@ -6,7 +6,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
@@ -105,7 +105,7 @@ class PythonExecutor(
                     taskId = context.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    // resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
                     executionTimeMs = executionTime,
                     resultMessage = "Python execution completed successfully"
                 )
@@ -114,7 +114,7 @@ class PythonExecutor(
                     taskId = context.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
                     errorMessage = pyError,
                     errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -127,7 +127,7 @@ class PythonExecutor(
                 taskId = context.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "Python execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -233,5 +233,5 @@ class PythonExecutor(
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    }
 }
+

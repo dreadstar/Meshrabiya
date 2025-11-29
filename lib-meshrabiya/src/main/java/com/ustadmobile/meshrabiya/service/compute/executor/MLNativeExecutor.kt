@@ -2,13 +2,14 @@ package com.ustadmobile.meshrabiya.service.compute.executor
 
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
+// import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
 import java.io.File
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 /**
  * MLNativeExecutor
@@ -74,7 +75,7 @@ class MLNativeExecutor(
             // 4. Run inference using TensorFlow Lite
             var mlError: String? = null
             try {
-                val interpreter = Interpreter(modelFile)
+                val interpreter = new Interpreter(modelFile)
                 // For demonstration, assume single input/output tensor, float32
                 val inputTensor = inputFiles.values.firstOrNull()?.let { bytesToFloatArray(it) }
                 val outputTensor = FloatArray(inputTensor?.size ?: 1)
@@ -85,6 +86,19 @@ class MLNativeExecutor(
                     outFile.writeBytes(floatArrayToBytes(outputTensor))
                 }
                 interpreter.close()
+                // try (Interpreter interpreter = new Interpreter(modelFile)) {
+                //     interpreter.run(inputTensor, outputTensor);
+                // }
+
+                // mulitple io code
+                // Object[] inputs = {input0, input1, ...};
+                // Map<Integer, Object> map_of_indices_to_outputs = new HashMap<>();
+                // FloatBuffer ith_output = FloatBuffer.allocateDirect(3 * 2 * 4);  // Float tensor, shape 3x2x4.
+                // ith_output.order(ByteOrder.nativeOrder());
+                // map_of_indices_to_outputs.put(i, ith_output);
+                // try (Interpreter interpreter = new Interpreter(file_of_a_tensorflowlite_model)) {
+                //     interpreter.runForMultipleInputsOutputs(inputs, map_of_indices_to_outputs);
+                // }
             } catch (e: Exception) {
                 mlError = e.message
             }
@@ -96,7 +110,7 @@ class MLNativeExecutor(
                     taskId = context.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
+                    // resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
                     executionTimeMs = executionTime,
                     resultMessage = "ML inference completed successfully"
                 )
@@ -105,7 +119,7 @@ class MLNativeExecutor(
                     taskId = context.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
                     errorMessage = mlError,
                     errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -118,7 +132,7 @@ class MLNativeExecutor(
                 taskId = context.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "ML inference failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -169,7 +183,7 @@ class MLNativeExecutor(
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    }
+  
     
     /**
      * Helper to convert byte array to FloatArray for tensor input

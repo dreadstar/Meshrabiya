@@ -96,7 +96,7 @@ class JSExecutor(
                     taskId = context.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
                     resultMessage = "JavaScript execution completed successfully"
                 )
@@ -105,7 +105,7 @@ class JSExecutor(
                     taskId = context.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    resourcesUsed = ResourceMetrics.zero(),
+                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
                     errorMessage = jsError,
                     errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -118,7 +118,7 @@ class JSExecutor(
                 taskId = context.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                resourcesUsed = ResourceMetrics.zero(),
+                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "JavaScript execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
@@ -224,5 +224,5 @@ class JSExecutor(
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    }
+    
 }

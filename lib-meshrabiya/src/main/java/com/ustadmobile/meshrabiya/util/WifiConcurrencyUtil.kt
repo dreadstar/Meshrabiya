@@ -93,24 +93,12 @@ object WifiConcurrencyUtil {
         }
 
         // Check if device is currently hosting a hotspot (AP)
-        val isHotspotActive = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
-                try {
-                    wifiManager.isWifiApEnabled
-                } catch (_: Exception) {
-                    false
-                }
-            }
-            else -> {
-                // Reflection for pre-Oreo
-                try {
-                    val method = WifiManager::class.java.getDeclaredMethod("isWifiApEnabled")
-                    method.isAccessible = true
-                    method.invoke(wifiManager) as? Boolean ?: false
-                } catch (_: Exception) {
-                    false
-                }
-            }
+        val isHotspotActive = try {
+            val method = WifiManager::class.java.getDeclaredMethod("isWifiApEnabled")
+            method.isAccessible = true
+            method.invoke(wifiManager) as? Boolean ?: false
+        } catch (_: Exception) {
+            false
         }
 
         // Check for active Wi-Fi connection (STA)

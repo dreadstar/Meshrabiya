@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
 
 /**
  * SANDBOX-SAFE STORAGE ACCESS LAYER
@@ -62,11 +63,6 @@ class SandboxStorageProxy(
         PERSISTENT      // Keep until manually deleted
     }
     
-    enum class AccessScope {
-        TASK_ISOLATED,  // Can only access files created by this task
-        SERVICE_SHARED, // Can access files from other tasks of same service
-        MESH_GLOBAL     // Can access any files (dangerous, usually not allowed)
-    }
     
     /**
      * STORAGE REQUEST/RESPONSE PROTOCOL
@@ -657,7 +653,7 @@ class OCRWithStorageExample {
             maxFileSize = 10 * 1024 * 1024, // 10MB
             storageQuotaPerTask = 50 * 1024 * 1024, // 50MB
             retentionPolicy = SandboxStorageProxy.RetentionPolicy.TEMPORARY,
-            accessScope = SandboxStorageProxy.AccessScope.TASK_ISOLATED
+            accessScope = AccessScope.TASK_ISOLATED
         )
         
         // Service can:

@@ -20,7 +20,7 @@ import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import kotlinx.serialization.Serializable
 import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
 import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
-import com.ustadmobile.meshrabiya.service.security.AccessScope
+import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
 
 
 /**

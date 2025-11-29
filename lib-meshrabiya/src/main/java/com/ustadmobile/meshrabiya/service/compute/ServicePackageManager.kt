@@ -17,12 +17,13 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import java.security.PrivateKey
 import java.security.PublicKey
-import com.ustadmobile.meshrabiya.service.security.DecentralizedServiceSigning
+// import com.ustadmobile.meshrabiya.service.security.DecentralizedServiceSigning
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.security.Security
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
+import com.ustadmobile.meshrabiya.service.compute.model.ServiceManifest
 
 /**
  * SERVICE PACKAGE MANAGEMENT SYSTEM
@@ -53,58 +54,7 @@ class ServicePackageManager(private val context: Context) {
         const val SUPPORTED_PACKAGE_VERSION = "1.0"
     }
     
-    /**
-     * SERVICE PACKAGE MANIFEST SCHEMA
-     * 
-     * Standardized manifest format for all distributed compute services
-     */
-    @Serializable
-    data class ServiceManifest(
-        // REQUIRED FIELDS
-        val packageId: String,                    // Unique service identifier (reverse domain)
-        val packageVersion: String,               // Semantic versioning (1.0.0)
-        val manifestVersion: String,              // Manifest schema version
-        val serviceName: String,                  // Human-readable service name
-        val serviceDescription: String,           // What the service does
-        val authorOnionAddress: String,           // .onion address of service author
-        val createdTimestamp: Long,               // Unix timestamp of creation
-        
-    // SERVICE EXECUTION
-        val entryPoint: String,                   // Main service class/function
-        val runtime: RuntimeSpec,                 // Programming language and runtime
-        val runtimeRequired: List<String>,        // Always-available runtimes ("jvm", "native")
-        val runtimeOptional: List<String>,        // Modular runtimes ("python", "nodejs", "go", "rust", "wasm")
-        val deviceProfile: String,                // "flagship", "mid-range", "budget"
-        val serviceType: String,                  // "workflow", "ml", "data_processing", etc.
-    val supportedPlatforms: List<String>,     // ["android", "linux", "any"]
-    val requiredPermissions: List<String>,    // Android permissions needed
-    val resourceRequirements: ResourceSpec,   // CPU, memory, storage needs
-    val executionTimeoutSeconds: Int,         // Maximum execution time
-        
-        // SECURITY & VALIDATION
-        val signatureInfo: SignatureInfo,         // Cryptographic signatures
-        val sandboxProfile: String,               // Sandbox restriction level
-        val allowedSyscalls: List<String>,        // Permitted system calls
-        val inputValidation: ValidationSpec,      // Input format requirements
-        val outputFormat: String,                 // Expected output format
-        
-        // MODEL & ASSETS
-        val modelFiles: List<ModelFileSpec>,      // ML models included
-        val assetFiles: List<AssetFileSpec>,      // Additional assets
-        val dependencies: List<DependencySpec>,   // External dependencies
-        
-        // DISTRIBUTION & DISCOVERY
-        val tags: List<String>,                   // Searchable tags
-        val category: String,                     // Service category
-        val licenseType: String,                  // License (MIT, GPL, etc)
-        val sourceCodeUrl: String?,               // Optional source repository
-        val documentationUrl: String?,            // Optional documentation
-        
-        // OPTIONAL METADATA
-        val changeLog: String?,                   // Version changes
-        val testCases: List<TestCaseSpec>?,       // Built-in test cases
-        val compatibilityNotes: String?          // Platform-specific notes
-    )
+    
     
     @Serializable
     data class RuntimeSpec(
@@ -338,44 +288,44 @@ class ServicePackageManager(private val context: Context) {
      * Create a signed service bundle (ZIP) and corresponding Meshrabiya ServiceAnnouncement.
      * Returns the signed bundle bytes and the Meshrabiya announcement so callers can publish it.
      */
-    suspend fun createSignedBundleForPackage(
-        packagePath: String,
-        authorKeyPair: Pair<PrivateKey, PublicKey>,
-        authorOnionAddress: String
-    ): Result<Pair<ByteArray, com.ustadmobile.meshrabiya.model.ServiceAnnouncement>> = withContext(Dispatchers.IO) {
-        try {
-            val packageFile = File(packagePath)
-            if (!packageFile.exists()) return@withContext Result.failure(FileNotFoundException("Package not found: $packagePath"))
+    // suspend fun createSignedBundleForPackage(
+    //     packagePath: String,
+    //     authorKeyPair: Pair<PrivateKey, PublicKey>,
+    //     authorOnionAddress: String
+    // ): Result<Pair<ByteArray, com.ustadmobile.meshrabiya.model.ServiceAnnouncement>> = withContext(Dispatchers.IO) {
+    //     try {
+    //         val packageFile = File(packagePath)
+    //         if (!packageFile.exists()) return@withContext Result.failure(FileNotFoundException("Package not found: $packagePath"))
 
-            // Load manifest from package
-            val manifest = loadManifestFromPackage(packageFile)
+    //         // Load manifest from package
+    //         val manifest = loadManifestFromPackage(packageFile)
 
-            // Build in-memory map of service files (path -> bytes) from the ZIP
-            val serviceFiles = mutableMapOf<String, ByteArray>()
-            ZipFile(packageFile).use { zip ->
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (!entry.isDirectory) {
-                        val data = zip.getInputStream(entry).readBytes()
-                        serviceFiles[entry.name] = data
-                    }
-                }
-            }
+    //         // Build in-memory map of service files (path -> bytes) from the ZIP
+    //         val serviceFiles = mutableMapOf<String, ByteArray>()
+    //         ZipFile(packageFile).use { zip ->
+    //             val entries = zip.entries()
+    //             while (entries.hasMoreElements()) {
+    //                 val entry = entries.nextElement()
+    //                 if (!entry.isDirectory) {
+    //                     val data = zip.getInputStream(entry).readBytes()
+    //                     serviceFiles[entry.name] = data
+    //                 }
+    //             }
+    //         }
 
-            // Convert manifest -> Meshrabiya ServiceAnnouncement using the centralized interop helper
-            val announcement = manifest.toMeshrabiyaAnnouncement(sizeKB = (packageFile.length() / 1024).toInt())
+    //         // Convert manifest -> Meshrabiya ServiceAnnouncement using the centralized interop helper
+    //         val announcement = manifest.toMeshrabiyaAnnouncement(sizeKB = (packageFile.length() / 1024).toInt())
 
-            // Create signed bundle using Meshrabiya signing helper
-            val signer = DecentralizedServiceSigning()
-            val signedBundle = signer.createSignedBundle(serviceFiles, authorKeyPair, authorOnionAddress, announcement)
+    //         // Create signed bundle using Meshrabiya signing helper
+    //         val signer = DecentralizedServiceSigning()
+    //         val signedBundle = signer.createSignedBundle(serviceFiles, authorKeyPair, authorOnionAddress, announcement)
 
-            Result.success(Pair(signedBundle, announcement))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create signed bundle for package", e)
-            Result.failure(e)
-        }
-    }
+    //         Result.success(Pair(signedBundle, announcement))
+    //     } catch (e: Exception) {
+    //         Log.e(TAG, "Failed to create signed bundle for package", e)
+    //         Result.failure(e)
+    //     }
+    // }
     
     /**
      * LOCAL TESTING EXECUTION
@@ -409,32 +359,20 @@ class ServicePackageManager(private val context: Context) {
         }
     }
     
-    /**
-     * User-friendly local testing workflow stub.
-     * Canonical workflow: UI for importing service code, defining test inputs/outputs.
-     * Extension point: Integrate with IDE plugin or web UI.
-     */
-    fun launchLocalTestingUI(context: Context) {
-        // TODO: Implement actual UI (IDE plugin/web UI)
-        Log.i("ServicePackageManager", "Launching local testing UI (stub)")
-        // Example: Open file picker, input dialog, etc.
-    }
+    // TODO: User-friendly local testing workflow
+    // Need to create a UI that allows developers to:
+    // 1. Import service code from project directory
+    // 2. Define test inputs and expected outputs
     // 3. Run tests in isolated sandbox environment
     // 4. View detailed execution logs and performance metrics
     // 5. Validate service against security requirements
     // 6. Generate signed package for distribution
     // 7. Preview how service will appear in discovery system
     
-    /**
-     * Local development server stub.
-     * Canonical workflow: Mimic I2P discovery system, serve local test packages, simulate download/install.
-     * Extension point: Replace with actual HTTP server implementation.
-     */
-    fun startLocalDevServer(port: Int = 8080) {
-        Log.i("ServicePackageManager", "Starting local dev server on port $port (stub)")
-        // TODO: Implement actual HTTP server
-        // Example: Use NanoHTTPD or Ktor for real implementation
-    }
+    // TODO: Local development server
+    // Create a local HTTP server that mimics the I2P discovery system:
+    // - Serves local test packages for testing distribution
+    // - Simulates package download and installation flow
     // - Allows testing of service discovery and reputation
     // - Provides debugging tools for package validation
     
