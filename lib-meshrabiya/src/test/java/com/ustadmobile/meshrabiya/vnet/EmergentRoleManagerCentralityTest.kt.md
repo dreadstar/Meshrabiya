@@ -99,7 +99,7 @@ class EmergentRoleManagerCentralityTest {
         )
         
         // Calculate centrality score
-        val centralityResult = manager.calculateBFSCentrality()
+        val centralityResult = manager.getCentralityResult()
         
         // Verify centrality was calculated
         assertTrue(
@@ -186,7 +186,7 @@ class EmergentRoleManagerCentralityTest {
         
         // Node 192837465 (B) should have higher centrality than 192837464 (A)
         // because it's more central in the linear topology
-        val centralityResult = manager.calculateBFSCentrality()
+        val centralityResult = manager.getCentralityResult()
         
         assertTrue("Should reach all 4 nodes", centralityResult.reachableNodes >= 3)
         assertTrue("Centrality should be positive", centralityResult.centralityScore > 0f)
@@ -237,7 +237,7 @@ class EmergentRoleManagerCentralityTest {
             getCurrentNodeCapabilities = { mockCapabilities }
         )
         
-        val centralityResult = manager.calculateBFSCentrality()
+        val centralityResult = manager.getCentralityResult()
         
         // Isolated node should have low centrality
         assertTrue("Reachable nodes should be 0 (no other nodes)", centralityResult.reachableNodes == 0)
@@ -317,7 +317,7 @@ class EmergentRoleManagerCentralityTest {
             getCurrentNodeCapabilities = { mockCapabilities }
         )
         
-        val centralityResult = manager.calculateBFSCentrality()
+        val centralityResult = manager.getCentralityResult()
         
         // Central node should reach all 3 leaf nodes
         assertTrue("Central node should reach all 3 leaf nodes", centralityResult.reachableNodes >= 3)

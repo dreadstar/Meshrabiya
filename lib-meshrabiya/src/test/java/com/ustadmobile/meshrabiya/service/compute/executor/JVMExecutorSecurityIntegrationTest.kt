@@ -77,7 +77,7 @@ class JVMExecutorSecurityIntegrationTest {
         }
         
         // Verify output files have different names (no cross-contamination)
-        val outputNames = results.flatMap { it.outputManifest.map { file -> file.name } }
+        val outputNames = results.flatMap { it.outputManifest.map { file -> file.fileName } }
         assertEquals(3, outputNames.toSet().size, "All 3 tasks should have unique output files")
     }
     
@@ -111,7 +111,7 @@ class JVMExecutorSecurityIntegrationTest {
             codeBundle = maliciousJar,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         val result = executor.execute(context, emptyMap(), "test-jar-violation-container")
@@ -153,10 +153,10 @@ class JVMExecutorSecurityIntegrationTest {
             codeBundle = benignJar,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
-        val result = executor.execute(context, emptyMap(), "test-jar-benign-container")
+        val result = executor.execute(context, emptyMap(), "test-success-integration")
         
         // Verify successful execution
         assertTrue(result.success, "Benign JAR should execute successfully")
@@ -188,7 +188,7 @@ class JVMExecutorSecurityIntegrationTest {
                 codeBundle = code,
                 inputManifest = emptyList(),
                 requesterNodeId = "test-node",
-                accessScope = AccessScope.PUBLIC
+                accessScope = AccessScope.MESH_GLOBAL
             )
             
             val result = executor.execute(context, emptyMap(), "test-restore-container-$iteration")
@@ -222,10 +222,10 @@ class JVMExecutorSecurityIntegrationTest {
             codeBundle = maliciousCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
-        val result = executor.execute(context, emptyMap(), "test-error-details-container")
+        val result = executor.execute(context, emptyMap(), "test-exec-integration")
         
         assertFalse(result.success)
         assertEquals(ExecutionErrorType.SECURITY_VIOLATION, result.errorType)
@@ -258,7 +258,7 @@ class JVMExecutorSecurityIntegrationTest {
             codeBundle = code,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         return context to emptyMap()

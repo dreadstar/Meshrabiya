@@ -487,7 +487,11 @@ class EmergentRoleManager(
     /**
      * Data class for centrality calculation results
      */
-    private data class CentralityResult(
+    /**
+     * Result of centrality calculation including score and topology metrics.
+     * Made public for testing purposes.
+     */
+    data class CentralityResult(
         val centralityScore: Float,
         val chokePointFlag: Boolean,
         val degree: Int,
@@ -574,6 +578,14 @@ class EmergentRoleManager(
      */
     fun calculateCentralityScore(): Float {
         return calculateBFSCentrality().centralityScore
+    }
+    
+    /**
+     * Public accessor for full centrality result for testing purposes.
+     * Allows tests to verify centrality calculation without accessing private methods.
+     */
+    fun getCentralityResult(): CentralityResult {
+        return calculateBFSCentrality()
     }
     
     /**

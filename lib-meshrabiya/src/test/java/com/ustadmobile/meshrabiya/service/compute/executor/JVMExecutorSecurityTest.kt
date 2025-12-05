@@ -94,10 +94,10 @@ class JVMExecutorSecurityTest {
             codeBundle = maliciousCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
-        val result = executor.execute(context, emptyMap(), "test-network-container")
+        val result = executor.execute(context, emptyMap(), "test-reflection-container")
         
         assertFalse(result.success, "Network access should be blocked")
         assertEquals(ExecutionErrorType.SECURITY_VIOLATION, result.errorType)
@@ -139,10 +139,10 @@ class JVMExecutorSecurityTest {
             codeBundle = maliciousCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
-        val result = executor.execute(context, emptyMap(), "test-file-read-container")
+        val result = executor.execute(context, emptyMap(), "test-thread-spawn-container")
         
         assertFalse(result.success, "Arbitrary file read should be blocked")
         assertEquals(ExecutionErrorType.SECURITY_VIOLATION, result.errorType)
@@ -183,7 +183,7 @@ class JVMExecutorSecurityTest {
             codeBundle = maliciousCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         val result = executor.execute(context, emptyMap(), "test-file-write-container")
@@ -225,7 +225,7 @@ class JVMExecutorSecurityTest {
             codeBundle = maliciousCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         val result = executor.execute(context, emptyMap(), "test-property-container")
@@ -267,9 +267,9 @@ class JVMExecutorSecurityTest {
             executorType = "JVMExecutor",
             jobType = "benign",
             codeBundle = benignCode,
-            inputManifest = listOf(FileReference("test.txt", 11)),
+            inputManifest = listOf(FileReference(fileId = "test-file-id", fileName = "test.txt", sizeBytes = 11)),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         val inputFiles = mapOf("test.txt" to "hello world".toByteArray())
@@ -313,7 +313,7 @@ class JVMExecutorSecurityTest {
             codeBundle = benignCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         val result = executor.execute(context, emptyMap(), "test-workspace-write-container")
@@ -356,10 +356,10 @@ class JVMExecutorSecurityTest {
             codeBundle = benignCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
-        val result = executor.execute(context, emptyMap(), "test-reflection-container")
+        val result = executor.execute(context, emptyMap(), "test-success-container")
         
         assertTrue(result.success, "Reflection APIs should be allowed")
     }
@@ -391,7 +391,7 @@ class JVMExecutorSecurityTest {
             codeBundle = benignCode,
             inputManifest = emptyList(),
             requesterNodeId = "test-node",
-            accessScope = AccessScope.PUBLIC
+            accessScope = AccessScope.MESH_GLOBAL
         )
         
         // Capture pre-execution state
