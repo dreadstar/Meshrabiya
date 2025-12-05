@@ -9,6 +9,7 @@ import java.io.File
 import com.ustadmobile.meshrabiya.service.compute.model.ServiceManifest
 import com.ustadmobile.meshrabiya.model.ExecutionProfile
 import com.ustadmobile.meshrabiya.service.compute.model.ServiceCapability
+import com.ustadmobile.meshrabiya.service.compute.model.RuntimeType
 
  private const val TAG = "DistributedServiceLibrary"
 /**
@@ -52,7 +53,10 @@ class DistributedServiceLibrary {
         val categories: List<String>,       // ML, Crypto, Image Processing, etc.
         @kotlinx.serialization.Contextual
         val resourceRequirements: ResourceRequirements,
-        val auditReports: List<AuditReport> // Third-party security audits
+        val runtime: RuntimeType,           // Required runtime for service execution
+        val auditReports: List<AuditReport>, // Third-party security audits
+        val hasInputFiles: Boolean = false,  // Whether service expects input files
+        val hasOutputFiles: Boolean = false  // Whether service produces output files
     )
     
     @Serializable

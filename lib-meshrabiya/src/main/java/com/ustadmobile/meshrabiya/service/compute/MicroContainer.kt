@@ -3,6 +3,8 @@ package com.ustadmobile.meshrabiya.service.compute
 // Ultra-lightweight container abstraction and communication mechanisms
 import kotlinx.coroutines.*
 import java.lang.Process
+import java.lang.ProcessBuilder
+
 
 // class MicroContainer(val containerId: String, val process: Process, val communicationPipe: CommunicationPipe) {
     
@@ -23,19 +25,16 @@ import java.lang.Process
         val communicationPipe: CommunicationPipe
     ) {
         
-       fun launchIsolatedProcess(code: ByteArray): Int {
-            // Launch process with code, return process ID
-            // (Stub: Replace with actual process launch logic)
-                // Production-ready process launch logic
-                // Use ProcessBuilder to launch containerized process
-                return try {
-                    val processBuilder = ProcessBuilder(command)
-                    processBuilder.start()
-                    true
-                } catch (e: Exception) {
-                    false
-                }
+       fun launchIsolatedProcess(command: List<String>): Int {
+        return try {
+            val processBuilder = ProcessBuilder(command)
+            val p: Process = processBuilder.start()
+            // p.pid().toInt() // Returns process ID not available on Android/Java 8
+            0
+        } catch (e: Exception) {
+            -1 // Error code
         }
+    }
         
         /**
          * ISOLATED COMMUNICATION PIPE

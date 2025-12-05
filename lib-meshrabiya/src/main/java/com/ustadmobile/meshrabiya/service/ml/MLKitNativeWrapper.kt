@@ -46,8 +46,10 @@ class MLKitNativeWrapper(private val serviceId: String) : MLServiceWrapper {
             sizeKB = 0,
             capabilities = listOf("text-recognition", "face-detection"),
             resourceRequirements = ResourceRequirements(
-                minMemoryMB = 256,
-                minStorageMB = 64,
+                minRAMMB = 256,
+                preferredRAMMB = 512,
+                requiresGPU = false,
+                minStorageMB = 64f,
                 minCpuCores = 1,
                 minGpu = false
             ),

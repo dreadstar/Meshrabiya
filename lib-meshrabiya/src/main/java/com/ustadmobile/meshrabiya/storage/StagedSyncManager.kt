@@ -405,6 +405,9 @@ class StagedSyncManager(
                 is SyncResult.Partial -> {
                     updateFileState(file.filePath, FileState.PARTIAL)
                 }
+                is SyncResult.Conflict -> {
+                    updateFileState(file.filePath, FileState.CONFLICT)
+                }
                 is SyncResult.Failure -> {
                     handleSyncFailure(file, result, operation)
                 }

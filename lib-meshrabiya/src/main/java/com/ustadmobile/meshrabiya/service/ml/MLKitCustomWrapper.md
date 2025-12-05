@@ -92,7 +92,8 @@ class MLKitCustomWrapper(
             sizeKB = 0,
             capabilities = listOf("custom-model", "image-labeling"),
             resourceRequirements = ResourceRequirements(
-                minMemoryMB = 512,
+                minRAMMB = 512,
+                preferredRAMMB= 512,
                 minStorageMB = 128,
                 minCpuCores = 1,
                 minGpu = true

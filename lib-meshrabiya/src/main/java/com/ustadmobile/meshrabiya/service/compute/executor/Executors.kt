@@ -1,6 +1,6 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
-import com.ustadmobile.meshrabiya.service.compute.scheduler.*
+// import com.ustadmobile.meshrabiya.service.compute.scheduler.*  // Deprecated - scheduler package removed
 import com.ustadmobile.meshrabiya.service.compute.model.*
 
 /**

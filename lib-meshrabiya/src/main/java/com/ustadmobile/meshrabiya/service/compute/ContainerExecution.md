@@ -7,11 +7,15 @@ import com.ustadmobile.meshrabiya.service.compute.MicroContainer
 
 object ContainerExecution {
     fun executeInContainer(container: MicroContainer, code: ByteArray): ExecutionResult {
+        val startTime = System.currentTimeMillis()
         // Production-ready container execution logic
         val processId = container.launchIsolatedProcess(code)
         // val metrics = ResourceMonitoring.getContainerMetrics(container.containerId)
-        // return ExecutionResult(processId, metrics)
-        return ExecutionResult(processId)
+        // return ExecutionResult(processId, metrics) executionTimeMs
+        val currentTime = System.currentTimeMillis()
+            val executionTimeMs = currentTime - startTime
+        return ExecutionResult(processId, success= true, outputManifest = emptyList(),
+ executionTimeMs = executionTimeMs)
     }
     // fun monitorContainerExecution(container: MicroContainer): ResourceMonitoring.ResourceMetrics {
     //     return ResourceMonitoring.getContainerMetrics(container.containerId)

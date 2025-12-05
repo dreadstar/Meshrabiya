@@ -1,1200 +1,211 @@
 package com.ustadmobile.meshrabiya.service.compute
 
-import com.ustadmobile.meshrabiya.service.compute.model.FileReference
-import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
-// import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
-import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-import com.ustadmobile.meshrabiya.service.compute.model.ExecutionState
-import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
-import com.ustadmobile.meshrabiya.service.compute.model.OutputManifest
-import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
-import java.util.UUID
-import kotlinx.coroutines.*
 import android.content.Context
-import android.net.Uri
-import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-// import com.ustadmobile.meshrabiya.storage.StorageConfiguration
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageAccessPolicy
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageOperation
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.RetentionPolicy
-import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
-import com.ustadmobile.meshrabiya.service.security.SandboxStorageProxy.StorageRequest
-import kotlinx.serialization.json.Json
-import com.ustadmobile.meshrabiya.service.compute.model.*
-// import com.ustadmobile.meshrabiya.service.compute.executors.*
-// import com.ustadmobile.meshrabiya.service.compute.StrangersSafeComputeEngine
-import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
-import com.ustadmobile.meshrabiya.MeshrabiyaConstants
-import kotlinx.coroutines.*
-import java.util.concurrent.ConcurrentHashMap
-// import com.ustadmobile.meshrabiya.service.compute.ResourceMonitoring.ExecutionState
-// import com.ustadmobile.meshrabiya.storage.StorageConfiguration
-import com.ustadmobile.meshrabiya.service.security.StrangersSafeComputeEngine
-import com.ustadmobile.meshrabiya.service.compute.executor.JVMExecutor
-import com.ustadmobile.meshrabiya.api.MeshrabiyaApi
-// import com.ustadmobile.meshrabiya.service.compute.executor.PythonExecutor
-import com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor
-import com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor
-import com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor
-import org.msgpack.core.MessagePack
-import org.msgpack.core.MessageUnpacker
-import org.msgpack.core.MessageBufferPacker
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceLibraryEntry
-// import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.SandboxConfig
-import com.ustadmobile.meshrabiya.service.compute.DistributedServiceLibrary.ServiceSearchResult
-
-import com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry
-// import com.ustadmobile.meshrabiya.service.compute.model.ExecutionState
-import com.ustadmobile.meshrabiya.service.security.MobileServiceSandbox.SandboxConfig
-import com.ustadmobile.meshrabiya.service.MessageType
-
+import com.ustadmobile.meshrabiya.storage.DistributedStorageClient
+import com.ustadmobile.meshrabiya.beta.BetaTestLogger
+import com.ustadmobile.meshrabiya.beta.LogLevel
+import kotlinx.coroutines.*
+import java.security.KeyPairGenerator
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Base64
 
 /**
- * TaskManager - Monitors running tasks, handles TaskDataAccessUpdate events,
- * coordinates access profile updates, provides hooks for output publishing,
- * supports service search, smart caching, progress tracking, and result management.
- * Integrates with DistributedStorageManager, MeshEcosystemListener, and IntelligentDistributedComputeService.
+ * TaskManager
+ * 
+ * Orchestrates compute task lifecycle on a compute node.
+ * 
+ * Architecture:
+ * - Delegates sandbox management to TaskSandboxManager
+ * - Delegates file I/O to TaskInputFileManager
+ * - Delegates execution to TaskExecutionCoordinator
+ * - Owns task registry and generates keypairs
+ * 
+ * Public API:
+ * - addTask() - Create new task with keypair
+ * - prepareTask() - Prepare sandbox and handle input files
+ * - handleTaskDataAccessUpdate() - Process incoming files
+ * - getTask() / getActiveTasks() - Query tasks
+ * - removeTask() - Cleanup task resources
+ * - shutdown() - Cleanup all tasks
  */
-
- 
-object TaskManager {
-    private val taskStatuses = ConcurrentHashMap<String, TaskStatus>()
-    // private val activeExecutions = ConcurrentHashMap<String, ExecutionState>()
-    // private var resourceMonitoringJob: Job? = null
-    private var totalLoad: ResourceMetrics = ResourceMetrics.zero()
-    private val sandboxEngine = StrangersSafeComputeEngine()
-    private val executors = listOf(
-        // PythonExecutor(sandboxEngine),
-        JVMExecutor(sandboxEngine),
-        JSExecutor(sandboxEngine),
-        MLNativeExecutor(sandboxEngine),
-        WorkflowExecutor(sandboxEngine, this)
-    )
-
-    suspend fun executeTask(
-        context: TaskExecutionContext,
-        accessScope: AccessScope = AccessScope.TASK_ISOLATED
-    ): ExecutionResult = coroutineScope {
-        val taskId = context.taskId
-        val executor = loadExecutor(context.taskType)
-        val containerId = createSandboxContainer(context)
-        // val execution = ExecutionState(
-        //     context = context,
-        //     containerId = containerId,
-        //     executor = executor
-        // )
-        // activeExecutions[taskId] = execution
-        // ensureResourceMonitoringActive()
-        try {
-            // val result = executor.execute(context, containerId)
-            storeResultFiles(taskId, result, accessScope)
-            sendCompletionNotification(taskId, result)
-            result
-        } finally {
-            cleanupExecution(taskId)
-        }
-    }
-
-
-
-    private suspend fun createSandboxContainer(context: TaskExecutionContext): String {
-        val sandboxConfig = getSandboxConfigForTaskType(context.taskType)
-        // Use compute engine to create a sandboxed container for the task
-        val containerId = sandboxEngine.createContainer(context, sandboxConfig)
-        return containerId
-    }
-
-    // private suspend fun createSandboxContainer(
-    //     context: TaskExecutionContext
-    // ): String {
-    //     // Integrate with StrangersSafeComputeEngine
-    //     return StrangersSafeComputeEngine.createContainer(context)
-    // }
-
-    private fun getSandboxConfigForTaskType(taskType: TaskType): SandboxConfig {
-        return SandboxConfig(syscallWhitelist = listOf("read", "write", "execve"))
-    }
-
-    // private fun loadExecutor(taskType: TaskType): TaskExecutor {
-    //     return executors.firstOrNull { it.getSupportedTaskType() == taskType }
-    //         ?: throw IllegalArgumentException("No executor for task type: $taskType")
-    // }
-
-    /**
-     * Phase 3: Runtime Management
-     * Load appropriate executor for task type with runtime validation
-     */
-    private suspend fun loadExecutor(
-        taskType: TaskType
-    ): TaskExecutor {
-        val context = getAppContext() ?: throw IllegalStateException("Context not available")
-        val registry = com.ustadmobile.meshrabiya.service.compute.runtime.RuntimeRegistry.getInstance(context)
-        // Check if runtime is available
-        if (!registry.isRuntimeAvailable(taskType)) {
-            throw IllegalStateException("Runtime not available for task type: ${taskType.name}")
-        }
-        // Load appropriate executor
-        return when (taskType) {
-            // TaskType.PYTHON -> PythonExecutor(context)
-            TaskType.JVM, TaskType.JAVA -> JVMExecutor(context)
-            TaskType.JAVASCRIPT -> com.ustadmobile.meshrabiya.service.compute.executor.JSExecutor(context)
-            TaskType.ML_NATIVE -> com.ustadmobile.meshrabiya.service.compute.executor.MLNativeExecutor(context)
-            TaskType.WORKFLOW -> {
-                // WorkflowExecutor needs an executor factory
-                val factory: (TaskType) -> TaskExecutor? = { type ->
-                    try {
-                        loadExecutor(type)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-                com.ustadmobile.meshrabiya.service.compute.executor.WorkflowExecutor(context, factory)
-            }
-        }
-    }
-
-    private suspend fun storeResultFiles(
-        taskId: String,
-        result: ExecutionResult,
-        accessScope: AccessScope
-    ) {
-        // Store result files using DistributedStorageManager with correct permissions
-        val apiInstance = api ?: throw IllegalStateException("API not set")
-        val storageManager = apiInstance.getDistributedStorageManager()
-        val owner = result.taskId // For now, use taskId as owner; adjust as needed
-        val recipients = listOf(result.taskId) // For now, only task owner; adjust as needed
-        result.outputManifest?.let { manifest ->
-            for (fileRef in manifest.outputFiles) {
-                storageManager.storeFile(
-                    fileRef.fileId,
-                    fileRef,
-                    accessScope,
-                    owner,
-                    recipients
-                )
-            }
-        }
-    }
-
-    private suspend fun sendCompletionNotification(
-        taskId: String,
-        result: ExecutionResult
-    ) {
-        // Send completion notification to requester (CANONICAL_WORKFLOWS compliant)
-        // val execution = activeExecutions[taskId] ?: return
-        val callbackAddress = execution.context.callbackAddress
-        val completionMessage = TaskCompletedMessage(
-            taskId = taskId,
-            result = result
-        )
-        val messageBytes = MessagePackSerializer.encode(completionMessage)
-        api?.getVirtualNode()?.sendMessage(
-            destinationAddress = callbackAddress,
-            payload = messageBytes,
-            messageType = MessageType.TASK_COMPLETED
-        )
-    }
-
-    private suspend fun cleanupExecution(taskId: String) {
-        // activeExecutions.remove(taskId)
-        // Additional cleanup logic: remove containers, clear temp files, revoke keys if needed
-        sandboxEngine.cleanupContainer(taskId)
-    }
-
-    // private fun ensureResourceMonitoringActive() {
-    //     if (resourceMonitoringJob != null && resourceMonitoringJob?.isActive == true) return
-    //     resourceMonitoringJob = GlobalScope.launch {
-    //         while (isActive && activeExecutions.isNotEmpty()) {
-    //             updateResourceMetrics()
-    //             delay(MeshrabiyaConstants.RESOURCE_MONITORING_INTERVAL_MS)
-    //         }
-    //     }
-    // }
-
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Ensures the background resource monitoring loop is running
-     */
-    // private suspend fun ensureResourceMonitoringActive() {
-    //     if (resourceMonitoringJob?.isActive == true) return
-        
-    //     resourceMonitoringJob = CoroutineScope(Dispatchers.IO).launch {
-    //         while (isActive) {
-    //             try {
-    //                 updateResourceMetrics()
-    //                 checkResourceLimitViolations()
-    //                 delay(1000) // Poll every second
-    //             } catch (e: Exception) {
-    //                 // Log error and continue monitoring
-    //             }
-    //         }
-    //     }
-    // }
-
-    // private suspend fun updateResourceMetrics() {
-    //     var totalRamActual = 0L
-    //     var totalRamAverage = 0L
-    //     var totalRamPeak = 0L
-    //     var totalCpuTime = 0L
-    //     var totalCpuPercent = 0f
-    //     var totalDiskIo = 0L
-    //     var totalDiskStorage = 0L
-    //     for (execution in activeExecutions.values) {
-    //         val metrics = sandboxEngine.getContainerMetrics(execution.containerId)
-    //         totalRamActual += metrics.ramActualBytes
-    //         totalRamAverage += metrics.ramAverageBytes
-    //         totalRamPeak += metrics.ramPeakBytes
-    //         totalCpuTime += metrics.cpuTimeUsedMs
-    //         totalCpuPercent += metrics.cpuPercentage
-    //         totalDiskIo += metrics.diskIoOperations
-    //         totalDiskStorage += metrics.diskStorageUsedBytes
-    //         // Update execution state with current metrics
-    //         execution.currentMetrics = metrics
-    //         if (metrics.ramPeakBytes > execution.peakMetrics.ramPeakBytes) {
-    //             execution.peakMetrics = metrics
-    //         }
-    //     }
-    //     totalLoad = ResourceMetrics(
-    //         ramActualBytes = totalRamActual,
-    //         ramAverageBytes = totalRamAverage,
-    //         ramPeakBytes = totalRamPeak,
-    //         cpuTimeUsedMs = totalCpuTime,
-    //         cpuPercentage = totalCpuPercent,
-    //         diskIoOperations = totalDiskIo,
-    //         diskStorageUsedBytes = totalDiskStorage
-    //     )
-    // }
-    fun verifyRuntimeAvailable(taskType: TaskType): Boolean {
-        val available = RuntimeRegistry.isRuntimeAvailable(taskType)
-        if (!available) {
-            // Log warning, do not accept task
-            // (CANONICAL_WORKFLOWS: must not accept if runtime missing)
-        }
-        return available
-    }
-
-    // fun getTotalLoad(): ResourceMetrics = totalLoad
-    // fun getTaskMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.currentMetrics
-    // fun getPeakMetrics(taskId: String): ResourceMetrics? = activeExecutions[taskId]?.peakMetrics
-
-
-
-    data class TaskStatus(
-        val taskId: String,
-        val phase: TaskPhase = TaskPhase.CREATED,
-        val executionContext: TaskExecutionContext? = null,
-        val taskHash: String? = null
-    )
-
-    enum class TaskPhase {
-        CREATED, RUNNING, COMPLETED, FAILED, CANCELLED
-    }
-
-
-
-    // Reference to the API for context access
-    @Volatile
-    private var api: MeshrabiyaApi? = null
-
-    fun setApi(apiInstance: com.ustadmobile.meshrabiya.api.MeshrabiyaApi) {
-        api = apiInstance
-    }
-
-    // --- Data Models ---
-
-    sealed class TaskExecutionResponse {
-        data class Success(
-            val result: Map<String, Any>,
-            val executionTimeMs: Long
-        ) : TaskExecutionResponse()
-
-        data class Failed(val error: String) : TaskExecutionResponse()
-        object Timeout : TaskExecutionResponse()
-    }
-
-    data class TaskRequest(
-        val id: UUID = UUID.randomUUID(),
-        val service: ServiceMeta,
-        val parameters: Map<String, Any>,
-        val requester: String,
-        val requiredRole: String? = null,
-        val requirements: Map<String, Any>? = null
-    )
-
-    data class TaskStatus(
-        val id: UUID,
-        val service: ServiceMeta,
-        val progress: ProgressMetric,
-        val state: State,
-        val result: Any? = null,
-        val requirements: Map<String, Any>? = null,
-        val startedAt: Long,
-        val completedAt: Long? = null,
-        // Phase 1: Execution tracking fields
-        val executionStartedAt: Long? = null,
-        val executorNodeAddress: String? = null,
-        val containerId: String? = null,
-        val resourceUsage: Map<String, Any>? = null,
-        val executionContext: Map<String, Any>? = null
-    ) {
-        enum class State { 
-            RUNNING, 
-            COMPLETED, 
-            FAILED, 
-            CANCELLED,
-            // Phase 1: Additional execution states
-            ACCEPTED,
-            PREPARING,
-            EXECUTING,
-            FINALIZING
-        }
-    }
-
-    data class ProgressMetric(
-        val percentComplete: Int,
-        val etaSeconds: Int?,
-        val currentStage: String
-    )
-
-    data class OutputPublishAudit(
-        val taskId: UUID,
-        val fileName: String,
-        val fileCreateTimestamp: Long,
-        val taskStart: Long,
-        val taskEnd: Long?,
-        val recipients: List<String>,
-        val owner: String
-    )
-
-    // --- Internal State ---
-
-    private val serviceCache = mutableListOf<ServiceSearchResult>()
-    private val runningTasks = mutableMapOf<UUID, TaskStatus>()
-    private val completedTasks = mutableListOf<TaskStatus>()
-    private val outputAuditTrail = mutableListOf<OutputPublishAudit>()
-
+class TaskManager(
+    private val context: Context,
+    private val virtualNode: VirtualNode,
+    private val distributedStorageClient: DistributedStorageClient,
+    private val betaLogger: BetaTestLogger? = null
+) {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val activeTasks = ConcurrentHashMap<String, Task>()
     
-
-    // private val activeExecutions = mutableMapOf<UUID, ExecutionState>()
-    private val containerToTask = mutableMapOf<String, UUID>()
+    // Component delegation
+    private val sandboxManager = TaskSandboxManager(context)
+    private val fileManager = TaskInputFileManager(context, distributedStorageClient, sandboxManager, betaLogger)
+    private val executionCoordinator = TaskExecutionCoordinator(context, betaLogger)
     
-    // Phase 2.2: Resource monitoring state
-    // private var resourceMonitoringJob: Job? = null
-    private val peakMetrics = mutableMapOf<String, ResourceMetrics>()
-
-    // Phase 4.2: Task keypair management
-    // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5
-    
-    /**
-     * Keypair entry for per-task encryption.
-     * 
-     * @property publicKey PGP public key (PEM format, Base64-encoded)
-     * @property privateKey PGP private key (PEM format, Base64-encoded)
-     * @property createdAt Timestamp when keypair was generated (milliseconds since epoch)
-     * @property expiresAt Timestamp when keypair expires (milliseconds since epoch)
-     */
-    data class KeypairEntry(
-        val publicKey: String,
-        val privateKey: String,
-        val createdAt: Long,
-        val expiresAt: Long
-    ) {
-        /**
-         * Check if this keypair is expired.
-         */
-        fun isExpired(): Boolean {
-            return System.currentTimeMillis() > expiresAt
-        }
-        
-        /**
-         * Get remaining lifetime in milliseconds.
-         */
-        fun getRemainingLifetimeMs(): Long {
-            return maxOf(0L, expiresAt - System.currentTimeMillis())
-        }
+    companion object {
+        private const val TAG = "TaskManager"
     }
     
     /**
-     * In-memory keypair registry: taskId → KeypairEntry
-     * Stores ephemeral task keypairs for task-level data isolation.
+     * Add new task for execution.
+     * Generates RSA keypair and creates sandbox.
      */
-    private val keypairRegistry = mutableMapOf<String, KeypairEntry>()
-    
-    /**
-     * Background cleanup job for expired keypairs.
-     * Runs every 15 minutes to remove expired entries.
-     */
-    private var keypairCleanupJob: Job? = null
-
-    // --- Task Access Update and Output Publishing Hooks ---
-
-    private val accessUpdateHandlers = mutableMapOf<UUID, (List<String>) -> Unit>()
-    private val publishOutputHooks = mutableMapOf<UUID, (UUID, TaskRequest, PublishEvent) -> Unit>()
-
-    // --- Service Search and Smart Caching ---
-
-    fun searchServices(query: String): List<ServiceSearchResult> =
-        serviceCache.filter {
-            val manifest = it.manifest
-            manifest.author.contains(query, ignoreCase = true) ||
-            manifest.version.contains(query, ignoreCase = true) ||
-            manifest.serviceType.name.contains(query, ignoreCase = true) ||
-            manifest.resourceRequirements.toString().contains(query, ignoreCase = true) ||
-            it.capabilities.any { cap -> cap.name.contains(query, ignoreCase = true) }
-        }.take(5)
-
-    fun updateServiceCache(result: ServiceSearchResult) {
-        serviceCache.removeAll { it.serviceId == result.serviceId && it.manifest.version == result.manifest.version && it.nodeId == result.nodeId }
-        serviceCache.add(result)
-        val grouped = serviceCache.groupBy { Triple(it.serviceId, it.manifest.version, it.nodeId) }
-        serviceCache.clear()
-        grouped.values.forEach { group ->
-            serviceCache.addAll(group.take(5))
-        }
-    }
-
-    // --- Task Lifecycle Management ---
-
-    fun createTaskWithParams(service: ServiceMeta, params: Map<String, Any>): UUID {
-        val destinationFolder = params["destinationFolder"] as? String
-        val request = TaskRequest(
-            id = UUID.randomUUID(),
-            service = service,
-            parameters = params,
-            requester = "local",
-            requirements = if (destinationFolder != null) mapOf("destinationFolder" to destinationFolder) else null
-        )
-        createTaskRequest(request)
-        return request.id
-    }
-
-    fun createTaskRequest(request: TaskRequest): TaskStatus {
-        val missingInputs = request.service.inputs.map { it.name }.filter { !request.parameters.containsKey(it) }
-        if (missingInputs.isNotEmpty()) {
-            throw IllegalArgumentException("Missing required inputs: ${missingInputs.joinToString()}")
-        }
-        val status = TaskStatus(
-            id = request.id,
-            service = request.service,
-            progress = ProgressMetric(0, null, "Pending"),
-            state = TaskStatus.State.RUNNING,
-            requirements = request.requirements,
-            startedAt = System.currentTimeMillis()
-        )
-        runningTasks[request.id] = status
-        return status
-    }
-
-    fun updateTaskProgress(taskId: UUID, percent: Int, eta: Int?, stage: String) {
-        runningTasks[taskId]?.let {
-            runningTasks[taskId] = it.copy(progress = ProgressMetric(percent, eta, stage))
-        }
-    }
-
-    fun completeTask(
-        taskId: UUID, 
-        result: Any?,
-        owner: String? = null,
-        recipients: List<String>? = null
-    ) {
-        runningTasks[taskId]?.let {
-            val mappedResult = if (result is Map<*, *>) {
-                val outputMap = mutableMapOf<String, Any?>()
-                for (output in it.service.outputs) {
-                    outputMap[output.name] = result[output.name]
-                }
-                outputMap
-            } else result
-            val completed = it.copy(
-                state = TaskStatus.State.COMPLETED,
-                result = mappedResult,
-                completedAt = System.currentTimeMillis()
-            )
-            completedTasks.add(completed)
-            runningTasks.remove(taskId)
-
-            // Output publishing hook (file streaming to Distributed Storage)
-            val destinationFolder = it.requirements?.get("destinationFolder") as? String
-            if (destinationFolder != null && mappedResult is Map<*, *>) {
-                val fileOutput = mappedResult.values.find { v -> v is java.io.File || v is Uri }
-                if (fileOutput != null) {
-                    val taskConfig = TaskRequest(
-                        id = completed.id,
-                        service = completed.service,
-                        parameters = completed.service.inputs.associate { inp -> inp.name to (result as? Map<*, *>)?.get(inp.name) },
-                        requester = owner ?: completed.service.author,
-                        requirements = completed.requirements
-                    )
-                    val event = PublishEvent(
-                        fileOutput = fileOutput,
-                        recipients = recipients ?: listOf(destinationFolder),
-                        destinationFolder = destinationFolder,
-                        additionalMetadata = completed.requirements
-                    )
-                    publishOutputHooks[taskId]?.invoke(taskId, taskConfig, event)
-                }
-            }
-        }
-    }
-
-    // --- Access Update Event Handling ---
-
-    fun registerAccessUpdateHandler(taskId: UUID, handler: (List<String>) -> Unit) {
-        accessUpdateHandlers[taskId] = handler
-    }
-
-    fun unregisterAccessUpdateHandler(taskId: UUID) {
-        accessUpdateHandlers.remove(taskId)
-    }
-
-    fun handleTaskDataAccessUpdate(taskId: UUID, newAccessList: List<String>) {
-        accessUpdateHandlers[taskId]?.invoke(newAccessList)
-    }
-
-    // --- Output Publishing Hook ---
-
-    data class PublishEvent(
-        val fileOutput: Any,
-        val recipients: List<String>,
-        val destinationFolder: String,
-        val additionalMetadata: Map<String, Any>? = null
-    )
-
-    fun registerPublishOutputHook(
-        taskId: UUID,
-        taskConfig: TaskRequest,
-        hook: (UUID, TaskRequest, PublishEvent) -> Unit
-    ) {
-        publishOutputHooks[taskId] = hook
-    }
-
-    fun unregisterPublishOutputHook(taskId: UUID) {
-        publishOutputHooks.remove(taskId)
-    }
-
-    /**
-     * Standardized publishOutputHook implementation.
-     * This should be used by all tasks to publish output files.
-     */
-    val standardPublishOutputHook: (UUID, TaskRequest, PublishEvent) -> Unit = { taskId, taskConfig, event ->
-        publishOutputFile(taskId, event.fileOutput, event.destinationFolder, event.recipients, taskConfig)
-    }
-
-    // --- File Transfer Logic ---
-
-    private fun publishOutputFile(
-        taskId: UUID,
-        fileOutput: Any,
-        destinationFolder: String,
-        recipients: List<String>,
-        taskConfig: TaskRequest
-    ) {
-        val context = getAppContext() ?: return
-        val fileBytes: ByteArray? = when (fileOutput) {
-            is java.io.File -> fileOutput.readBytes()
-            is Uri -> context.contentResolver.openInputStream(fileOutput)?.use { it.readBytes() }
-            else -> null
-        }
-        val fileCreateTimestamp = System.currentTimeMillis()
-        if (fileBytes != null) {
-            val dropFolderManager = StorageDropFolderManager.getInstance(context)
-            val dropFolderPath = dropFolderManager.getSelectedFolderPath() ?: destinationFolder
-            val distributedStorageManager = DistributedStorageManager.getInstance(context)
-            val sandboxPolicy = StorageAccessPolicy(
-                allowedOperations = setOf(StorageOperation.WRITE, StorageOperation.READ),
-                retentionPolicy = RetentionPolicy.PERSISTENT,
-                accessScope = AccessScope.TASK_ISOLATED
-            )
-            val sandboxProxy = SandboxStorageProxy(
-                distributedStorageManager,
-                sandboxPolicy
-            )
-            val uniqueFileName = "output_${fileCreateTimestamp}.bin"
-            val request = StorageRequest.Store(
-                requestId = UUID.randomUUID().toString(),
-                taskId = taskId.toString(),
-                fileName = uniqueFileName,
-                data = java.util.Base64.getEncoder().encodeToString(fileBytes),
-                metadata = mapOf("destinationFolder" to dropFolderPath),
-                retentionPolicy = RetentionPolicy.PERSISTENT
-            )
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val payload = Json.encodeToString(request)
-                    sandboxProxy.processStorageRequest(payload, taskId.toString(), "default")
-                    // Audit trail entry
-                    val status = runningTasks[taskId] ?: completedTasks.find { it.id == taskId }
-                    outputAuditTrail.add(
-                        OutputPublishAudit(
-                            taskId = taskId,
-                            fileName = uniqueFileName,
-                            fileCreateTimestamp = fileCreateTimestamp,
-                            taskStart = status?.startedAt ?: 0L,
-                            taskEnd = status?.completedAt,
-                            recipients = recipients,
-                            owner = taskConfig.requester
-                        )
-                    )
-                    // Grant access to recipients: update permissions and send notification
-                    recipients.forEach { recipient ->
-                        // Update permissions in storage manager
-                        storageManager.updateFileAccess(uniqueFileName, recipient)
-                        // Send notification (pseudo-code, replace with actual messaging API)
-                        MeshEcosystemMessage.sendAccessGrantedNotification(taskId, recipient, uniqueFileName)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-    }
-
-    // --- Utility Methods ---
-
-    private fun getAppContext(): Context? {
-        return api?.getAppContext()
-    }
-
-    // private fun getStorageConfiguration(): StorageConfiguration {
-    //     return try {
-    //         StorageConfiguration()
-    //     } catch (e: Exception) {
-    //         StorageConfiguration(defaultReplicationFactor = 1)
-    //     }
-    // }
-
-    fun getRunningTasks(): List<TaskStatus> = runningTasks.values.toList()
-    fun getCompletedTasks(): List<TaskStatus> = completedTasks
-    fun getTaskProgress(taskId: UUID): ProgressMetric? = runningTasks[taskId]?.progress
-    fun getOutputAuditTrail(): List<OutputPublishAudit> = outputAuditTrail
-
-    // === Phase 2: Task Execution Layer ===
-
-    /**
-     * Main task execution entry point - orchestrates the complete execution lifecycle:
-     * 1. Verify runtime availability
-     * 2. Retrieve input files from distributed storage
-     * 3. Create sandbox container
-     * 4. Load executor for task type
-     * 5. Execute task in sandbox
-     * 6. Monitor resource usage
-     * 7. Store result files with proper permissions
-     * 8. Notify requester of completion
-     * 9. Update task status
-     * 10. Cleanup execution resources
-     */
-    suspend fun executeTask(
-        taskId: UUID,
-        taskType: TaskType,
-        jobType: JobType,
-        codeBundle: ByteArray,
-        inputManifest: List<FileReference>,
-        // resourceLimits: ResourceLimits, // Deprecated and removed
-        deadlineMs: Long,
-        requesterNodeId: String,
-        callbackAddress: String,
-        accessScope: AccessScope = AccessScope.TASK_ISOLATED
-    ): ExecutionResult = coroutineScope {
-        
-        updateTaskProgress(taskId, 0, null, "Task accepted, preparing for execution")
+    suspend fun addTask(
+        executionContext: TaskExecutionContext,
+        serviceLibraryEntry: ServiceLibraryEntry
+    ): Task = withContext(Dispatchers.IO) {
+        betaLogger?.log(LogLevel.DEBUG, TAG, "Adding task: \${executionContext.taskId}")
         
         try {
-            // 1. Create execution context
-            val context = TaskExecutionContext(
-                taskId = taskId.toString(),
-                taskType = taskType,
-                jobType = jobType,
-                codeBundle = codeBundle,
-                inputManifest = inputManifest,
-                // resourceLimits = resourceLimits, // Deprecated and removed
-                deadlineMs = deadlineMs,
-                requesterNodeId = requesterNodeId,
-                callbackAddress = callbackAddress,
-                accessScope = accessScope
-            )
+            // Generate RSA keypair for task
+            val keyGen = KeyPairGenerator.getInstance("RSA")
+            keyGen.initialize(2048)
+            val keyPair = keyGen.generateKeyPair()
             
-            // 2. Retrieve input files
-            updateTaskProgress(taskId, 10, null, "Retrieving input files")
-            val inputFiles = retrieveInputFiles(inputManifest)
+            val publicKeyEncoded = Base64.getEncoder().encodeToString(keyPair.public.encoded)
+            val privateKeyBytes = keyPair.private.encoded
             
-            // 3. Create sandbox container
-            updateTaskProgress(taskId, 30, null, "Creating sandbox container")
-            val containerId = createSandboxContainer(context)
+            // Create sandbox
+            val sandboxPaths = sandboxManager.createSandbox(executionContext.taskId)
             
-            // 4. Register execution
-            val executionState = ExecutionState(
-                taskId = taskId,
-                containerId = containerId,
-                executorNodeAddress = virtualNode.addressAsInt.toString(), // Get actual node address
-                startTime = System.currentTimeMillis(),
-                taskContext = context,
-                requesterNodeId = requesterNodeId,
-                callbackAddress = callbackAddress,
-                resourceMetrics = ResourceMetrics.zero(),
-                lastMetricUpdate = System.currentTimeMillis()
-            )
-            activeExecutions[taskId] = executionState
-            containerToTask[containerId] = taskId
-            
-            // 5. Start resource monitoring if not already running
-            // ensureResourceMonitoringActive()
-            
-            // 6. Load executor
-            updateTaskProgress(taskId, 50, null, "Loading executor")
-            val executor = loadExecutor(taskType)
-            
-            // 7. Execute task
-            updateTaskProgress(taskId, 60, null, "Executing task")
-            val result = executor.execute(context, inputFiles, containerId)
-            
-            // 8. Store result files
-            if (result.success && result.outputManifest.isNotEmpty()) {
-                updateTaskProgress(taskId, 80, null, "Storing result files")
-                storeResultFiles(
-                    taskId = taskId,
-                    outputManifest = result.outputManifest,
-                    owner = requesterNodeId,
-                    recipients = listOf(requesterNodeId), // Task requester can access results
-                    accessScope = accessScope
+            // Create task
+            val task = Task(
+                taskId = executionContext.taskId,
+                executionContext = executionContext,
+                serviceId = serviceLibraryEntry.serviceId,
+                inputParams = emptyMap(),
+                requesterNodeId = executionContext.requesterNodeId,
+                recipients = emptyList(),
+                state = TaskState.PREPARING,
+                publicKey = publicKeyEncoded,
+                privateKey = privateKeyBytes,
+                sandboxDir = sandboxPaths.base,
+                executable = Executable(
+                    runtime = serviceLibraryEntry.runtime,
+                    codeBundle = executionContext.codeBundle,
+                    entryPoint = ""
                 )
+            )
+            
+            // Track task
+            activeTasks[task.taskId] = task
+            
+            // Track expected input files if needed
+            if (serviceLibraryEntry.hasInputFiles) {
+                fileManager.trackExpectedFiles(task.taskId, executionContext.inputManifest)
             }
             
-            // 9. Send completion notification
-            updateTaskProgress(taskId, 90, null, "Sending completion notification")
-            sendCompletionNotification(
-                taskId = taskId,
-                requesterNodeId = requesterNodeId,
-                callbackAddress = callbackAddress,
-                result = result
-            )
+            betaLogger?.log(LogLevel.DEBUG, TAG, "Task added: \${task.taskId}")
             
-            // 10. Update status
-            if (result.success) {
-                completeTask(
-                    taskId = taskId,
-                    result = result.resultMessage,
-                    owner = requesterNodeId,
-                    recipients = listOf(requesterNodeId)
-                )
-            }
-            
-            result
+            return@withContext task
             
         } catch (e: Exception) {
-            val errorResult = ExecutionResult(
-                taskId = taskId.toString(),
-                success = false,
-                outputManifest = emptyList(),
-                // resourcesUsed = ResourceMetrics.zero(),
-                executionTimeMs = System.currentTimeMillis() - (activeExecutions[taskId]?.startTime ?: 0),
-                errorMessage = e.message ?: "Unknown error",
-                errorType = ExecutionErrorType.UNKNOWN
-            )
-            
-            runningTasks[taskId]?.let {
-                runningTasks[taskId] = it.copy(state = TaskStatus.State.FAILED)
-            }
-            errorResult
-            
-        } finally {
-            // 11. Cleanup
-            cleanupExecution(taskId)
+            betaLogger?.log(LogLevel.ERROR, TAG, "Failed to add task: \${executionContext.taskId} - \${e.message}")
+            throw e
         }
     }
-
-    // === Helper Methods ===
-
-    private suspend fun retrieveInputFiles(
-        inputManifest: List<FileReference>
-    ): Map<String, ByteArray> {
-        val context = getAppContext() ?: throw IllegalStateException("Application context unavailable")
-        val storageManager = DistributedStorageManager.getInstance(context)
-        
-        return inputManifest.associate { fileRef ->
-            val fileBytes = storageManager.retrieveFile(fileRef.fileId)
-            fileRef.fileName to fileBytes
+    
+    /**
+     * Prepare task for execution.
+     * Checks for input files and proceeds to execution when ready.
+     */
+    suspend fun prepareTask(
+        taskId: String,
+        serviceLibraryEntry: ServiceLibraryEntry
+    ) = withContext(Dispatchers.IO) {
+        val task = activeTasks[taskId] ?: run {
+            betaLogger?.log(LogLevel.ERROR, TAG, "Task not found for preparation: \$taskId")
+            return@withContext
         }
-    }
-
-    
-
-    
-    
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Updates resource metrics for all active containers
-     */
-    // private suspend fun updateResourceMetrics() {
-    //     val context = getAppContext() ?: return
-    //     val computeEngine = StrangersSafeComputeEngine.getInstance(context)
-        
-    //     for ((taskId, execution) in activeExecutions) {
-    //         try {
-    //             val metrics = computeEngine.getContainerMetrics(execution.containerId)
-                
-    //             // Update execution state with latest metrics
-    //             activeExecutions[taskId] = execution.copy(
-    //                 resourceMetrics = metrics,
-    //                 lastMetricUpdate = System.currentTimeMillis()
-    //             )
-                
-    //             // Update peak metrics
-    //             peakMetrics[execution.containerId] = ResourceMetrics(
-    //                 ramUsedBytes = maxOf(
-    //                     peakMetrics[execution.containerId]?.ramUsedBytes ?: 0L,
-    //                     metrics.ramUsedBytes
-    //                 ),
-    //                 cpuUsedPercent = maxOf(
-    //                     peakMetrics[execution.containerId]?.cpuUsedPercent ?: 0.0,
-    //                     metrics.cpuUsedPercent
-    //                 ),
-    //                 diskUsedBytes = maxOf(
-    //                     peakMetrics[execution.containerId]?.diskUsedBytes ?: 0L,
-    //                     metrics.diskUsedBytes
-    //                 ),
-    //                 networkSentBytes = metrics.networkSentBytes,
-    //                 networkReceivedBytes = metrics.networkReceivedBytes
-    //             )
-                
-    //         } catch (e: Exception) {
-    //             // Log error, continue to next container
-    //         }
-    //     }
-    // }
-    
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Checks all active tasks for resource limit violations and terminates violators
-     */
-    // private suspend fun checkResourceLimitViolations() {
-    //     val tasksToTerminate = mutableListOf<UUID>()
-        
-    //     for ((taskId, execution) in activeExecutions) {
-    //         // val limits = execution.taskContext.resourceLimits // Deprecated and removed
-    //         val metrics = execution.resourceMetrics
-            
-    //         // Check memory limit
-    //         if (metrics.ramUsedBytes > limits.maxMemoryBytes) {
-    //             tasksToTerminate.add(taskId)
-    //             continue
-    //         }
-            
-    //         // Check CPU limit (average over monitoring window)
-    //         if (metrics.cpuUsedPercent > limits.maxCpuPercent) {
-    //             tasksToTerminate.add(taskId)
-    //             continue
-    //         }
-            
-    //         // Check disk limit
-    //         if (metrics.diskUsedBytes > limits.maxDiskBytes) {
-    //             tasksToTerminate.add(taskId)
-    //             continue
-    //         }
-            
-    //         // Check execution time limit
-    //         val executionTime = System.currentTimeMillis() - execution.startTime
-    //         if (executionTime > limits.maxExecutionTimeMs) {
-    //             tasksToTerminate.add(taskId)
-    //             continue
-    //         }
-    //     }
-        
-    //     // Terminate violating tasks
-    //     for (taskId in tasksToTerminate) {
-    //         terminateTask(taskId, ExecutionErrorType.OUT_OF_MEMORY) // Or appropriate error type
-    //     }
-    // }
-    
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Forcefully terminates a task due to resource violations
-     */
-    private suspend fun terminateTask(taskId: UUID, errorType: ExecutionErrorType) {
-        val execution = activeExecutions[taskId] ?: return
-        val context = getAppContext() ?: return
-        val computeEngine = StrangersSafeComputeEngine.getInstance(context)
         
         try {
-            // Kill the container
-            computeEngine.killContainer(execution.containerId)
+            betaLogger?.log(LogLevel.DEBUG, TAG, "Preparing task: \$taskId")
             
-            // Create error result
-            val result = ExecutionResult(
-                taskId = taskId.toString(),
-                success = false,
-                outputManifest = emptyList(),
-                // resourcesUsed = execution.resourceMetrics,
-                executionTimeMs = System.currentTimeMillis() - execution.startTime,
-                errorMessage = when (errorType) {
-                    ExecutionErrorType.TIMEOUT -> "Task execution exceeded time limit"
-                    ExecutionErrorType.OUT_OF_MEMORY -> "Task exceeded memory limit"
-                    ExecutionErrorType.DISK_FULL -> "Task exceeded disk limit"
-                    else -> "Task terminated due to resource violation"
-                },
-                errorType = errorType
-            )
-            
-            // Update task status
-            val task = taskStatuses[taskId]
-            if (task != null) {
-                taskStatuses[taskId] = task.copy(
-                    state = TaskStatus.State.FAILED,
-                    completedAt = System.currentTimeMillis()
-                )
+            // Check if ready to execute
+            if (fileManager.shouldProceedToExecution(task, serviceLibraryEntry)) {
+                // Proceed to execution
+                val sandboxPaths = sandboxManager.getSandboxPaths(taskId)
+                executionCoordinator.executeTask(task, sandboxPaths, serviceLibraryEntry)
+            } else {
+                // Wait for input files
+                task.state = TaskState.WAITING_FOR_INPUT
+                betaLogger?.log(LogLevel.DEBUG, TAG, "Task \$taskId waiting for input files")
             }
-            
-            // Send failure notification
-            sendCompletionNotification(
-                taskId,
-                execution.requesterNodeId,
-                execution.callbackAddress,
-                result
-            )
-            
-            // Cleanup
-            cleanupExecution(taskId)
             
         } catch (e: Exception) {
-            // Log error
+            betaLogger?.log(LogLevel.ERROR, TAG, "Task preparation failed: \$taskId - \${e.message}")
+            task.state = TaskState.FAILED
+            throw e
         }
     }
     
     /**
-     * Phase 2.2: Resource Monitoring - DEPRECATED  becacuse not available jave <9
-     * Public API: Get current total resource load across all executing tasks
+     * Handle file access update notification.
+     * Retrieves file and checks execution readiness.
      */
-    // fun getTotalLoad(): ResourceMetrics {
-    //     var totalRam = 0L
-    //     var maxCpu = 0.0
-    //     var totalDisk = 0L
-    //     var totalNetSent = 0L
-    //     var totalNetRecv = 0L
-        
-    //     for (execution in activeExecutions.values) {
-    //         totalRam += execution.resourceMetrics.ramUsedBytes
-    //         maxCpu = maxOf(maxCpu, execution.resourceMetrics.cpuUsedPercent)
-    //         totalDisk += execution.resourceMetrics.diskUsedBytes
-    //         totalNetSent += execution.resourceMetrics.networkSentBytes
-    //         totalNetRecv += execution.resourceMetrics.networkReceivedBytes
-    //     }
-        
-    //     return ResourceMetrics(
-    //         ramUsedBytes = totalRam,
-    //         cpuUsedPercent = maxCpu,
-    //         diskUsedBytes = totalDisk,
-    //         networkSentBytes = totalNetSent,
-    //         networkReceivedBytes = totalNetRecv
-    //     )
-    // }
-    
-    /**
-     * Phase 2.2: Resource Monitoring - DEPRECATED  becacuse not available jave <9
-     * Public API: Get resource metrics for a specific task
-     */
-    // fun getTaskMetrics(taskId: UUID): ResourceMetrics? {
-    //     return activeExecutions[taskId]?.resourceMetrics
-    // }
-    
-    /**
-     * Phase 2.2: Resource Monitoring
-     * Public API: Get peak resource metrics for a container
-     */
-    // fun getPeakMetrics(containerId: String): ResourceMetrics? {
-    //     return peakMetrics[containerId]
-    // }
-
-    
-
-    private suspend fun storeResultFiles(
-        taskId: UUID,
-        outputManifest: List<FileReference>,
-        owner: String,
-        recipients: List<String>,
-        accessScope: AccessScope
-    ) {
-        val context = getAppContext() ?: return
-        val storageManager = DistributedStorageManager.getInstance(context)
-        
-        outputManifest.forEach { fileRef ->
-            storageManager.storeFile(
-                fileRef.filePath,
-                owner = owner,
-                recipients = recipients,
-                accessScope = accessScope
-            )
-        }
-    }
-
-    private suspend fun sendCompletionNotification(
-        taskId: UUID,
-        requesterNodeId: String,
-        callbackAddress: String,
-        result: ExecutionResult
-    ) {
-        // Send TaskCompletedMessage to requester
-        MeshEcosystemMessage.sendTaskCompletedMessage(taskId, requesterNodeId, callbackAddress, result)
-    }
-
-    private suspend fun cleanupExecution(taskId: UUID) {
-        activeExecutions[taskId]?.let { execution ->
-            containerToTask.remove(execution.containerId)
-        }
-        activeExecutions.remove(taskId)
-    }
-
-    // ========== Phase 4.2: Task Keypair Management ==========
-    // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5
-    
-    /**
-     * Generate a new PGP keypair for a task.
-     * 
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.2
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART4.md Section 11 (Performance: 287ms on Pixel 5)
-     * 
-     * @param taskId Unique task identifier
-     * @param lifetimeMs Keypair lifetime in milliseconds (default: 24 hours)
-     * @return KeypairEntry with public and private keys
-     */
-    suspend fun generateTaskKeypair(
+    suspend fun handleTaskDataAccessUpdate(
         taskId: String,
-        lifetimeMs: Long = 24 * 60 * 60 * 1000L // 24 hours default
-    ): KeypairEntry = withContext(Dispatchers.IO) {
-        val createdAt = System.currentTimeMillis()
-        val expiresAt = createdAt + lifetimeMs
-        
-        // Generate PGP keypair using BouncyCastle
-        val identity = "task-$taskId"
-        val (publicKey, privateKey) = com.ustadmobile.meshrabiya.service.compute.security.PGPKeypairGenerator
-            .generateKeypair(identity, passphrase = null)
-        
-        val keypairEntry = KeypairEntry(
-            publicKey = publicKey,
-            privateKey = privateKey,
-            createdAt = createdAt,
-            expiresAt = expiresAt
-        )
-        
-        // Register in keypair registry
-        keypairRegistry[taskId] = keypairEntry
-        
-        // Start cleanup job if not already running
-        if (keypairCleanupJob == null || keypairCleanupJob?.isActive != true) {
-            startKeypairCleanup()
+        fileId: String
+    ) = withContext(Dispatchers.IO) {
+        val task = activeTasks[taskId] ?: run {
+            betaLogger?.log(LogLevel.ERROR, TAG, "Task not found for access update: \$taskId")
+            return@withContext
         }
         
-        keypairEntry
-    }
-    
-    /**
-     * Retrieve task public key.
-     * 
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.3
-     * 
-     * @param taskId Task identifier
-     * @return Public key string or null if not found/expired
-     */
-    fun getTaskPublicKey(taskId: String): String? {
-        val entry = keypairRegistry[taskId] ?: return null
-        if (entry.isExpired()) {
-            keypairRegistry.remove(taskId)
-            return null
-        }
-        return entry.publicKey
-    }
-    
-    /**
-     * Retrieve task private key.
-     * 
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.3
-     * 
-     * @param taskId Task identifier
-     * @return Private key string or null if not found/expired
-     */
-    fun getTaskPrivateKey(taskId: String): String? {
-        val entry = keypairRegistry[taskId] ?: return null
-        if (entry.isExpired()) {
-            keypairRegistry.remove(taskId)
-            return null
-        }
-        return entry.privateKey
-    }
-    
-    /**
-     * Remove a task keypair from the registry.
-     * 
-     * @param taskId Task identifier
-     */
-    fun removeTaskKeypair(taskId: String) {
-        keypairRegistry.remove(taskId)
-    }
-    
-    /**
-     * Start background cleanup task for expired keypairs.
-     * Runs every 15 minutes.
-     * 
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.4
-     */
-    private fun startKeypairCleanup() {
-        keypairCleanupJob?.cancel()
-        
-        keypairCleanupJob = CoroutineScope(Dispatchers.Default).launch {
-            while (isActive) {
-                delay(15 * 60 * 1000L) // 15 minutes
-                cleanupExpiredKeypairs()
+        try {
+            // Retrieve and store file
+            fileManager.handleFileAccessUpdate(task, fileId)
+            
+            // Check if ready to proceed
+            // Note: Would need serviceLibraryEntry here - simplified for now
+            if (task.state == TaskState.WAITING_FOR_INPUT) {
+                // Resume preparation (would call prepareTask with serviceLibraryEntry)
+                betaLogger?.log(LogLevel.DEBUG, TAG, "File received for task \$taskId, checking readiness")
             }
+            
+        } catch (e: Exception) {
+            betaLogger?.log(LogLevel.ERROR, TAG, "Access update failed for task \$taskId: \${e.message}")
         }
     }
     
     /**
-     * Clean up expired keypairs from the registry.
-     * 
-     * Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART1.md Section 5.4
+     * Get task by ID.
      */
-    fun cleanupExpiredKeypairs() {
-        val expiredTaskIds = keypairRegistry
-            .filter { (_, entry) -> entry.isExpired() }
-            .map { (taskId, _) -> taskId }
+    fun getTask(taskId: String): Task? = activeTasks[taskId]
+    
+    /**
+     * Get all active tasks.
+     */
+    fun getActiveTasks(): List<Task> = activeTasks.values.toList()
+    
+    /**
+     * Remove task and cleanup all resources.
+     */
+    suspend fun removeTask(taskId: String) = withContext(Dispatchers.IO) {
+        val task = activeTasks.remove(taskId) ?: return@withContext
         
-        expiredTaskIds.forEach { taskId ->
-            keypairRegistry.remove(taskId)
-            // Secure memory zeroing of private keys
-            entry.privateKey?.let { key ->
-                java.util.Arrays.fill(key.encoded, 0)
-            }
+        betaLogger?.log(LogLevel.DEBUG, TAG, "Removing task: \$taskId")
+        
+        // Cleanup components
+        sandboxManager.cleanupSandbox(taskId)
+        fileManager.cleanupTask(taskId)
+        
+        betaLogger?.log(LogLevel.DEBUG, TAG, "Task removed: \$taskId")
+    }
+    
+    /**
+     * Shutdown manager and cleanup all tasks.
+     */
+    suspend fun shutdown() {
+        betaLogger?.log(LogLevel.DEBUG, TAG, "Shutting down TaskManager")
+        
+        activeTasks.keys.forEach { taskId ->
+            removeTask(taskId)
         }
         
-        if (expiredTaskIds.isNotEmpty()) {
-            println("TaskManager: Cleaned up ${expiredTaskIds.size} expired task keypairs")
-        }
-    }
-    
-    /**
-     * Stop the keypair cleanup background job.
-     */
-    fun stopKeypairCleanup() {
-        keypairCleanupJob?.cancel()
-        keypairCleanupJob = null
-    }
-    
-    /**
-     * Get all active task keypairs (for debugging/monitoring).
-     * 
-     * @return Map of taskId to remaining lifetime in milliseconds
-     */
-    fun getActiveKeypairs(): Map<String, Long> {
-        return keypairRegistry
-            .filter { (_, entry) -> !entry.isExpired() }
-            .mapValues { (_, entry) -> entry.getRemainingLifetimeMs() }
-    }
-
-    // TaskExecutor interface
-    interface TaskExecutor {
-        suspend fun execute(
-            context: TaskExecutionContext,
-            inputFiles: Map<String, ByteArray>,
-            containerId: String
-        ): ExecutionResult
+        scope.cancel()
     }
 }

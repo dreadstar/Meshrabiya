@@ -12,6 +12,7 @@ import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.AndroidDeviceCapabilityManager
+import com.ustadmobile.meshrabiya.vnet.hardware.MLCapabilityDetector
 // UPDATED: MeshRole moved from mmcp to vnet package (canonical location)
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 
@@ -510,7 +511,7 @@ class EmergentRoleManager(
             // Get topology map from callback or OriginatingMessageManager
             // NEW: Uses NodeTopologyInfo.neighbors instead of direct Set<Int>
             val topologyMapInfo: Map<Int, NodeTopologyInfo> = (virtualNode as VirtualNode)
-                .getOriginatingMessageManager()
+                .originatingMessageManager
                 .getTopologyMapInfo()
             
             val myAddr = virtualNode.addressAsInt
@@ -1177,5 +1178,33 @@ class EmergentRoleManager(
             safeLog(LogLevel.BASIC, "Failed to get device capabilities: ${e.message}")
             null
         }
+    }
+    
+    /**
+     * Get local ML capabilities for compute node response.
+     * Returns pair of (mlKitFeatures, mlKitCustomSupport).
+     * 
+     * Used by DistributedComputeServer when responding to task requests.
+     * 
+     * Detects:
+     * - NNAPI accelerator devices (GPU, DSP, NPU)
+     * - GPU capabilities (OpenGL ES, Vulkan)
+     * - ML Kit feature availability
+     * - Custom TensorFlow Lite model support
+     */
+    fun getLocalMLCapabilitiesForResponse(): Pair<List<String>, Boolean> {
+        val detector = MLCapabilityDetector(context, null)
+        val (capabilities, customModelSupport) = detector.detectCapabilities()
+        
+        safeLog(
+            LogLevel.INFO,
+            "Returning ML capabilities: ${capabilities.size} features detected, customSupport=$customModelSupport"
+        )
+        safeLog(
+            LogLevel.DEBUG,
+            "ML capabilities: ${capabilities.joinToString(", ")}"
+        )
+        
+        return Pair(capabilities, customModelSupport)
     }
 }

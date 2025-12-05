@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap
 class CoreGossipBroadcastService private constructor() {
 
     private val meshGossipService: MeshGossipService = MeshGossipService.getInstance()
-    private val broadcastTtlMs: Long = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getBroadcastTtlMs()
+    private val broadcastTtlMs: Long = MeshrabiyaConstants.getBroadcastTtlMs()
 
     private val seenBroadcasts = ConcurrentHashMap<String, Long>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -113,7 +113,11 @@ class CoreGossipBroadcastService private constructor() {
      * @param fileId The file ID to query for
      */
     fun sendChunkRetrievalQuery(fileId: String) {
-        val query = ChunkRetrievalQuery(fileId)
+        val query = ChunkRetrievalQuery(
+            fileId = fileId,
+            chunkIndexes = null,
+            senderId = meshGossipService.getLocalNodeAddress().toString()
+        )
         val message = ChunkRetrievalQueryMessage(query)
         sendBroadcast(message)
     }

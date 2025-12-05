@@ -16,19 +16,19 @@ import kotlinx.serialization.Serializable
  * MIGRATION NOTE: LibraryEntry.kt is deprecated and replaced by ServiceLibraryEntry. Do not use LibraryEntry in new code.
  */
 
-data class ResourceRequirements(
-    @Serializable
-    val minRAMMB: Int,
-    val preferredRAMMB: Int,
-    val cpuIntensity: CPUIntensity,
-    val requiresGPU: Boolean = false,
-    val requiresNPU: Boolean = false,
-    val requiresStorage: Boolean = false,
-    val minStorageGB: Float = 0f,
-    val thermalConstraints: Set<ThermalState> = setOf(ThermalState.COOL, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),  // Changed COLD to COOL
-    val maxNetworkLatencyMs: Int = 1000,
-    val minBatteryLevel: Int = 25
-)
+// data class ResourceRequirements(
+//     @Serializable
+//     val minRAMMB: Int,
+//     val preferredRAMMB: Int,
+//     val cpuIntensity: CPUIntensity,
+//     val requiresGPU: Boolean = false,
+//     val requiresNPU: Boolean = false,
+//     val requiresStorage: Boolean = false,
+//     val minStorageGB: Float = 0f,
+//     val thermalConstraints: Set<ThermalState> = setOf(ThermalState.COOL, ThermalState.WARM, ThermalState.HOT, ThermalState.CRITICAL),  // Changed COLD to COOL
+//     val maxNetworkLatencyMs: Int = 1000,
+//     val minBatteryLevel: Int = 25
+// )
 
 enum class PythonLibrary {
     NUMPY, PANDAS, OPENCV, PILLOW, SCIKIT_LEARN,

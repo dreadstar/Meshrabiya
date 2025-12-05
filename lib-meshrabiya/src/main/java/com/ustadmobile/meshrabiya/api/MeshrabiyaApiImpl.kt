@@ -13,12 +13,14 @@ import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
-import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
+// DEPRECATED: IntelligentDistributedComputeService replaced by canonical compute workflows (2025-12-04)
+// import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
 import com.ustadmobile.meshrabiya.model.MeshState
 import com.ustadmobile.meshrabiya.model.NetworkInfo
 import com.ustadmobile.meshrabiya.model.NodeInfo
 import com.ustadmobile.meshrabiya.model.ApiResult
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
+import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
 import kotlinx.coroutines.flow.Flow
@@ -59,8 +61,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // Internal managers, initialized in initMesh
     private var myNode: AndroidVirtualNode? = null
+    private var emergentRoleManager: EmergentRoleManager? = null
     private var distributedStorageManager: DistributedStorageManager? = null
-    private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
+    // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
+    // Compute workflows now use DistributedComputeServer + TaskManager directly
+    // private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
 
      // --- Proxy Controls ---
     override fun setProxy(host: String, port: Int) {
@@ -72,8 +77,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Mesh Initialization ---
+    private val Context.dataStore by preferencesDataStore(name = "meshr_settings")
+    
     override fun initMesh(context: Context) {
-        val Context.dataStore by preferencesDataStore(name = "meshr_settings")
         val dataStore = context.dataStore
 
         myNode = AndroidVirtualNode(
@@ -81,21 +87,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             dataStore = dataStore
         )
 
-        distributedStorageManager = myNode?.getDistributedStorageManager()
-        intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
+        emergentRoleManager = myNode?.emergentRoleManager
+        distributedStorageManager = myNode?.distributedStorageManager
+        // DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
+        // intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
     }
 
     // --- Mesh State & Network Info ---
-    override fun getNodeRole(): Byte = myNode?.getCurrentNodeRole() ?: 0
-    override fun getFitnessScore(): Int = myNode?.getCurrentFitnessScore() ?: 0
-    override fun getConnectionUri(): String = myNode?.nodeState?.value?.connectUri ?: ""
-    override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = myNode?.nodeState?.value ?: throw IllegalStateException("Mesh not initialized")
+    override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
+    override fun getFitnessScore(): Int = 0  // TODO: Expose fitness calculation from EmergentRoleManager
+    override fun getConnectionUri(): String = myNode?.currentNodeState?.connectUri ?: ""
+    override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = myNode?.currentNodeState ?: throw IllegalStateException("Mesh not initialized")
     override fun getNeighbors(): List<Int> = myNode?.neighbors()?.map { it.first } ?: emptyList()
-    override fun getHopCountToNode(nodeId: Int): Int? = myNode?.getHopCountToNode(nodeId)
+    override fun getHopCountToNode(nodeId: Int): Int? = myNode?.originatingMessageManager?.findOriginatingMessageFor(nodeId)?.hopCount?.toInt()
 
-    override fun getConnectLink(): String? = myNode.state.filter {
-        it.connectUri != null
-    }.first()
+    override fun getConnectLink(): String? = myNode?.currentNodeState?.connectUri
     override fun getConnectLinkFlow(): Flow<String?> = myNode?.state?.map { it.connectUri } ?: flowOf(null)
 
     // --- Mesh Network Controls ---
@@ -105,7 +111,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 myNode?.setWifiHotspotEnabled(
                     enabled = true,
                     preferredBand = ConnectBand.BAND_5GHZ,
-                    hotspotType = HotspotType.DEFAULT
+                    hotspotType = HotspotType.AUTO
                 )
             }
             callback(Result.success(Unit))
@@ -120,7 +126,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 myNode?.setWifiHotspotEnabled(
                     enabled = false,
                     preferredBand = ConnectBand.BAND_5GHZ,
-                    hotspotType = HotspotType.DEFAULT
+                    hotspotType = HotspotType.AUTO
                 )
             }
             callback(Result.success(Unit))
@@ -129,157 +135,172 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
 
-    override fun getMeshStatus(): MeshState = myNode?.getMeshStatus() ?: MeshState.UNKNOWN
-    override fun getPeerCount(): Int = myNode?.getPeerCount() ?: 0
-    override fun getNetworkInfo(): NetworkInfo = myNode?.getNetworkInfo() ?: NetworkInfo()
-    override fun getNodeInfo(nodeId: String): NodeInfo = myNode?.getNodeInfo(nodeId) ?: NodeInfo()
+    // TODO: Reimplement using canonical workflows - VirtualNode methods removed (2025-12-04)
+    override fun getMeshStatus(): MeshState = MeshState.UNKNOWN // myNode?.getMeshStatus() ?: MeshState.UNKNOWN
+    override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
+    override fun getNetworkInfo(): NetworkInfo = NetworkInfo() // myNode?.getNetworkInfo() ?: NetworkInfo()
+    override fun getNodeInfo(nodeId: String): NodeInfo = NodeInfo() // myNode?.getNodeInfo(nodeId) ?: NodeInfo()
 
     // --- Gateway Controls ---
+    // TODO: Reimplement using GatewaySelector from canonical workflows (2025-12-04)
     override fun setTorGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        try {
-            myNode?.setTorGatewayEnabled(enabled)
+        // try {
+        //     myNode?.setTorGatewayEnabled(enabled)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getTorGatewayStatus(): Boolean = myNode?.getTorGatewayStatus() ?: false
+    override fun getTorGatewayStatus(): Boolean = false // myNode?.getTorGatewayStatus() ?: false
     override fun setInternetGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        try {
-            myNode?.setInternetGatewayEnabled(enabled)
+        // try {
+        //     myNode?.setInternetGatewayEnabled(enabled)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getInternetGatewayStatus(): Boolean = myNode?.getInternetGatewayStatus() ?: false
-    override fun getGatewayStatus(): Boolean = myNode?.getGatewayStatus() ?: false
+    override fun getInternetGatewayStatus(): Boolean = false // myNode?.getInternetGatewayStatus() ?: false
+    override fun getGatewayStatus(): Boolean = false // myNode?.getGatewayStatus() ?: false
 
     // --- Storage Participation ---
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun setStorageParticipationEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        try {
-            distributedStorageManager?.setParticipationEnabled(enabled)
+        // try {
+        //     distributedStorageManager?.setParticipationEnabled(enabled)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getStorageParticipationStatus(): Boolean = distributedStorageManager?.isParticipationEnabled() ?: false
-    override fun getAvailableStorageDevices(): List<StorageDevice> = distributedStorageManager?.getAvailableDevices() ?: emptyList()
+    override fun getStorageParticipationStatus(): Boolean = false // distributedStorageManager?.isParticipationEnabled() ?: false
+    override fun getAvailableStorageDevices(): List<StorageDevice> = emptyList() // distributedStorageManager?.getAvailableDevices() ?: emptyList()
     override fun setStorageAllocation(deviceId: String, allocatedMB: Long, callback: (Result<Unit>) -> Unit) {
-        try {
-            distributedStorageManager?.setStorageAllocation(deviceId, allocatedMB)
+        // try {
+        //     distributedStorageManager?.setStorageAllocation(deviceId, allocatedMB)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getStorageAllocations(): List<StorageAllocation> = distributedStorageManager?.getStorageAllocations() ?: emptyList()
+    override fun getStorageAllocations(): List<StorageAllocation> = emptyList() // distributedStorageManager?.getStorageAllocations() ?: emptyList()
     override fun enableDistributedStorage() {
-        distributedStorageManager?.registerWithEcosystemListener(myNode?.getMeshEcosystemListener())
+        // distributedStorageManager?.registerWithEcosystemListener(myNode?.getMeshEcosystemListener())
     }
     override fun disableDistributedStorage() {
-        distributedStorageManager?.unregisterFromEcosystemListener(myNode?.getMeshEcosystemListener())
+        // distributedStorageManager?.unregisterFromEcosystemListener(myNode?.getMeshEcosystemListener())
     }
-    override fun isServiceLayerParticipating(): Boolean {
-        return distributedStorageManager?.participationEnabled?.value ?: false
+    // TODO: Reimplement using TaskManager from canonical workflows (2025-12-04)
+    override fun isComputeLayerParticipating(): Boolean {
+        return false // distributedStorageManager?.participationEnabled?.value ?: false
     }
 
     // --- Drop Folder Management ---
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit) {
-        try {
-            distributedStorageManager?.selectDropFolder(path)
+        // try {
+        //     distributedStorageManager?.selectDropFolder(path)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getDropFolder(): File? = distributedStorageManager?.getDropFolder()
-    override fun getDropFolderFiles(): List<File> = distributedStorageManager?.getDropFolderFiles() ?: emptyList()
+    override fun getDropFolder(): File? = null // distributedStorageManager?.getDropFolder()
+    override fun getDropFolderFiles(): List<File> = emptyList() // distributedStorageManager?.getDropFolderFiles() ?: emptyList()
 
     // --- File Operations ---
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun storeFile(file: File, callback: (Result<String>) -> Unit) {
-        distributedStorageManager?.storeFile(file) { result ->
-            result.onSuccess { fileId ->
-                callback(Result.success(fileId))
-                onFileStored?.invoke(fileId, file)
-            }.onFailure { error ->
-                callback(Result.failure(error))
-                onOperationFailed?.invoke("storeFile", error)
-            }
-        }
+        callback(Result.failure(NotImplementedError("storeFile not yet implemented in canonical workflows")))
+        // distributedStorageManager?.storeFile(file) { result ->
+        //     result.onSuccess { fileId ->
+        //         callback(Result.success(fileId))
+        //         onFileStored?.invoke(fileId, file)
+        //     }.onFailure { error ->
+        //         callback(Result.failure(error))
+        //         onOperationFailed?.invoke("storeFile", error)
+        //     }
+        // }
     }
     override fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit) {
-        distributedStorageManager?.retrieveFile(fileId) { result ->
-            result.onSuccess { file ->
-                callback(Result.success(file))
-                onFileRetrieved?.invoke(fileId, file)
-            }.onFailure { error ->
-                callback(Result.failure(error))
-                onOperationFailed?.invoke("retrieveFile", error)
-            }
-        }
+        callback(Result.failure(NotImplementedError("retrieveFile not yet implemented in canonical workflows")))
+        // distributedStorageManager?.retrieveFile(fileId) { result ->
+        //     result.onSuccess { file ->
+        //         callback(Result.success(file))
+        //         onFileRetrieved?.invoke(fileId, file)
+        //     }.onFailure { error ->
+        //         callback(Result.failure(error))
+        //         onOperationFailed?.invoke("retrieveFile", error)
+        //     }
+        // }
     }
     override fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        distributedStorageManager?.streamFile(fileId) { result ->
-            callback(result)
-            result.onFailure { error ->
-                onOperationFailed?.invoke("streamFile", error)
-            }
-        }
+        callback(Result.failure(NotImplementedError("streamFile not yet implemented in canonical workflows")))
+        // distributedStorageManager?.streamFile(fileId) { result ->
+        //     callback(result)
+        //     result.onFailure { error ->
+        //         onOperationFailed?.invoke("streamFile", error)
+        //     }
+        // }
     }
     override fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        distributedStorageManager?.deleteFile(fileId) { result ->
-            callback(result)
-            result.onFailure { error ->
-                onOperationFailed?.invoke("deleteFile", error)
-            }
-        }
+        callback(Result.failure(NotImplementedError("deleteFile not yet implemented in canonical workflows")))
+        // distributedStorageManager?.deleteFile(fileId) { result ->
+        //     callback(result)
+        //     result.onFailure { error ->
+        //         onOperationFailed?.invoke("deleteFile", error)
+        //     }
+        // }
     }
-    override fun getAllMeshFiles(): List<MeshFile> = distributedStorageManager?.getAllMeshFiles() ?: emptyList()
+    override fun getAllMeshFiles(): List<MeshFile> = emptyList() // distributedStorageManager?.getAllMeshFiles() ?: emptyList()
 
     // --- Distributed Service Layer ---
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun setServiceParticipationEnabled(serviceId: String, enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        try {
-            myNode?.setServiceParticipationEnabled(serviceId, enabled)
+        // try {
+        //     myNode?.setServiceParticipationEnabled(serviceId, enabled)
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
-    override fun getAvailableServices(): List<String> = myNode?.getAvailableServices() ?: emptyList()
-    override fun getServiceParticipationStatus(serviceId: String): Boolean {
-        return myNode?.getServiceParticipationStatus(serviceId) ?: false
-    }
+    override fun getAvailableServices(): List<String> = emptyList() // myNode?.getAvailableServices() ?: emptyList()
+    override fun getServiceParticipationStatus(serviceId: String): Boolean = false // myNode?.getServiceParticipationStatus(serviceId) ?: false
 
     // --- Compute/Task Operations ---
+    // TODO: Reimplement using TaskManager + DistributedComputeServer from canonical workflows (2025-12-04)
     override fun addTask(requestParams: Map<String, Any>): ApiResult {
-        val taskId = requestParams["taskId"] as? String ?: java.util.UUID.randomUUID().toString()
-        val serviceId = requestParams["serviceId"] as? String ?: "unknown_service"
-        val inputParams = requestParams["inputParams"] as? Map<String, Any> ?: emptyMap()
-        val metadata = requestParams
-
-        // Create canonical MeshEcosystemMessage for compute task request
-        val computeTaskMsg = ComputeTaskRequestMessage(
-            taskId = taskId,
-            serviceId = serviceId,
-            inputParams = inputParams,
-            metadata = metadata
-        )
-
-        // Pass the ecosystem message to the compute service for processing and broadcast
-        intelligentDistributedComputeService?.processTaskRequest(computeTaskMsg)
-
-        return ApiResult.Success // Optionally return taskId or status
+        return ApiResult.Failure(NotImplementedError("addTask not yet implemented in canonical workflows"))
+        // val taskId = requestParams["taskId"] as? String ?: java.util.UUID.randomUUID().toString()
+        // val serviceId = requestParams["serviceId"] as? String ?: "unknown_service"
+        // val inputParams = requestParams["inputParams"] as? Map<String, Any> ?: emptyMap()
+        // val metadata = requestParams
+        //
+        // // Create canonical MeshEcosystemMessage for compute task request
+        // val computeTaskMsg = ComputeTaskRequestMessage(
+        //     taskId = taskId,
+        //     serviceId = serviceId,
+        //     inputParams = inputParams,
+        //     metadata = metadata
+        // )
+        //
+        // // Pass the ecosystem message to the compute service for processing and broadcast
+        // intelligentDistributedComputeService?.processTaskRequest(computeTaskMsg)
+        //
+        // return ApiResult.Success // Optionally return taskId or status
     }
 
     override fun startTask(taskId: String, callback: (Result<Unit>) -> Unit) {
-        intelligentDistributedComputeService?.startTask(taskId, callback)
+        callback(Result.failure(NotImplementedError("startTask not yet implemented in canonical workflows")))
+        // intelligentDistributedComputeService?.startTask(taskId, callback)
     }
 
     override fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit) {
-        intelligentDistributedComputeService?.cancelTask(taskId, callback)
+        callback(Result.failure(NotImplementedError("cancelTask not yet implemented in canonical workflows")))
+        // intelligentDistributedComputeService?.cancelTask(taskId, callback)
     }
+    
+    override fun getJobTypes(): List<JobType> = emptyList() // TODO: Implement via TaskManager
     
     // UNUSED SCHEDULER API - Commented 2025-11-12
     // These implementations reference scheduler types that are unused in Phase 3-4
@@ -289,10 +310,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var onFileStored: ((fileId: String, file: File) -> Unit)? = null
     private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
     private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
-    // UNUSED SCHEDULER API - Commented 2025-11-12
+    // UNUSED SCHEDULER API - Commented 2025-12-04
     // private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
-    private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     private var onFileAddedToDropFolder: ((fileId: String, file: File) -> Unit)? = null
 
     override fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit) {
@@ -322,23 +342,24 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Settings and State ---
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun getSettings(): Map<String, Any> {
         return mapOf(
-            "dropFolderPath" to (distributedStorageManager?.getDropFolder()?.absolutePath ?: ""),
-            "availableServices" to (myNode?.getAvailableServices() ?: emptyList<String>()),
-            "jobTypes" to (intelligentDistributedComputeService?.getJobTypes() ?: emptyList<JobType>())
+            "dropFolderPath" to "",
+            "availableServices" to emptyList<String>(),
+            "jobTypes" to emptyList<JobType>()
         )
     }
     override fun setSetting(key: String, value: Any, callback: (Result<Unit>) -> Unit) {
-        try {
-            when (key) {
-                "dropFolderPath" -> distributedStorageManager?.selectDropFolder(value as String)
-                else -> throw IllegalArgumentException("Unknown setting key: $key")
-            }
+        // try {
+        //     when (key) {
+        //         "dropFolderPath" -> distributedStorageManager?.selectDropFolder(value as String)
+        //         else -> throw IllegalArgumentException("Unknown setting key: $key")
+        //     }
             callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
-        }
+        // } catch (e: Exception) {
+        //     callback(Result.failure(e))
+        // }
     }
 
     // --- Service Bundle & Gateway Controls ---
@@ -362,10 +383,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun setOnGatewayTraffic(handler: (packet: VirtualPacket) -> Boolean) {
         onGatewayTraffic = handler
     }
-    override fun getMeshTrafficRouterStatus(): String {
-        val router = myNode?.getMeshTrafficRouter()
-        return if (router != null) "Active: ${router.javaClass.name}" else "Inactive"
-    }
+    // TODO: Reimplement using canonical workflows (2025-12-04)
+    override fun getMeshTrafficRouterStatus(): String = "Inactive" // {
+        // val router = myNode?.getMeshTrafficRouter()
+        // return if (router != null) "Active: ${router.javaClass.name}" else "Inactive"
+    // }
 
     // --- Event/Callback Integration ---
     private var onMeshStateChanged: ((MeshState) -> Unit)? = null
@@ -386,8 +408,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // override fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit) {
     //     onServiceAnnounced = handler
     // }
+    // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit) {
         onGossipMessage = handler
-        myNode?.addGossipListener(handler)
+        // myNode?.addGossipListener(handler)
     }
 }

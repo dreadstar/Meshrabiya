@@ -22,7 +22,7 @@ import kotlinx.serialization.decodeFromString
 import org.msgpack.core.MessagePack
 import org.msgpack.core.MessageUnpacker
 import org.msgpack.core.MessageBufferPacker
-
+import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
 
 
 // --- AnySerializer for kotlinx.serialization ---
@@ -75,7 +75,8 @@ data class StorageNodeResponse(
  */
 data class ChunkRetrievalQuery(
     val fileId: String,
-    val chunkIndexes: List<Int>? = null
+    val chunkIndexes: List<Int>? = null,
+    val senderId: String = ""
 )
 
 /**
@@ -277,8 +278,9 @@ sealed class MeshEcosystemMessage(
                     val chunkIndexes = if (unpacker.unpackBoolean()) {
                         List(unpacker.unpackArrayHeader()) { unpacker.unpackInt() }
                     } else null
+                    val senderId = unpacker.unpackString()
                     ChunkRetrievalQueryMessage(
-                        ChunkRetrievalQuery(fileId, chunkIndexes)
+                        ChunkRetrievalQuery(fileId, chunkIndexes, senderId)
                     )
                 }
                 "ChunkRetrievalResponse" -> ChunkRetrievalResponseMessage(
@@ -484,7 +486,8 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                         val len = unpacker.unpackArrayHeader()
                         List(len) { unpacker.unpackInt() }
                     } else null
-                    ChunkRetrievalQueryMessage(ChunkRetrievalQuery(fileId, chunkIndexes))
+                    val senderId = unpacker.unpackString()
+                    ChunkRetrievalQueryMessage(ChunkRetrievalQuery(fileId, chunkIndexes, senderId))
                 }
                 MessageType.CHUNK_RETRIEVAL_RESPONSE -> {
                     val requestId = unpacker.unpackString()
@@ -546,7 +549,6 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                 MessageType.TASK_COMPLETED -> TaskCompletedMessage.fromUnpacker(unpacker)
                 MessageType.TASK_SCHEDULED -> TaskScheduledMessage.fromUnpacker(unpacker)
                 MessageType.TASK_ASSIGNMENT -> TaskAssignmentMessage.fromUnpacker(unpacker)
-                else -> throw IllegalArgumentException("Unknown MeshEcosystemMessage type: $type")
             }
             unpacker.close()
             return message
@@ -622,6 +624,8 @@ data class ChunkRetrievalQueryMessage(val query: ChunkRetrievalQuery) : MeshEcos
         } else {
             packer.packBoolean(false)
         }
+        
+        packer.packString(query.senderId)
         
         packer.close()
         return packer.toByteArray()
@@ -743,6 +747,21 @@ data class FilePermissionUpdateConfirmationMessage(
         return packer.toByteArray()
     }
 }
+
+/**
+ * Type alias for FilePermissionUpdateConfirmationMessage.
+ * 
+ * This message serves dual purposes:
+ * 1. Confirms permission update to file owner ("confirmation" semantics)
+ * 2. Notifies recipients (including tasks) they now have access ("notification" semantics)
+ * 
+ * Sent by: Storage nodes after re-encrypting chunk keys
+ * Sent to: File owner, all recipients (users + tasks)
+ * 
+ * For task recipients, this triggers the compute node to retrieve the file
+ * and make it available in the task sandbox.
+ */
+typealias FileAccessUpdateNotification = FilePermissionUpdateConfirmationMessage
 
 
 /**
@@ -977,6 +996,7 @@ data class TaskScheduledMessage(
     val scheduledAt: Long = System.currentTimeMillis(),
     val estimatedStartTime: Long? = null,
     val taskPriority: String = "NORMAL",  // BACKGROUND, NORMAL, HIGH, CRITICAL
+    val resourceLimits: ResourceLimits = ResourceLimits.zero(),
     val resourceAllocation: Map<String, Any> = emptyMap(),
     val metadata: Map<String, Any>? = null,
     val requestId: String? = null
@@ -1024,14 +1044,11 @@ data class TaskScheduledMessage(
             
             // Unpack resource allocation from JSON
             val resourceJson = unpacker.unpackString()
-            val resourceAllocation = Json.decodeFromString(
-                MapSerializer(String.serializer(), AnySerializer), 
-                resourceJson
-            )
+            val resourceLimits = Json.decodeFromString(ResourceLimits.serializer(), resourceJson)
             
             return TaskScheduledMessage(
                 taskId, executorNodeId, requesterNodeId,
-                scheduledAt, estimatedStartTime, taskPriority, resourceAllocation
+                scheduledAt, estimatedStartTime, taskPriority, resourceLimits
             )
         }
     }
@@ -1047,10 +1064,12 @@ data class TaskAssignmentMessage(
     val taskId: String,
     val executorNodeId: String,
     val requesterNodeId: String,
-    val taskType: String,  // PYTHON, JAVA, JVM, JAVASCRIPT, ML_NATIVE, WORKFLOW
-    val jobType: String,   // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
+    val callbackAddress: String,
+    val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
+    val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
+    val codeBundle: ByteArray? = null,
     val executionContext: Map<String, Any>,  // Includes working directory, environment vars, etc.
-    // val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
+    val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
     val inputFiles: List<Map<String, String>>,  // List of {fileId, storageRef, accessScope}
     val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
     val priority: String = "NORMAL",
@@ -1065,8 +1084,18 @@ data class TaskAssignmentMessage(
         packer.packString(taskId)
         packer.packString(executorNodeId)
         packer.packString(requesterNodeId)
-        packer.packString(taskType)
+        packer.packString(callbackAddress)
+        packer.packString(executorType)
         packer.packString(jobType)
+        
+        // Pack code bundle
+        if (codeBundle != null) {
+            packer.packBoolean(true)
+            packer.packBinaryHeader(codeBundle.size)
+            packer.writePayload(codeBundle)
+        } else {
+            packer.packBoolean(false)
+        }
         
         // Pack execution context as JSON
         val contextJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), executionContext)
@@ -1099,8 +1128,17 @@ data class TaskAssignmentMessage(
             val taskId = unpacker.unpackString()
             val executorNodeId = unpacker.unpackString()
             val requesterNodeId = unpacker.unpackString()
-            val taskType = unpacker.unpackString()
+            val callbackAddress = unpacker.unpackString()
+            val executorType = unpacker.unpackString()
             val jobType = unpacker.unpackString()
+            
+            // Unpack code bundle
+            val codeBundle = if (unpacker.unpackBoolean()) {
+                val size = unpacker.unpackBinaryHeader()
+                unpacker.readPayload(size)
+            } else {
+                null
+            }
             
             // Unpack execution context from JSON
             val contextJson = unpacker.unpackString()
@@ -1136,10 +1174,70 @@ data class TaskAssignmentMessage(
             val assignedAt = unpacker.unpackLong()
             
             return TaskAssignmentMessage(
-                taskId, executorNodeId, requesterNodeId, taskType, jobType,
-                executionContext, resourceLimits, inputFiles, outputRequirements,
+                taskId, executorNodeId, requesterNodeId, callbackAddress, executorType, jobType,
+                codeBundle, executionContext, resourceLimits, inputFiles, outputRequirements,
                 priority, assignedAt
             )
+        }
+    }
+}
+
+/**
+ * Message sent by compute node to client when task is accepted for execution.
+ *
+ * @property taskId Task identifier
+ * @property publicKey Public key for encrypting data shared with this task
+ * @property computeNodeAddress Mesh network address of compute node executing the task
+ */
+data class TaskAcceptanceMessage(
+    val taskId: String,
+    val publicKey: String,
+    val computeNodeAddress: String
+) : MeshEcosystemMessage("TaskAcceptance") {
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(taskId)
+        packer.packString(publicKey)
+        packer.packString(computeNodeAddress)
+        packer.close()
+        return packer.toByteArray()
+    }
+
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): TaskAcceptanceMessage {
+            val taskId = unpacker.unpackString()
+            val publicKey = unpacker.unpackString()
+            val computeNodeAddress = unpacker.unpackString()
+            return TaskAcceptanceMessage(taskId, publicKey, computeNodeAddress)
+        }
+    }
+}
+
+/**
+ * Message sent by client to compute node acknowledging task completion.
+ *
+ * @property taskId Task identifier
+ * @property receivedAt Timestamp when client received completion notification
+ */
+data class TaskCompletionAckMessage(
+    val taskId: String,
+    val receivedAt: Long = System.currentTimeMillis()
+) : MeshEcosystemMessage("TaskCompletionAck") {
+    override fun toBytes(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packString(type)
+        packer.packString(taskId)
+        packer.packLong(receivedAt)
+        packer.close()
+        return packer.toByteArray()
+    }
+
+    companion object {
+        fun fromUnpacker(unpacker: MessageUnpacker): TaskCompletionAckMessage {
+            val taskId = unpacker.unpackString()
+            val receivedAt = unpacker.unpackLong()
+            return TaskCompletionAckMessage(taskId, receivedAt)
         }
     }
 }

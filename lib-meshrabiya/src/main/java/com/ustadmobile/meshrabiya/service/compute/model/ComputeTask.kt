@@ -2,6 +2,8 @@ package com.ustadmobile.meshrabiya.service.compute.model
 import com.ustadmobile.meshrabiya.model.ResourceRequirements
 import com.ustadmobile.meshrabiya.service.compute.model.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Contextual
+import java.util.UUID
 /**
  * Sealed class representing a compute task in the distributed mesh system.
  * Subclasses represent specific task types and their properties.
@@ -108,7 +110,9 @@ data class ComputeTask(
  */
 @Serializable
 data class TaskResult(
+    @Contextual val id: UUID,
     val success: Boolean,
+    val executionResult:ExecutionResult,
     val outputManifest: List<FileReference>,
     // val metrics: ResourceMetrics,
     val errorMessage: String? = null

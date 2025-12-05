@@ -32,7 +32,7 @@ import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 class DistributedStorageClient(
     private val manager: DistributedStorageManager,
     private val virtualNode: VirtualNode,
-    private val connectionPool: MeshConnectionPool
+    
 ) {
     companion object {
         private const val TAG = "DistributedStorageClient"
@@ -47,7 +47,9 @@ class DistributedStorageClient(
     private val pendingChunkRetrievals = ConcurrentHashMap<String, MutableList<ChunkRetrievalResponse>>()
     private val pendingReplicaResponses = ConcurrentHashMap<String, MutableList<ReplicaResponse>>()
     private val pendingPermissionConfirmations = ConcurrentHashMap<String, MutableList<FilePermissionUpdateConfirmationMessage>>()
-    
+
+    private val connectionPool = MeshConnectionPool.getInstance()
+
     data class PendingStorageNodeRequest(
         val request: StorageNodeRequest,
         val chunk: MeshChunk,
@@ -202,8 +204,10 @@ class DistributedStorageClient(
                         desiredReplicas = desiredReplicas
                     )
                     
-                    // Step 6: Send chunk to selected storage node
-                    // TODO: Implement actual message sending
+                    // Step 6: Send chunk to selected storage node as direct message
+                    val targetNodeAddress = selectedNode.nodeId.toInt()
+                    virtualNode.sendEcosystemMessage(targetNodeAddress, chunkMsg.toBytes())
+                    
                     manager.chunkReplicaTracker[chunk.chunkId] = mutableSetOf()
                     manager.chunkReplicaTracker[chunk.chunkId]?.add(selectedNode.nodeId)
                     

@@ -13,7 +13,7 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Changed to hard
  */
 
 // Re-export types for backward compatibility
-typealias ResourceRequirementsCompat = ResourceRequirements
+
 typealias CPUIntensityCompat = CPUIntensity  
 typealias ThermalStateCompat = ThermalState
 

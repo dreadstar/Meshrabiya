@@ -39,7 +39,10 @@ import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
+// Removed: import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService (deprecated - replaced by DistributedComputeClient/Server)
+import com.ustadmobile.meshrabiya.service.compute.TaskManager
+import com.ustadmobile.meshrabiya.service.compute.DistributedComputeClient
+import com.ustadmobile.meshrabiya.service.compute.DistributedComputeServer
 // Removed: import com.ustadmobile.meshrabiya.role.EmergentRoleManager (old package)
 import com.ustadmobile.meshrabiya.vnet.OriginatingMessageManager
 // NEW: Import hardware capability classes for getCurrentNodeCapabilities()
@@ -146,6 +149,12 @@ abstract class VirtualNode(
 
     private val forwardingRules: MutableMap<ForwardBindPoint, UdpForwardRule> = ConcurrentHashMap()
 
+    // MeshConnectionPool: instantiate and initialize singleton
+    protected val meshConnectionPool: MeshConnectionPool = MeshConnectionPool(this)
+    init {
+        MeshConnectionPool.init(this)
+    }
+
     data class LastOriginatorMessage(
         val originatorMessage: MmcpOriginatorMessage,  // Correct type
         val timeReceived: Long,
@@ -177,6 +186,8 @@ abstract class VirtualNode(
                 batteryLevel = 50,
                 thermalThrottling = false,
                 powerState = PowerState.BATTERY_MEDIUM,
+
+            
                 networkInterfaces = emptySet()
             ),
             batteryInfo = BatteryInfo(
@@ -194,7 +205,7 @@ abstract class VirtualNode(
     }
 
     // === STEP 1: Create EmergentRoleManager with topology callback ===
-    protected val emergentRoleManager: EmergentRoleManager by lazy {
+    open val emergentRoleManager: EmergentRoleManager = run {
         val context = getContext() 
             ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
         EmergentRoleManager(
@@ -206,7 +217,7 @@ abstract class VirtualNode(
     }
 
     // === STEP 2: Create OriginatingMessageManager with EmergentRoleManager callbacks ===
-    protected open val originatingMessageManager = OriginatingMessageManager(
+    open val originatingMessageManager = OriginatingMessageManager(
         localNodeInetAddr = address,
         logger = logger,
         scheduledExecutor = scheduledExecutor,
@@ -286,34 +297,73 @@ abstract class VirtualNode(
     // Core mesh services instantiated with proper dependency injection
     protected val meshGossipService: MeshGossipService = MeshGossipService.initialize(this)
     
-    protected val coreGossipBroadcastService: CoreGossipBroadcastService = 
+    open val coreGossipBroadcastService: CoreGossipBroadcastService = 
         CoreGossipBroadcastService.getInstance()
     
     
     // MeshEcosystemListener depends on emergentRoleManager and meshGossipService
     protected val meshEcosystemListener: MeshEcosystemListener by lazy {
-        MeshEcosystemListener(this)
+        val listener = MeshEcosystemListener(this)
+        // Register compute services when they're initialized
+        listener.registerComputeClient(distributedComputeClient)
+        listener.registerComputeServer(distributedComputeServer)
+        listener
     }
     
-    // IntelligentDistributedComputeService initialized lazily with all dependencies
-    protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
-        // IntelligentDistributedComputeService(
-        //     virtualNode = this,
-        //     // DEPRECATED: ResourceManager replaced by canonical compute task workflows
-        //     // resourceManager = com.ustadmobile.meshrabiya.service.compute.mesh.SimpleResourceManager(),
-        //     pythonExecutor = createPythonExecutor(),
-        //     // liteRTEngine = createLiteRTEngine(),
-        //     emergentRoleManager = emergentRoleManager,
-        //     betaLogger = com.ustadmobile.meshrabiya.beta.BetaTestLogger.getInstance(
-        //         getContext() ?: throw IllegalStateException("Context required")
-        //     )
-        // )
-        // TODO: Re-enable with canonical compute domain injection only
-    }
+    // DEPRECATED: IntelligentDistributedComputeService - replaced by DistributedComputeClient/Server in CANONICAL_WORKFLOW_v2
+    // Will be removed after Part 2 implementation completes
+    // protected val intelligentDistributedComputeService: IntelligentDistributedComputeService by lazy {
+    //     IntelligentDistributedComputeService(
+    //         virtualNode = this,
+    //         emergentRoleManager = emergentRoleManager,
+    //         betaLogger = BetaTestLogger.getInstance(
+    //             getContext() ?: throw IllegalStateException("Context required")
+    //         )
+    //     )
+    // }
     
     // Storage service requires additional dependencies (Context, etc.)
     // Will be initialized later via initialize() method when dependencies are available
-    protected var distributedStorageManager: DistributedStorageManager? = null
+    open var distributedStorageManager: DistributedStorageManager? = null
+    
+    // TaskManager: Orchestrates compute task lifecycle on compute node
+    protected val taskManager: TaskManager by lazy {
+        TaskManager(
+            context = getContext() ?: throw IllegalStateException("Context required for TaskManager"),
+            virtualNode = this,
+            distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
+                ?: throw IllegalStateException("DistributedStorageClient required for TaskManager"),
+            betaLogger = BetaTestLogger.getInstance(
+                getContext() ?: throw IllegalStateException("Context required")
+            )
+        )
+    }
+    
+    // DistributedComputeClient: Client-side distributed compute service
+    protected val distributedComputeClient: DistributedComputeClient by lazy {
+        DistributedComputeClient(
+            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeClient"),
+            virtualNode = this,
+            betaLogger = BetaTestLogger.getInstance(
+                getContext() ?: throw IllegalStateException("Context required")
+            )
+        )
+    }
+    
+    // DistributedComputeServer: Server-side distributed compute service
+    protected val distributedComputeServer: DistributedComputeServer by lazy {
+        DistributedComputeServer(
+            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeServer"),
+            virtualNode = this,
+            emergentRoleManager = emergentRoleManager,
+            taskManager = taskManager,
+            distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
+                ?: throw IllegalStateException("DistributedStorageClient required for DistributedComputeServer"),
+            betaLogger = BetaTestLogger.getInstance(
+                getContext() ?: throw IllegalStateException("Context required")
+            )
+        )
+    }
     
     // Deprecated: PythonExecutor and LiteRTEngine stubs removed. Canonical compute logic is implemented in IntelligentDistributedComputeService and PythonExecutor domain files.
     
@@ -748,6 +798,39 @@ abstract class VirtualNode(
         originatingMessageManager.sendMessage(message)
     }
 
+    /**
+     * Send a direct ecosystem message to a specific node.
+     * Constructs VirtualPacket with ecosystem port and routes it.
+     * 
+     * @param targetAddress Destination node address
+     * @param messageBytes Serialized message bytes
+     * @param toPort Destination port (defaults to ecosystem gossip port)
+     */
+    fun sendEcosystemMessage(
+        targetAddress: Int,
+        messageBytes: ByteArray,
+        toPort: Int = MeshrabiyaConstants.getEcosystemGossipPort()
+    ) {
+        val packetData = ByteArray(VirtualPacketHeader.HEADER_SIZE + messageBytes.size)
+        val header = VirtualPacketHeader(
+            toAddr = targetAddress,
+            toPort = toPort,
+            fromAddr = addressAsInt,
+            fromPort = toPort,
+            lastHopAddr = addressAsInt,
+            hopCount = 0,
+            maxHops = 10,
+            payloadSize = messageBytes.size
+        )
+        System.arraycopy(messageBytes, 0, packetData, VirtualPacketHeader.HEADER_SIZE, messageBytes.size)
+        val packet = VirtualPacket.fromHeaderAndPayloadData(
+            header = header,
+            data = packetData,
+            payloadOffset = VirtualPacketHeader.HEADER_SIZE
+        )
+        route(packet, null, null)
+    }
+
     // DEPRECATED: MmcpGatewayAnnouncement class moved to .md (commented out to fix compilation)
     // protected open fun onGatewayAnnouncementReceived(announcement: MmcpGatewayAnnouncement, fromNodeAddr: Int) {
     //     logger(Log.INFO, "$logPrefix Gateway ${announcement.gatewayType} available from ${fromNodeAddr.addressToDotNotation()}")
@@ -883,11 +966,6 @@ abstract class VirtualNode(
         }
     }
 
-    fun getMeshGossipService(): MeshGossipService = meshGossipService
-    fun getCoreGossipBroadcastService(): CoreGossipBroadcastService = coreGossipBroadcastService
-    fun getDistributedStorageManager(): DistributedStorageManager? = distributedStorageManager
-    fun getIntelligentDistributedComputeService(): IntelligentDistributedComputeService = intelligentDistributedComputeService
-    fun getMeshEcosystemListener(): MeshEcosystemListener = meshEcosystemListener
-    fun getEmergentRoleManager(): EmergentRoleManager = emergentRoleManager
-    fun getOriginatingMessageManager(): OriginatingMessageManager = originatingMessageManager
+    // Removed explicit getter functions - Kotlin auto-generates them from protected val properties
+    // This eliminates "Platform declaration clash" errors from duplicate JVM signatures
 }

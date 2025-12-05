@@ -36,11 +36,6 @@ interface MeshrabiyaApi {
      */
     fun getAppContext(): Context?
 
-    /**
-     * Provide application context to the Meshrabiya core (for use by TaskManager, etc.)
-     */
-    fun provideAppContext(context: Context)
-
     // --- Mesh Initialization ---
     fun initMesh(context: Context)
 
@@ -81,7 +76,7 @@ interface MeshrabiyaApi {
     fun getStorageAllocations(): List<StorageAllocation>
     fun enableDistributedStorage()
     fun disableDistributedStorage()
-    fun isServiceLayerParticipating(): Boolean
+    fun isComputeLayerParticipating(): Boolean
 
     // --- Drop Folder Management ---
     fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)

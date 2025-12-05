@@ -11,11 +11,17 @@ import com.ustadmobile.meshrabiya.service.EcosystemBroadcastMessage
 import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
 import com.ustadmobile.meshrabiya.service.TaskScheduledMessage
 import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
+import com.ustadmobile.meshrabiya.service.TaskAcceptanceMessage
+import com.ustadmobile.meshrabiya.service.TaskCompletionAckMessage
+import com.ustadmobile.meshrabiya.service.FileAccessUpdateNotification
 import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
 import com.ustadmobile.meshrabiya.service.ComputeNodeResponseMessage
 import com.ustadmobile.meshrabiya.service.StorageNodeResponseMessage
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
-import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
+// DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
+// import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
+import com.ustadmobile.meshrabiya.service.compute.DistributedComputeClient
+import com.ustadmobile.meshrabiya.service.compute.DistributedComputeServer
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
@@ -63,12 +69,15 @@ class MeshEcosystemListener(
     private val broadcastTtlMs: Long = 60_000L
     private val broadcastTimestamps = mutableMapOf<String, Long>()
 
-    private val connectionPool = MeshConnectionPool(virtualNode, poolSize = connectionPoolSize)
+    private val connectionPool = MeshConnectionPool.getInstance()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // Registered handlers
     private var storageManager: DistributedStorageManager? = null
-    private var computeService: IntelligentDistributedComputeService? = null
+    // DEPRECATED: computeService removed (2025-12-04) - use computeClient/computeServer directly
+    // private var computeService: IntelligentDistributedComputeService? = null
+    private var computeClient: DistributedComputeClient? = null
+    private var computeServer: DistributedComputeServer? = null
 
     private val isShutdown = AtomicBoolean(false)
     private var isStorageParticipationEnabled: Boolean = false
@@ -83,8 +92,17 @@ class MeshEcosystemListener(
         storageManager = manager
     }
 
-    fun registerComputeService(service: IntelligentDistributedComputeService) {
-        computeService = service
+    // DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
+    // fun registerComputeService(service: IntelligentDistributedComputeService) {
+    //     computeService = service
+    // }
+    
+    fun registerComputeClient(client: DistributedComputeClient) {
+        computeClient = client
+    }
+    
+    fun registerComputeServer(server: DistributedComputeServer) {
+        computeServer = server
     }
 
     fun setStorageParticipationEnabled(enabled: Boolean) {
@@ -130,7 +148,7 @@ class MeshEcosystemListener(
         }
 
         // Get current node roles to check if we should handle this message
-        val currentRoles: Set<MeshRole> = virtualNode.getEmergentRoleManager().getCurrentMeshRoles()
+        val currentRoles: Set<MeshRole> = virtualNode.emergentRoleManager.getCurrentMeshRoles()
 
         when (message) {
             // === STORAGE RESPONSES (responses to our storage queries) ===
@@ -162,7 +180,9 @@ class MeshEcosystemListener(
             is ComputeNodeResponseMessage -> {
                 if (currentRoles.contains(MeshRole.COMPUTE_NODE)) {
                     message.requestId?.let { requestId ->
-                        routeComputeNodeResponse(requestId, senderId, message.response)
+                        // Route to CLIENT (client receives responses from potential compute nodes)
+                        computeClient?.handleComputeNodeResponse(message)
+                            ?: routeComputeNodeResponse(requestId, senderId, message.response)
                     }
                 }
             }
@@ -170,21 +190,47 @@ class MeshEcosystemListener(
             // === COMPUTE REQUESTS (other nodes broadcasting compute tasks) ===
             is ComputeTaskRequestMessage -> {
                 if (currentRoles.contains(MeshRole.COMPUTE_NODE)) {
-                    // This node evaluates if it can handle the task and sends response
+                    // Route to SERVER (server handles incoming task requests)
                     val requestId = message.taskId
-                    routeIncomingComputeTaskRequest(requestId, senderId, message)
+                    scope.launch {
+                        computeServer?.handleIncomingComputeTaskRequest(requestId, senderId, message)
+                            ?: routeIncomingComputeTaskRequest(requestId, senderId, message)
+                    }
                 }
             }
 
-            // === STORAGE METADATA/PERMISSIONS ===
-            is FilePermissionUpdateConfirmationMessage -> {
+            // === STORAGE METADATA/PERMISSIONS & COMPUTE METADATA/PERMISSIONS ===
+            is FileAccessUpdateNotification -> {
+                // Route to STORAGE for permission tracking
                 if (currentRoles.contains(MeshRole.STORAGE_NODE) && isStorageParticipationEnabled) {
                     routePermissionUpdateConfirmation(message)
                 }
+                
+                // Route to COMPUTE SERVER for task data access updates
+                scope.launch {
+                    computeServer?.handleTaskDataAccessUpdate(message)
+                }
             }
 
-            // === COMPUTE METADATA/PERMISSIONS ===
-            // (No compute metadata/permissions message types currently handled)
+            // === COMPUTE TASK LIFECYCLE ===
+            is TaskAcceptanceMessage -> {
+                // Route to CLIENT (client receives acceptance from compute node)
+                computeClient?.handleTaskAcceptanceMessage(message)
+            }
+            
+            is TaskCompletedMessage -> {
+                // Route to CLIENT (client receives completion from compute node)
+                scope.launch {
+                    computeClient?.handleTaskCompletionMessage(message)
+                }
+            }
+            
+            is TaskCompletionAckMessage -> {
+                // Route to SERVER (server receives ACK from client)
+                scope.launch {
+                    computeServer?.handleTaskCompletionAckMessage(senderId, message)
+                }
+            }
 
             // === DATA TRANSFERS ===
             is ChunkTransferMessage -> {
@@ -233,24 +279,26 @@ class MeshEcosystemListener(
     }
 
     /**
-     * Route ComputeNodeResponse to IntelligentDistributedComputeService.
+     * Route ComputeNodeResponse to DistributedComputeClient (DEPRECATED computeService removed).
      * Passes requestId for correlation with pending compute tasks.
      */
     private fun routeComputeNodeResponse(requestId: String, senderId: Int, response: ComputeNodeResponse) {
-        computeService?.handleComputeNodeResponse(requestId, senderId, response)
+        // DEPRECATED: computeService removed - routing handled by computeClient directly in handleMessage
+        // This fallback is kept for backward compatibility but should not be called
     }
 
     /**
-     * Route incoming ComputeTaskRequest to IntelligentDistributedComputeService.
+     * Route incoming ComputeTaskRequest to DistributedComputeServer (DEPRECATED computeService removed).
      * This is called when another node broadcasts a compute task request to the mesh.
      * The local node evaluates whether it can handle the task and sends a response.
      */
-    private fun routeIncomingComputeTaskRequest(
+    private suspend fun routeIncomingComputeTaskRequest(
         requestId: String, 
         requesterNodeAddress: Int, 
         request: ComputeTaskRequestMessage
     ) {
-        computeService?.handleIncomingComputeTaskRequest(requestId, requesterNodeAddress, request)
+        // DEPRECATED: computeService removed - routing handled by computeServer directly in handleMessage
+        // This fallback is kept for backward compatibility but should not be called
     }
 
     /**

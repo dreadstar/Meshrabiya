@@ -2,7 +2,7 @@ package com.ustadmobile.meshrabiya.service.compute
 
 import kotlinx.coroutines.*
 // import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
-import com.ustadmobile.meshrabiya.service.compute.mesh.*
+// import com.ustadmobile.meshrabiya.service.compute.mesh.*
 import com.ustadmobile.meshrabiya.service.compute.scheduler.*
 import com.ustadmobile.meshrabiya.service.compute.executor.*
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
@@ -31,6 +31,9 @@ import com.ustadmobile.meshrabiya.service.compute.model.TaskRejectionMessage
 import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
 import com.ustadmobile.meshrabiya.service.compute.model.TaskCompletionAckMessage
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.model.ResourceRequirements
+import com.ustadmobile.meshrabiya.service.compute.Task
 
 /**
  * Main service class for intelligent distributed compute.
@@ -70,7 +73,7 @@ class IntelligentDistributedComputeService(
     // Replaced activeJobs with simple counter for queue depth calculation (used in handleIncomingComputeTaskRequest line ~306)
     private val activeJobCount = java.util.concurrent.atomic.AtomicInteger(0)
     
-    private val connectionPool = MeshConnectionPool(virtualNode, poolSize = 8)
+    private val connectionPool = MeshConnectionPool.getInstance()
 
     // Use singleton CoreGossipBroadcastService for canonical ecosystem messaging
 
@@ -132,7 +135,7 @@ class IntelligentDistributedComputeService(
             betaLogger?.log(LogLevel.INFO, "ComputeService", 
                 "Broadcasting compute task request $taskId (timeout=${MeshrabiyaConstants.getTimeoutMs()}ms) via CoreGossipBroadcastService")
             // Use canonical broadcast via singleton CoreGossipBroadcastService
-            CoreGossipBroadcastService.getInstance(virtualNode.getMeshGossipService()).sendComputeTaskRequest(
+            CoreGossipBroadcastService.getInstance().sendComputeTaskRequest(
                 taskId = localRequest.mmcpRequest.taskId,
                 serviceId = localRequest.mmcpRequest.serviceId,
                 inputParams = localRequest.mmcpRequest.inputParams,
@@ -147,56 +150,56 @@ class IntelligentDistributedComputeService(
      * Filters, ranks, and selects best node based on capabilities, load, and latency.
      * Implements retry logic for no responses or capability mismatches.
      */
-    fun handleComputeNodeResponses(
-        localRequest: LocalComputeTaskRequest, 
-        responses: List<ComputeNodeResponse>
-    ) {
-        val taskId = localRequest.mmcpRequest.taskId
-        val tracked = activeRequests[taskId] ?: return
+    // fun handleComputeNodeResponses(
+    //     localRequest: LocalComputeTaskRequest, 
+    //     responses: List<ComputeNodeResponse>
+    // ) {
+    //     val taskId = localRequest.mmcpRequest.taskId
+    //     val tracked = activeRequests[taskId] ?: return
         
-        tracked.responses.addAll(responses)
-        tracked.status = RequestStatus.SELECTING
-        tracked.lastUpdated = System.currentTimeMillis()
+    //     tracked.responses.addAll(responses)
+    //     tracked.status = RequestStatus.SELECTING
+    //     tracked.lastUpdated = System.currentTimeMillis()
         
-        betaLogger?.log(LogLevel.INFO, "ComputeService",
-            "Received ${responses.size} responses for task $taskId")
+    //     betaLogger?.log(LogLevel.INFO, "ComputeService",
+    //         "Received ${responses.size} responses for task $taskId")
         
-        if (responses.isEmpty()) {
-            betaLogger?.log(LogLevel.WARN, "ComputeService",
-                "No responses for task $taskId - triggering retry")
-            retryTaskRequest(localRequest)
-            return
-        }
+    //     if (responses.isEmpty()) {
+    //         betaLogger?.log(LogLevel.WARN, "ComputeService",
+    //             "No responses for task $taskId - triggering retry")
+    //         // retryTaskRequest(localRequest)
+    //         return
+    //     }
         
-        // Filter and rank responses:
-        // 1. Available nodes only
-        // 2. Has required ML Kit capabilities
-        // 3. Sort by: currentLoad (asc) → estimatedLatencyMs (asc) → mlKitFeatures.size (desc)
-        val rankedNodes = responses
-            .filter { it.available }
-            .filter { hasRequiredMLCapabilities(it, localRequest) }
-            .sortedWith(
-                compareBy<ComputeNodeResponse> { it.currentLoad }
-                    .thenBy { it.estimatedLatencyMs }
-                    .thenByDescending { it.mlKitFeatures.size }
-            )
+    //     // Filter and rank responses:
+    //     // 1. Available nodes only
+    //     // 2. Has required ML Kit capabilities
+    //     // 3. Sort by: currentLoad (asc) → estimatedLatencyMs (asc) → mlKitFeatures.size (desc)
+    //     val rankedNodes = responses
+    //         .filter { it.available }
+    //         .filter { hasRequiredMLCapabilities(it, localRequest) }
+    //         .sortedWith(
+    //             compareBy<ComputeNodeResponse> { it.currentLoad }
+    //                 .thenBy { it.estimatedLatencyMs }
+    //                 .thenByDescending { it.mlKitFeatures.size }
+    //         )
         
-        if (rankedNodes.isEmpty()) {
-            betaLogger?.log(LogLevel.WARN, "ComputeService",
-                "No capable nodes for task $taskId (${responses.size} responded, 0 capable) - retrying")
-            retryTaskRequest(localRequest)
-            return
-        }
+    //     if (rankedNodes.isEmpty()) {
+    //         betaLogger?.log(LogLevel.WARN, "ComputeService",
+    //             "No capable nodes for task $taskId (${responses.size} responded, 0 capable) - retrying")
+    //         retryTaskRequest(localRequest)
+    //         return
+    //     }
         
-        // Select best node (highest ranked)
-        val selectedNode = rankedNodes.first()
-        betaLogger?.log(LogLevel.INFO, "ComputeService",
-            "Selected node ${selectedNode.nodeAddress} for task $taskId " +
-            "(load=${selectedNode.currentLoad}, latency=${selectedNode.estimatedLatencyMs}ms, " +
-            "mlFeatures=${selectedNode.mlKitFeatures})")
+    //     // Select best node (highest ranked)
+    //     val selectedNode = rankedNodes.first()
+    //     betaLogger?.log(LogLevel.INFO, "ComputeService",
+    //         "Selected node ${selectedNode.nodeAddress} for task $taskId " +
+    //         "(load=${selectedNode.currentLoad}, latency=${selectedNode.estimatedLatencyMs}ms, " +
+    //         "mlFeatures=${selectedNode.mlKitFeatures})")
         
-        assignTaskToNode(localRequest, selectedNode)
-    }
+    //     assignTaskToNode(localRequest, selectedNode)
+    // }
     
     /**
      * Handle single compute node response (called by MeshEcosystemListener).
@@ -278,7 +281,7 @@ class IntelligentDistributedComputeService(
             
             betaLogger?.log(LogLevel.INFO, "ComputeService",
                 "Re-broadcasting task $taskId (retry ${tracked.retryCount}/$maxRetries) via CoreGossipBroadcastService")
-            CoreGossipBroadcastService.getInstance(virtualNode.getMeshGossipService()).sendComputeTaskRequest(
+            CoreGossipBroadcastService.getInstance().sendComputeTaskRequest(
                 taskId = localRequest.mmcpRequest.taskId,
                 serviceId = localRequest.mmcpRequest.serviceId,
                 inputParams = localRequest.mmcpRequest.inputParams,
@@ -298,7 +301,7 @@ class IntelligentDistributedComputeService(
         localRequest: LocalComputeTaskRequest,
         selectedNode: ComputeNodeResponse
     ) {
-        val taskId = localRequest.mmcpRequest.taskId
+        val taskId = localRequest.taskId
         val tracked = activeRequests[taskId] ?: return
         
         tracked.selectedNodeAddress = selectedNode.nodeAddress
@@ -370,7 +373,7 @@ class IntelligentDistributedComputeService(
     fun handleIncomingComputeTaskRequest(
         requestId: String,
         requesterNodeAddress: Int,
-        request: MeshEcosystemMessage.ComputeTaskRequestMessage
+        request: ComputeTaskRequestMessage
     ) {
         betaLogger?.log(LogLevel.INFO, "ComputeService",
             "Received compute task request $requestId from node $requesterNodeAddress " +
@@ -667,6 +670,7 @@ print(json.dumps(result))
             // For Phase 3, this is a placeholder - full execution in Phase 4+
             scope.launch {
                 try {
+                    val task = taskAssignmentMessageToTask(assignment)
                     betaLogger?.log(
                         LogLevel.INFO,
                         "ComputeService",
@@ -674,10 +678,9 @@ print(json.dumps(result))
                     )
                     
                     // TODO: Integrate with TaskManager for actual execution
-                    // val result = TaskManager.executeTask(context)
+                    val result = TaskManager.executeTask(task)
                     
-                    // Placeholder: simulate task execution
-                    delay(1000)
+                    
                     
                     // Send completion message (placeholder result)
                     val result = TaskResult(
@@ -832,6 +835,29 @@ print(json.dumps(result))
             // Retry task assignment with different node
             retryTaskRequest(tracked.localRequest)
         }
+    }
+
+    fun taskAssignmentMessageToTask(assignment: TaskAssignmentMessage): Task {
+        val inputFiles = assignment.inputFiles.mapNotNull { it["fileId"] }
+        val owner = assignment.requesterNodeId
+        val recipients = listOf(assignment.executorNodeId)
+        val priority = when (assignment.priority.uppercase()) {
+            "HIGH" -> 10
+            "NORMAL" -> 5
+            "LOW" -> 1
+            else -> 5
+        }
+        // You may need to construct Executable from codeBundle or executionContext
+        val executable = Executable(assignment.codeBundle) // Replace with actual mapping logic
+
+        return Task(
+            taskId = assignment.taskId,
+            executable = executable,
+            inputFiles = inputFiles,
+            owner = owner,
+            recipients = recipients,
+            priority = priority
+        )
     }
     
     /**

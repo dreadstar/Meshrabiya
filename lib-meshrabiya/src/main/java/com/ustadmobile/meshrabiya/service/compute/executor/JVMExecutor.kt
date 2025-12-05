@@ -1,189 +1,235 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
-import android.content.Context
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
-import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+import com.ustadmobile.meshrabiya.service.compute.security.RestrictedJVMPolicy
 import java.io.File
-import java.util.jar.JarFile
-import java.util.jar.Manifest
 import java.net.URLClassLoader
-import java.net.URL
+import java.security.Policy
+import java.util.zip.ZipInputStream
+import java.io.ByteArrayInputStream
 
 /**
  * JVMExecutor
  * 
  * Phase 2: Task Execution Layer - JVM bytecode execution implementation
  * 
- * Executes Java/Kotlin/JVM bytecode using an isolated URLClassLoader.
+ * Executes JVM bytecode (.class/.jar files) in isolated URLClassLoader.
+ * Supports both single-class executables and JAR archives.
  * 
- * Code Bundle Format:
- * - JAR file with Main-Class manifest attribute
+ * Code Bundle Formats:
+ * 1. Single .class file: Direct class file execution
+ * 2. JAR archive: Multi-class Java/Kotlin projects with META-INF/MANIFEST.MF
  * 
  * Security:
- * - Isolated URLClassLoader with null parent (prevents access to app classes)
- * - Java SecurityManager with restricted Policy (limited file I/O, no network)
- * - Sandbox container for additional OS-level isolation
+ * - Isolated URLClassLoader with no parent class loader access
+ * - Sandboxed file I/O (inputs/outputs directories only)
+ * - No network access
+ * - No access to Android system classes
  * 
- * Implementation Steps:
- * 1. Validate JAR file format and Main-Class manifest
- * 2. Extract JAR to container workspace
- * 3. Write input files to inputs/ directory
- * 4. Create isolated URLClassLoader
- * 5. Load Main-Class and invoke main() method
- * 6. Collect outputs from outputs/ directory
- * 7. Track resource usage during execution
+ * Entry Point:
+ * - Looks for class with `public static void main(String[] args)` method
+ * - For JAR: uses Main-Class from MANIFEST.MF
+ * - For .class: uses class name from file
  */
-class JVMExecutor(
-    private val context: Context
-) : TaskExecutor {
+class JVMExecutor : TaskExecutor {
     
     companion object {
-        private val JAR_MAGIC_BYTES = byteArrayOf(0x50, 0x4B) // "PK" (JAR is ZIP)
-        private const val MAIN_CLASS_ATTR = "Main-Class"
+        private val JAR_MAGIC_BYTES = byteArrayOf(0x50, 0x4B) // "PK" (ZIP header)
+        private val CLASS_MAGIC_BYTES = byteArrayOf(0xCA.toByte(), 0xFE.toByte(), 0xBA.toByte(), 0xBE.toByte()) // 0xCAFEBABE
     }
     
     override suspend fun execute(
-        context: TaskExecutionContext,
+        executionContext: TaskExecutionContext,
         inputFiles: Map<String, ByteArray>,
         containerId: String
     ): ExecutionResult {
         val startTime = System.currentTimeMillis()
-        val workspaceDir = File(this.context.filesDir, "containers/$containerId")
+        val workspaceDir = File("/tmp/jvm_workspace_$containerId")
         
-        try {
+        return try {
             // 1. Setup workspace
             workspaceDir.mkdirs()
             val inputsDir = File(workspaceDir, "inputs")
             val outputsDir = File(workspaceDir, "outputs")
+            val classesDir = File(workspaceDir, "classes")
             inputsDir.mkdirs()
             outputsDir.mkdirs()
+            classesDir.mkdirs()
             
-            // 2. Save JAR file
-            val jarFile = File(workspaceDir, "code.jar")
-            jarFile.writeBytes(context.codeBundle)
+            // 2. Extract code bundle
+            val isJar = isJarArchive(executionContext.codeBundle)
+            if (isJar) {
+                extractJar(executionContext.codeBundle, classesDir)
+            } else {
+                // Single .class file
+                File(classesDir, "Main.class").writeBytes(executionContext.codeBundle)
+            }
             
             // 3. Write input files
             inputFiles.forEach { (filename, data) ->
                 File(inputsDir, filename).writeBytes(data)
             }
             
-            // 4. Load JAR manifest and find Main-Class
-            val mainClassName = getMainClassName(jarFile)
-                ?: return ExecutionResult(
-                    taskId = context.taskId,
-                    success = false,
-                    outputManifest = emptyList(),
-                    // resourcesUsed = ResourceMetrics.zero(),
-                    executionTimeMs = System.currentTimeMillis() - startTime,
-                    errorMessage = "No Main-Class attribute in JAR manifest",
-                    errorType = ExecutionErrorType.INVALID_CODE_BUNDLE
-                )
+            // 4. Execute JVM bytecode with SecurityManager protection
+            var executionError: String? = null
+            var securityViolation: SecurityException? = null
             
-            // 5. Create isolated classloader and execute main() method
-            var mainError: String? = null
+            // Save current security state
+            val originalSecurityManager = System.getSecurityManager()
+            val originalPolicy = Policy.getPolicy()
+            
             try {
-                val classLoader = createIsolatedClassLoader(jarFile)
-                executeMainMethod(classLoader, mainClassName, arrayOf())
+                // Install thread-local security policy
+                RestrictedJVMPolicy.setWorkspaceForCurrentThread(workspaceDir)
+                Policy.setPolicy(RestrictedJVMPolicy)
+                System.setSecurityManager(SecurityManager())
+                
+                // Create isolated URLClassLoader
+                val classLoader = URLClassLoader(
+                    arrayOf(classesDir.toURI().toURL()),
+                    null // No parent classloader = isolated
+                )
+                
+                // Find main class
+                val mainClassName = if (isJar) {
+                    findMainClassFromManifest(classesDir) ?: "Main"
+                } else {
+                    "Main"
+                }
+                
+                // Load and execute
+                val mainClass = classLoader.loadClass(mainClassName)
+                val mainMethod = mainClass.getMethod("main", Array<String>::class.java)
+                
+                try {
+                    mainMethod.invoke(null, arrayOf<String>())
+                } catch (e: SecurityException) {
+                    // Capture security violations separately
+                    securityViolation = e
+                    executionError = "Security violation: ${e.message}"
+                }
+                
             } catch (e: Exception) {
-                mainError = e.message
+                if (e !is SecurityException) {
+                    executionError = e.message ?: e::class.java.simpleName
+                }
+            } finally {
+                // Restore original security state
+                System.setSecurityManager(originalSecurityManager)
+                Policy.setPolicy(originalPolicy)
+                RestrictedJVMPolicy.clearWorkspaceForCurrentThread()
             }
+            
             val executionTime = System.currentTimeMillis() - startTime
-            // 6. Collect output files
+            
+            // 5. Collect output files
             val outputManifest = collectOutputFiles(outputsDir)
-            return if (mainError == null) {
+            
+            // Determine error type for security violations
+            val errorType = if (securityViolation != null) {
+                ExecutionErrorType.SECURITY_VIOLATION
+            } else {
+                ExecutionErrorType.RUNTIME_ERROR
+            }
+            
+            if (executionError == null) {
                 ExecutionResult(
-                    taskId = context.taskId,
+                    taskId = executionContext.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    // resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
                     executionTimeMs = executionTime,
                     resultMessage = "JVM execution completed successfully"
                 )
             } else {
                 ExecutionResult(
-                    taskId = context.taskId,
+                    taskId = executionContext.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
-                    errorMessage = mainError,
-                    errorType = ExecutionErrorType.RUNTIME_ERROR
+                    errorMessage = executionError,
+                    errorType = errorType
                 )
             }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime
-            return ExecutionResult(
-                taskId = context.taskId,
+            ExecutionResult(
+                taskId = executionContext.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
                 errorMessage = e.message ?: "JVM execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
             )
         } finally {
-            // Cleanup workspace (optional - may keep for debugging)
-            // workspaceDir.deleteRecursively()
+            // Cleanup workspace
+            workspaceDir.deleteRecursively()
         }
     }
     
     override fun validateCodeBundle(codeBundle: ByteArray): Boolean {
-        if (codeBundle.size < 4) return false
+        if (codeBundle.isEmpty()) return false
         
-        // Check JAR magic bytes (same as ZIP)
-        if (!(codeBundle[0] == JAR_MAGIC_BYTES[0] && codeBundle[1] == JAR_MAGIC_BYTES[1])) {
-            return false
+        // Check if it's a valid JAR or .class file
+        if (isJarArchive(codeBundle)) {
+            return true // Basic JAR validation
+        } else if (isClassFile(codeBundle)) {
+            return true // Basic .class validation
         }
         
-        // Try to read as JAR file
-        try {
-            val tempFile = File.createTempFile("validate", ".jar")
-            tempFile.writeBytes(codeBundle)
-            
-            val hasMainClass = getMainClassName(tempFile) != null
-            tempFile.delete()
-            
-            return hasMainClass
-        } catch (e: Exception) {
-            return false
-        }
+        return false
     }
-    
-    override fun getSupportedTaskType(): TaskType = TaskType.JVM
     
     // === Private Helper Methods ===
     
-    private fun getMainClassName(jarFile: File): String? {
-        return try {
-            JarFile(jarFile).use { jar ->
-                jar.manifest?.mainAttributes?.getValue(MAIN_CLASS_ATTR)
+    private fun isJarArchive(bytes: ByteArray): Boolean {
+        return bytes.size >= 2 && 
+               bytes[0] == JAR_MAGIC_BYTES[0] && 
+               bytes[1] == JAR_MAGIC_BYTES[1]
+    }
+    
+    private fun isClassFile(bytes: ByteArray): Boolean {
+        return bytes.size >= 4 &&
+               bytes[0] == CLASS_MAGIC_BYTES[0] &&
+               bytes[1] == CLASS_MAGIC_BYTES[1] &&
+               bytes[2] == CLASS_MAGIC_BYTES[2] &&
+               bytes[3] == CLASS_MAGIC_BYTES[3]
+    }
+    
+    private fun extractJar(jarBytes: ByteArray, destDir: File) {
+        ZipInputStream(ByteArrayInputStream(jarBytes)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val file = File(destDir, entry.name)
+                
+                if (entry.isDirectory) {
+                    file.mkdirs()
+                } else {
+                    file.parentFile?.mkdirs()
+                    file.outputStream().use { fos ->
+                        zis.copyTo(fos)
+                    }
+                }
+                
+                entry = zis.nextEntry
             }
-        } catch (e: Exception) {
-            null
         }
     }
     
-    private fun createIsolatedClassLoader(jarFile: File): URLClassLoader {
-        // Create classloader with null parent to prevent access to app classes
-        return URLClassLoader(
-            arrayOf(jarFile.toURI().toURL()),
-            null // null parent = bootstrap classloader only
-        )
-    }
-    
-    private fun executeMainMethod(
-        classLoader: URLClassLoader,
-        mainClassName: String,
-        args: Array<String>
-    ) {
-        val mainClass = classLoader.loadClass(mainClassName)
-        val mainMethod = mainClass.getMethod("main", Array<String>::class.java)
-        mainMethod.invoke(null, args)
+    private fun findMainClassFromManifest(classesDir: File): String? {
+        val manifestFile = File(classesDir, "META-INF/MANIFEST.MF")
+        if (!manifestFile.exists()) return null
+        
+        manifestFile.readLines().forEach { line ->
+            if (line.startsWith("Main-Class:")) {
+                return line.substringAfter("Main-Class:").trim()
+            }
+        }
+        
+        return null
     }
     
     private fun collectOutputFiles(outputsDir: File): List<FileReference> {
@@ -211,5 +257,4 @@ class JVMExecutor(
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    
 }

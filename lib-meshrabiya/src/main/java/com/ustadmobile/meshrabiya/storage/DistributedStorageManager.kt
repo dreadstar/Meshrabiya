@@ -39,7 +39,7 @@ class DistributedStorageManager(
     private val meshGossipService: MeshGossipService,
     private val coreGossipBroadcastService: CoreGossipBroadcastService,
     val storageConfig: StorageConfiguration,
-    private val connectionPool: MeshConnectionPool
+    private val connectionPool: MeshConnectionPool = MeshConnectionPool.getInstance()
 ) {
     companion object {
         private const val TAG = "DistributedStorageManager"
@@ -155,9 +155,15 @@ class DistributedStorageManager(
     private lateinit var server: DistributedStorageServer
     
     init {
-        client = DistributedStorageClient(this, virtualNode, coreGossipBroadcastService, connectionPool)
+        client = DistributedStorageClient(this, virtualNode, )
         server = DistributedStorageServer(this, virtualNode, context)
     }
+    
+    /**
+     * Returns the DistributedStorageClient for use by TaskManager and other components.
+     * Required for distributed compute task file management.
+     */
+    fun getDistributedStorageClient(): DistributedStorageClient = client
     
     // === Event Handlers ===
     

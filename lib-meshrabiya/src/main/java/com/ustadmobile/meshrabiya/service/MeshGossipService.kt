@@ -255,6 +255,14 @@ class MeshGossipService(
     }
 
     /**
+     * Get the local node's mesh address as Int.
+     * Used by CoreGossipBroadcastService to identify sender.
+     */
+    fun getLocalNodeAddress(): Int {
+        return virtualNode.addressAsInt
+    }
+
+    /**
      * Cleanup method to cancel all pending requests (call on shutdown).
      */
     fun shutdown() {
@@ -265,4 +273,5 @@ class MeshGossipService(
 
 // Helper extension if needed
 // Only use this for InetAddress, not mesh node addresses (which are Int)
-fun java.net.InetAddress.addressToDotNotation(): String = this.hostAddress
+// InetAddress.hostAddress is guaranteed non-null for valid instances
+fun java.net.InetAddress.addressToDotNotation(): String = this.hostAddress!!

@@ -269,8 +269,9 @@ class DistributedStorageServer(
                 "(replica ${meshChunk.replicaCount} -> will become ${meshChunk.replicaCount + 1})"
             )
             
-            // Step 6: Send to selected node
-            // TODO: Implement actual message sending via ecosystem
+            // Step 6: Send to selected node as direct message
+            val targetNodeAddress = selectedNode.nodeId.toInt()
+            virtualNode.sendEcosystemMessage(targetNodeAddress, forwardMessage.toBytes())
             
             val chunkReplicaSet = manager.chunkReplicaTracker.getOrPut(meshChunk.chunkId) { mutableSetOf() }
             chunkReplicaSet.add(selectedNode.nodeId)
@@ -380,7 +381,7 @@ class DistributedStorageServer(
         manager.scope.launch {
             try {
                 // Check eligibility
-                val availableSpace = manager.storageQuotaManager.getAvailableSpace()
+                val availableSpace = manager.storageConfig.defaultQuota - manager.storageStats.value.currentlyUsed
                 val isHealthy = checkSystemHealth()
                 
                 if (!isHealthy || availableSpace < request.chunkSizeBytes) {
@@ -408,14 +409,17 @@ class DistributedStorageServer(
                     availableSpace = availableSpace,
                     totalStorageAllocated = manager.storageStats.value.currentlyUsed,
                     systemState = if (isHealthy) "HEALTHY" else "DEGRADED",
-                    url = virtualNode.getNodeUrl(),
+                    url = "mesh://${virtualNode.addressAsInt}",
                     latency = estimateLatency(),
                     fitnessScore = calculateFitnessScore(availableSpace, isHealthy),
                     fileId = request.fileId,
                     servicePublicKey = manager.servicePublicKey
                 )
                 
-                // TODO: Send response via CoreGossipBroadcastService
+                // Send response as direct message to requester
+                val requesterAddress = request.senderId.toInt()
+                val responseMessage = com.ustadmobile.meshrabiya.service.StorageNodeResponseMessage(response)
+                virtualNode.sendEcosystemMessage(requesterAddress, responseMessage.toBytes())
                 
                 manager.betaLogger.log(
                     LogLevel.DEBUG,
@@ -488,7 +492,10 @@ class DistributedStorageServer(
                         chunkSize = chunk.chunkSize
                     )
                     
-                    // TODO: Send response via CoreGossipBroadcastService
+                    // Send response as direct message to requester
+                    val requesterAddress = query.senderId.toInt()
+                    val responseMessage = com.ustadmobile.meshrabiya.service.ChunkRetrievalResponseMessage(response)
+                    virtualNode.sendEcosystemMessage(requesterAddress, responseMessage.toBytes())
                     
                     manager.betaLogger.log(
                         LogLevel.DEBUG,
@@ -523,7 +530,7 @@ class DistributedStorageServer(
     fun handleChunkTransferRequest(
         requesterNodeId: Int,
         chunkId: String,
-        connectionPool: com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
+        connectionPool: com.ustadmobile.meshrabiya.vnet.MeshConnectionPool = com.ustadmobile.meshrabiya.vnet.MeshConnectionPool.getInstance()
     ) {
         manager.scope.launch {
             try {
@@ -564,10 +571,7 @@ class DistributedStorageServer(
                 
                 // Encrypt chunk for requester
                 // Note: Chunk is stored decrypted locally, must re-encrypt for transmission
-                val encryptedChunkBytes = manager.encryptionManager.encryptForNode(
-                    data = chunkBytes,
-                    recipientNodeId = requesterNodeId.toString()
-                )
+                val encryptedChunkBytes = manager.encryptionManager.encrypt(chunkBytes)
                 
                 // Create transfer message
                 val transferMessage = ChunkTransferMessage(
@@ -599,12 +603,8 @@ class DistributedStorageServer(
                 
                 if (connection != null) {
                     try {
-                        // Send chunk via connection
-                        virtualNode.sendChunkToNode(
-                            nodeId = requesterNodeId,
-                            chunk = chunk,
-                            bytes = transferMessage.toBytes()
-                        )
+                        // Send chunk via direct message using VirtualPacket
+                        virtualNode.sendEcosystemMessage(requesterNodeId, transferMessage.toBytes())
                         
                         manager.betaLogger.log(
                             LogLevel.INFO,

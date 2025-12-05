@@ -1,6 +1,5 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 import kotlinx.serialization.Serializable
-import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import java.util.UUID
 /**
  * MESH COMPUTE DATA DEFINITIONS
@@ -19,14 +18,13 @@ import java.util.UUID
 @Serializable
 data class TaskExecutionContext(
     val taskId: String,
-    val taskType: TaskType,
-    val jobType: JobType,
+    val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
+    val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc. (deprecated enums removed)
     val codeBundle: ByteArray,           // Language-agnostic archive
     val inputManifest: List<FileReference>, // References to input files in DistributedStorage
     // val resourceLimits: ResourceLimits, // Deprecated and removed
-    val deadlineMs: Long,
-    val requesterNodeId: String,         // Task owner (for result permissions)
-    val callbackAddress: String,         // For completion notification
+    // val deadlineMs: Long,
+    val requesterNodeId: String,         // Task owner (for result permissions and completion callback)
     val accessScope: AccessScope = AccessScope.TASK_ISOLATED
 ) {
     override fun equals(other: Any?): Boolean {
@@ -56,14 +54,25 @@ data class FileReference(
  * 
  * Per-task resource constraints for sandboxing
  */
-// @Serializable
-// data class ResourceLimits(
-//     val maxMemoryBytes: Long,
-//     val maxCpuTimeMs: Long,
-//     val maxDiskBytes: Long,
-//     val maxExecutionTimeMs: Long,
-//     val allowNetworkAccess: Boolean = false // Always false for untrusted code
-// )
+@Serializable
+data class ResourceLimits(
+    val maxMemoryBytes: Long,
+    val maxCpuTimeMs: Long,
+    val maxDiskBytes: Long,
+    val maxExecutionTimeMs: Long,
+    val allowNetworkAccess: Boolean = false // Always false for untrusted code
+) {
+    companion object {
+        fun zero() = ResourceLimits(
+            maxMemoryBytes = 0,
+            maxCpuTimeMs = 0,
+            maxDiskBytes = 0,
+            maxExecutionTimeMs = 0,
+            allowNetworkAccess = true,
+           
+        )
+    }
+}
 
 /**
  * RESOURCE METRICS
@@ -104,6 +113,7 @@ data class ResourceMetrics(
 @Serializable
 data class ExecutionResult(
     val taskId: String,
+    // val processId: Int,
     val success: Boolean,
     val outputManifest: List<FileReference>, // Zero or more output files
     val resultMessage: String? = null,       // Optional task-defined message
@@ -120,8 +130,7 @@ data class ExecutionState(
     val executorNodeAddress: String,
     val startTime: Long,
     val taskContext: TaskExecutionContext,
-    val requesterNodeId: String,
-    val callbackAddress: String,
+    val requesterNodeId: String,  // Already in taskContext, but kept for direct access
     // Phase 2.2: Resource monitoring fields
     // val resourceMetrics: ResourceMetrics = ResourceMetrics.zero(),
     val lastMetricUpdate: Long = 0L
@@ -154,6 +163,9 @@ enum class ExecutionErrorType {
     
     /** Code bundle malformed or unsupported */
     INVALID_CODE_BUNDLE,
+    
+    /** SecurityManager blocked prohibited operation (network, filesystem, native code) */
+    SECURITY_VIOLATION,
     
     /** Unknown error */
     UNKNOWN,

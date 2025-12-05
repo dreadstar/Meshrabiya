@@ -1,5 +1,5 @@
 package com.ustadmobile.meshrabiya.vnet
-
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -8,23 +8,32 @@ import java.util.concurrent.atomic.AtomicInteger
  * Provides robust acquire/release APIs and pool monitoring.
  *
  * Usage:
- *   val pool = MeshConnectionPool(virtualNode, poolSize = 8)
+ *   val pool = MeshConnectionPool.getInstance()
  *   val conn = pool.acquireConnection()
  *   // ... use conn ...
  *   pool.releaseConnection(conn)
  */
-class MeshConnectionPool(
-    private val virtualNode: VirtualNode,
-    poolSize: Int = DEFAULT_POOL_SIZE
-) {
+class MeshConnectionPool constructor(private val virtualNode: VirtualNode) {
 
     companion object {
-        const val DEFAULT_POOL_SIZE = 8
+        @Volatile private var instance: MeshConnectionPool? = null
+        fun init(virtualNode: VirtualNode) {
+            if (instance == null) {
+                synchronized(this) {
+                    if (instance == null) {
+                        instance = MeshConnectionPool(virtualNode)
+                    }
+                }
+            }
+        }
+        fun getInstance(): MeshConnectionPool {
+            return instance ?: throw IllegalStateException("MeshConnectionPool must be initialized with init(virtualNode) before use.")
+        }
     }
 
     private val connectionQueue = ConcurrentLinkedQueue<Connection>()
     private val totalConnections = AtomicInteger(0)
-    private val maxPoolSize = poolSize
+    private val maxPoolSize = MeshrabiyaConstants.getConnectionPoolSize()
 
     init {
         repeat(maxPoolSize) {

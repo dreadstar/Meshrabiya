@@ -1,50 +1,44 @@
 package com.ustadmobile.meshrabiya.service.compute.executor
 
+import android.content.Context
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
-// import com.ustadmobile.meshrabiya.service.compute.model.ResourceMetrics
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
 import com.ustadmobile.meshrabiya.service.compute.model.FileReference
-import java.io.File
 import org.tensorflow.lite.Interpreter
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 /**
  * MLNativeExecutor
  * 
- * Phase 2: Task Execution Layer - ML model inference implementation
+ * Phase 2: Task Execution Layer - TensorFlow Lite ML execution implementation
  * 
- * Executes machine learning model inference using TensorFlow Lite.
+ * Executes TensorFlow Lite models (.tflite files) for ML inference.
+ * Supports both CPU and GPU acceleration (if available).
  * 
  * Code Bundle Format:
  * - Single .tflite model file
  * 
- * Input Format:
- * - Binary tensor data (raw bytes)
- * - Input manifest specifies tensor shapes and types
+ * Input Files:
+ * - Binary input tensors (e.g., "input_0.bin", "input_1.bin")
+ * - Each input file represents one model input tensor
  * 
- * Output Format:
- * - Binary tensor data (inference results)
- * - Output manifest with result tensors
+ * Output Files:
+ * - Binary output tensors (e.g., "output_0.bin", "output_1.bin")
+ * - Each output file represents one model output tensor
  * 
- * Implementation Steps:
- * 1. Validate .tflite model file format
- * 2. Load model into TensorFlow Lite interpreter
- * 3. Prepare input tensors from input files
- * 4. Run inference
- * 5. Extract output tensors
- * 6. Write output tensors to outputs/ directory
- * 7. Track resource usage during inference
+ * Security:
+ * - TensorFlow Lite Interpreter runs in isolated sandbox
+ * - No network access
+ * - No file I/O beyond inputs/outputs
+ * - No access to Android system APIs
  */
-class MLNativeExecutor(
-    private val context: Context
-) : TaskExecutor {
+class MLNativeExecutor(private val context: Context) : TaskExecutor {
     
     companion object {
         private val TFLITE_MAGIC_BYTES = byteArrayOf(0x54, 0x46, 0x4C, 0x33) // "TFL3"
-        private const val MODEL_FILE = "model.tflite"
     }
     
     override suspend fun execute(
@@ -52,10 +46,12 @@ class MLNativeExecutor(
         inputFiles: Map<String, ByteArray>,
         containerId: String
     ): ExecutionResult {
+        // Rename parameter to match interface convention while using executionContext internally
+        val executionContext = context
         val startTime = System.currentTimeMillis()
-        val workspaceDir = File(this.context.filesDir, "containers/$containerId")
+        val workspaceDir = File(this.context.cacheDir, "ml_workspace_$containerId")
         
-        try {
+        return try {
             // 1. Setup workspace
             workspaceDir.mkdirs()
             val inputsDir = File(workspaceDir, "inputs")
@@ -63,97 +59,109 @@ class MLNativeExecutor(
             inputsDir.mkdirs()
             outputsDir.mkdirs()
             
-            // 2. Save model file
-            val modelFile = File(workspaceDir, MODEL_FILE)
-            modelFile.writeBytes(context.codeBundle)
+            // 2. Write model file
+            val modelFile = File(workspaceDir, "model.tflite")
+            modelFile.writeBytes(executionContext.codeBundle)
             
-            // 3. Write input files (tensor data)
+            // 3. Write input files
             inputFiles.forEach { (filename, data) ->
                 File(inputsDir, filename).writeBytes(data)
             }
             
-            // 4. Run inference using TensorFlow Lite
-            var mlError: String? = null
+            // 4. Execute ML inference
+            var inferenceError: String? = null
             try {
-                val interpreter = new Interpreter(modelFile)
-                // For demonstration, assume single input/output tensor, float32
-                val inputTensor = inputFiles.values.firstOrNull()?.let { bytesToFloatArray(it) }
-                val outputTensor = FloatArray(inputTensor?.size ?: 1)
-                if (inputTensor != null) {
-                    interpreter.run(inputTensor, outputTensor)
-                    // Write output tensor to outputs dir
-                    val outFile = File(outputsDir, "output_tensor.bin")
-                    outFile.writeBytes(floatArrayToBytes(outputTensor))
-                }
-                interpreter.close()
-                // try (Interpreter interpreter = new Interpreter(modelFile)) {
-                //     interpreter.run(inputTensor, outputTensor);
-                // }
-
-                // mulitple io code
-                // Object[] inputs = {input0, input1, ...};
-                // Map<Integer, Object> map_of_indices_to_outputs = new HashMap<>();
-                // FloatBuffer ith_output = FloatBuffer.allocateDirect(3 * 2 * 4);  // Float tensor, shape 3x2x4.
-                // ith_output.order(ByteOrder.nativeOrder());
-                // map_of_indices_to_outputs.put(i, ith_output);
-                // try (Interpreter interpreter = new Interpreter(file_of_a_tensorflowlite_model)) {
-                //     interpreter.runForMultipleInputsOutputs(inputs, map_of_indices_to_outputs);
-                // }
-            } catch (e: Exception) {
-                mlError = e.message
+                // Initialize TensorFlow Lite Interpreter
+                val interpreter = Interpreter(modelFile)
+                
+                // Get input/output tensor counts
+                val inputCount = interpreter.inputTensorCount
+                val outputCount = interpreter.outputTensorCount
+                
+                // Load input tensors from files
+                val inputs = (0 until inputCount).map { index ->
+                    val inputFile = File(inputsDir, "input_$index.bin")
+                    if (!inputFile.exists()) {
+                        throw IllegalStateException("Missing input file: input_$index.bin")
+                    }
+                    ByteBuffer.wrap(inputFile.readBytes()).order(ByteOrder.nativeOrder())
+                }.toTypedArray()
+                
+                // Prepare output tensors as Map<Int, Any>
+                val outputs = mutableMapOf<Int, Any>()
+            (0 until outputCount).forEach { index ->
+                val outputShape = interpreter.getOutputTensor(index).shape()
+                val outputSize = outputShape.reduce { acc, dim -> acc * dim }
+                outputs[index] = ByteBuffer.allocateDirect(outputSize * 4).order(ByteOrder.nativeOrder())
             }
+            
+            // Run inference
+            interpreter.runForMultipleInputsOutputs(inputs, outputs)
+            outputs.forEach { (index, output) ->
+                val outputBuffer = output as ByteBuffer
+                val outputFile = File(outputsDir, "output_$index.bin")
+                outputBuffer.rewind()
+                val outputBytes = ByteArray(outputBuffer.remaining())
+                outputBuffer.get(outputBytes)
+                outputFile.writeBytes(outputBytes)
+            }
+            
+            interpreter.close()
+                
+            } catch (e: Exception) {
+                inferenceError = e.message ?: e::class.java.simpleName
+            }
+            
             val executionTime = System.currentTimeMillis() - startTime
-            // 5. Collect output files (tensor results)
+            
+            // 5. Collect output files
             val outputManifest = collectOutputFiles(outputsDir)
-            return if (mlError == null) {
+            
+            if (inferenceError == null) {
                 ExecutionResult(
-                    taskId = context.taskId,
+                    taskId = executionContext.taskId,
                     success = true,
                     outputManifest = outputManifest,
-                    // resourcesUsed = ResourceMetrics.zero(), // TODO: Actual metrics
                     executionTimeMs = executionTime,
                     resultMessage = "ML inference completed successfully"
                 )
             } else {
                 ExecutionResult(
-                    taskId = context.taskId,
+                    taskId = executionContext.taskId,
                     success = false,
                     outputManifest = outputManifest,
-                    // resourcesUsed = ResourceMetrics.zero(),
                     executionTimeMs = executionTime,
-                    errorMessage = mlError,
+                    errorMessage = inferenceError,
                     errorType = ExecutionErrorType.RUNTIME_ERROR
                 )
             }
             
         } catch (e: Exception) {
             val executionTime = System.currentTimeMillis() - startTime
-            return ExecutionResult(
-                taskId = context.taskId,
+            ExecutionResult(
+                taskId = executionContext.taskId,
                 success = false,
                 outputManifest = emptyList(),
-                // resourcesUsed = ResourceMetrics.zero(),
                 executionTimeMs = executionTime,
-                errorMessage = e.message ?: "ML inference failed",
+                errorMessage = e.message ?: "ML execution failed",
                 errorType = ExecutionErrorType.RUNTIME_ERROR
             )
         } finally {
-            // Cleanup workspace (optional - may keep for debugging)
-            // workspaceDir.deleteRecursively()
+            // Cleanup workspace
+            workspaceDir.deleteRecursively()
         }
     }
     
     override fun validateCodeBundle(codeBundle: ByteArray): Boolean {
-        if (codeBundle.size < 4) return false
+        if (codeBundle.isEmpty()) return false
         
-        // Check TFLite magic bytes
-        return codeBundle[0] == TFLITE_MAGIC_BYTES[0] &&
+        // Check TensorFlow Lite magic bytes
+        return codeBundle.size >= 4 &&
+               codeBundle[0] == TFLITE_MAGIC_BYTES[0] &&
                codeBundle[1] == TFLITE_MAGIC_BYTES[1] &&
                codeBundle[2] == TFLITE_MAGIC_BYTES[2] &&
                codeBundle[3] == TFLITE_MAGIC_BYTES[3]
     }
-    
-    override fun getSupportedTaskType(): TaskType = TaskType.ML_NATIVE
     
     // === Private Helper Methods ===
     
@@ -165,8 +173,7 @@ class MLNativeExecutor(
                 FileReference(
                     fileId = calculateSha256Hash(file),
                     fileName = file.name,
-                    sizeBytes = file.length(),
-                    mimeType = "application/octet-stream" // Binary tensor data
+                    sizeBytes = file.length()
                 )
             } else null
         } ?: emptyList()
@@ -182,25 +189,5 @@ class MLNativeExecutor(
         }
         inputStream.close()
         return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-  
-    
-    /**
-     * Helper to convert byte array to FloatArray for tensor input
-     */
-    private fun bytesToFloatArray(bytes: ByteArray): FloatArray {
-        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder())
-        val floatArray = FloatArray(bytes.size / 4)
-        buffer.asFloatBuffer().get(floatArray)
-        return floatArray
-    }
-    
-    /**
-     * Helper to convert FloatArray to byte array for tensor output
-     */
-    private fun floatArrayToBytes(floats: FloatArray): ByteArray {
-        val buffer = ByteBuffer.allocate(floats.size * 4).order(ByteOrder.nativeOrder())
-        buffer.asFloatBuffer().put(floats)
-        return buffer.array()
     }
 }

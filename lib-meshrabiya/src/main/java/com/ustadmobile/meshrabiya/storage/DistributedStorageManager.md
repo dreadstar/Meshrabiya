@@ -125,7 +125,7 @@ class DistributedStorageManager(
     private val meshGossipService: MeshGossipService,
     private val coreGossipBroadcastService: CoreGossipBroadcastService,
     private val storageConfig: StorageConfiguration,
-    private val connectionPool: MeshConnectionPool
+    private val connectionPool: MeshConnectionPool = MeshConnectionPool.getInstance()
 ) {
     // --- Event Handlers ---
     var onFileStored: ((fileId: String, file: File) -> Unit)? = null

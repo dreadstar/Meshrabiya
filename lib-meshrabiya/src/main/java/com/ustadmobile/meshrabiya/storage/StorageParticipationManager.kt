@@ -58,7 +58,8 @@ class StorageParticipationManager(
             betaLogger.log(LogLevel.INFO, "Storage", "Enabling storage participation")
             // Configure distributed storage with current allocations
             val config = createStorageConfig()
-                configureStorageParticipation(config)
+            // TODO: Reimplement configureStorageParticipation (2025-12-04)
+            // configureStorageParticipation(config)
             
             val totalMB = getTotalAllocatedMB()
             betaLogger.log(LogLevel.INFO, "Storage", "Storage participation enabled with ${totalMB}MB allocated")
@@ -70,7 +71,8 @@ class StorageParticipationManager(
                 totalQuota = 0L,
                 allowedDirectories = emptyList()
             )
-                configureStorageParticipation(disabledConfig)
+            // TODO: Reimplement configureStorageParticipation (2025-12-04)
+            // configureStorageParticipation(disabledConfig)
             betaLogger.log(LogLevel.INFO, "Storage", "Storage participation disabled")
         }
         
