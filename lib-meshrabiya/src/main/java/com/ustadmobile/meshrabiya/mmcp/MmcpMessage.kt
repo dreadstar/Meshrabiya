@@ -35,6 +35,7 @@ sealed class MmcpMessage(
                 lastHopAddr = lastHopAddr,
                 hopCount =  hopCount,
                 maxHops = 0,
+                gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE, //V3: MMCP is mesh-local
                 payloadSize = packetPayload.size
             ),
             data =packetData,

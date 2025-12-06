@@ -51,6 +51,7 @@ class VirtualNodeDatagramSocketTest {
                     lastHopAddr = socket1VirtualNodeAddr,
                     hopCount = 1.toByte(),
                     maxHops = 8.toByte(),
+                    gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
                     payloadSize = 1000
                 ),
                 data = data,

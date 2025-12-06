@@ -4,6 +4,9 @@ import java.io.File
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.first
 import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
@@ -28,6 +31,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.service.TorStatusMonitor
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
@@ -57,6 +61,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 instance ?: MeshrabiyaApiImpl().also { instance = it }
             }
         }
+        
+        /**
+         * Timeout threshold for gateway staleness check.
+         * Phase 3B: Used to filter stale gateways from statistics
+         */
+        private const val GATEWAY_STALE_TIMEOUT_MS = 30_000L  // 30 seconds
     }
 
     // Internal managers, initialized in initMesh
@@ -66,6 +76,13 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
     // Compute workflows now use DistributedComputeServer + TaskManager directly
     // private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
+
+    // V3: Gateway preference state
+    @Volatile
+    private var currentGatewayPreference: GatewayPreference = GatewayPreference.DEFAULT
+    @Volatile
+    private var isTorRunning: Boolean = false
+    private val torStatusMonitor = TorStatusMonitor()
 
      // --- Proxy Controls ---
     override fun setProxy(host: String, port: Int) {
@@ -91,6 +108,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         distributedStorageManager = myNode?.distributedStorageManager
         // DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
         // intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
+        
+        // V3: Load gateway preference from storage
+        runBlocking {
+            loadGatewayPreference(context)
+        }
+        
+        // V3: Register Tor status monitor
+        torStatusMonitor.register(context)
+        torStatusMonitor.requestStatusUpdate(context)  // Get initial status
     }
 
     // --- Mesh State & Network Info ---
@@ -138,7 +164,38 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // TODO: Reimplement using canonical workflows - VirtualNode methods removed (2025-12-04)
     override fun getMeshStatus(): MeshState = MeshState.UNKNOWN // myNode?.getMeshStatus() ?: MeshState.UNKNOWN
     override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
-    override fun getNetworkInfo(): NetworkInfo = NetworkInfo() // myNode?.getNetworkInfo() ?: NetworkInfo()
+    
+    /**
+     * Phase 3B: Enhanced getNetworkInfo() with gateway statistics
+     * Returns mesh network information including Tor and clearnet gateway counts
+     */
+    override fun getNetworkInfo(): NetworkInfo {
+        val node = myNode
+        if (node == null) {
+            return NetworkInfo() // Mesh not initialized
+        }
+        
+        val topology = node.originatingMessageManager.getTopologyMapInfo()
+        val connectedNeighbors = node.neighbors().size
+        
+        // Phase 3B: Count gateways by type
+        val torGateways = topology.values.count { nodeInfo ->
+            nodeInfo.hasRole(com.ustadmobile.meshrabiya.vnet.MeshRole.TOR_GATEWAY) &&
+            !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+        }
+        
+        val clearnetGateways = topology.values.count { nodeInfo ->
+            nodeInfo.hasRole(com.ustadmobile.meshrabiya.vnet.MeshRole.CLEARNET_GATEWAY) &&
+            !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+        }
+        
+        return NetworkInfo(
+            connectedPeers = connectedNeighbors,
+            torGateways = torGateways,
+            clearnetGateways = clearnetGateways,
+        )
+    }
+    
     override fun getNodeInfo(nodeId: String): NodeInfo = NodeInfo() // myNode?.getNodeInfo(nodeId) ?: NodeInfo()
 
     // --- Gateway Controls ---
@@ -162,6 +219,47 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
     override fun getInternetGatewayStatus(): Boolean = false // myNode?.getInternetGatewayStatus() ?: false
     override fun getGatewayStatus(): Boolean = false // myNode?.getGatewayStatus() ?: false
+
+    // --- V3: Gateway Preference Implementation ---
+    override fun setGatewayPreference(preference: GatewayPreference, callback: (Result<Unit>) -> Unit) {
+        try {
+            val context = appContext ?: throw IllegalStateException("App context not provided")
+            runBlocking {
+                context.dataStore.edit { prefs ->
+                    prefs[stringPreferencesKey(GatewayPreference.KEY_GATEWAY_PREFERENCE)] = preference.name
+                }
+                currentGatewayPreference = preference
+            }
+            callback(Result.success(Unit))
+        } catch (e: Exception) {
+            callback(Result.failure(e))
+        }
+    }
+
+    override fun getGatewayPreference(): GatewayPreference {
+        return currentGatewayPreference
+    }
+
+    override fun isTorActive(): Boolean {
+        return isTorRunning
+    }
+
+    /**
+     * V3: Internal method to update Tor status from TorStatusMonitor.
+     * Called by TorStatusMonitor BroadcastReceiver when Orbot status changes.
+     */
+    internal fun updateTorStatus(isActive: Boolean) {
+        isTorRunning = isActive
+    }
+
+    /**
+     * V3: Load gateway preference from DataStore on initialization.
+     */
+    private suspend fun loadGatewayPreference(context: Context) {
+        val prefs = context.dataStore.data.first()
+        val prefString = prefs[stringPreferencesKey(GatewayPreference.KEY_GATEWAY_PREFERENCE)]
+        currentGatewayPreference = GatewayPreference.fromString(prefString)
+    }
 
     // --- Storage Participation ---
     // TODO: Reimplement using canonical workflows (2025-12-04)

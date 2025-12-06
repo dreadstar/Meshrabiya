@@ -164,6 +164,7 @@ class GatewayRouter(
             lastHopAddr = packet.header.lastHopAddr,
             hopCount = packet.header.hopCount,
             maxHops = packet.header.maxHops,
+            gatewayType = packet.header.gatewayType, //V3: Preserve gateway type
             payloadSize = packet.header.payloadSize
         )
         

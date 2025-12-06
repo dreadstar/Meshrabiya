@@ -22,6 +22,7 @@ class VirtualPacketStreamTest {
             lastHopAddr = 1002,
             hopCount = 1,
             maxHops = 4,
+            gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
             payloadSize = payloadSize,
         )
 

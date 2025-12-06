@@ -227,6 +227,7 @@ class MeshGossipService(
                     lastHopAddr = fromAddr,
                     hopCount = 1,
                     maxHops = 1, // Direct neighbor only
+                    gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE, //V3: Gossip is mesh-local
                     payloadSize = payload.size
                 )
 

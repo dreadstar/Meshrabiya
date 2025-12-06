@@ -68,6 +68,33 @@ interface MeshrabiyaApi {
     fun getInternetGatewayStatus(): Boolean
     fun getGatewayStatus(): Boolean
 
+    // --- V3: Gateway Preference Controls ---
+    /**
+     * Set the global gateway preference for internet-bound traffic.
+     * 
+     * **Precedence:** Per-app VPN rules (Orbot SharedPreferences "PrefTord") supersede this preference.
+     * 
+     * @param preference Gateway routing policy (TOR_ONLY, CLEARNET_ONLY, EITHER)
+     * @param callback Result callback (Success if saved, Failure on error)
+     */
+    fun setGatewayPreference(preference: GatewayPreference, callback: (Result<Unit>) -> Unit)
+
+    /**
+     * Get the current global gateway preference.
+     * 
+     * @return Current gateway preference (TOR_ONLY, CLEARNET_ONLY, or EITHER)
+     */
+    fun getGatewayPreference(): GatewayPreference
+
+    /**
+     * Query current Tor daemon status from Orbot.
+     * 
+     * **Implementation:** Reads last known status from TorStatusMonitor BroadcastReceiver.
+     * 
+     * @return true if Tor is running ("ON" status), false otherwise
+     */
+    fun isTorActive(): Boolean
+
     // --- Storage Participation ---
     fun setStorageParticipationEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit)
     fun getStorageParticipationStatus(): Boolean

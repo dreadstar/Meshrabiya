@@ -172,6 +172,7 @@ sealed class MeshEcosystemMessage(
                 lastHopAddr = lastHopAddr,
                 hopCount = hopCount,
                 maxHops = 0,
+                gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE, //V3: Ecosystem messages are mesh-local
                 payloadSize = payload.size
             ),
             data = packetData,

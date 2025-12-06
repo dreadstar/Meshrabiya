@@ -722,8 +722,18 @@ abstract class VirtualNode(
                             virtualPacket = packet
                         )
                     }else {
-                        logger(Log.WARN, "$logPrefix route: Cannot route packet to " +
-                                "${packet.header.toAddr.addressToDotNotation()} : no known nexthop")
+                        // Phase 3A: Check if packet requires gateway routing
+                        if (packet.header.gatewayType != VirtualPacketHeader.GATEWAY_TYPE_NONE) {
+                            logger(Log.DEBUG,
+                                "$logPrefix Destination ${packet.header.toAddr.addressToDotNotation()} not on mesh, " +
+                                "attempting gateway routing (type=${packet.header.gatewayType})",
+                                null
+                            )
+                            routeViaGateway(packet, null)
+                        } else {
+                            logger(Log.WARN, "$logPrefix route: Cannot route packet to " +
+                                    "${packet.header.toAddr.addressToDotNotation()} : no known nexthop")
+                        }
                     }
                 }
             }
@@ -733,6 +743,243 @@ abstract class VirtualNode(
                 e
             )
             throw e
+        }
+    }
+
+    /**
+     * Routes packet to internet via mesh gateway.
+     * Phase 3A: Gateway Routing Core
+     * 
+     * Uses gateway type from packet header to select appropriate gateway.
+     * Implements failover if primary gateway type unavailable.
+     *
+     * @param packet Virtual packet with internet-bound destination
+     * @param datagramPacket Original datagram (for metadata)
+     */
+    private fun routeViaGateway(
+        packet: VirtualPacket,
+        datagramPacket: DatagramPacket?
+    ) {
+        val gatewayType = packet.header.gatewayType
+        
+        logger(Log.DEBUG,
+            "$logPrefix Routing internet-bound packet via gateway (type=$gatewayType)",
+            null
+        )
+        
+        // Get available gateways of requested type
+        val gateways = when (gatewayType) {
+            VirtualPacketHeader.GATEWAY_TYPE_TOR -> {
+                getAvailableTorGateways()
+            }
+            VirtualPacketHeader.GATEWAY_TYPE_CLEARNET -> {
+                getAvailableClearnetGateways()
+            }
+            else -> {
+                logger(Log.ERROR, "$logPrefix Invalid gateway type: $gatewayType", null)
+                return
+            }
+        }
+        
+        if (gateways.isEmpty()) {
+            handleNoGatewayAvailable(packet, gatewayType)
+            return
+        }
+        
+        // Select best gateway (closest, lowest load, etc.)
+        val selectedGateway = selectBestGateway(gateways, packet)
+        
+        if (selectedGateway == null) {
+            logger(Log.WARN, "$logPrefix No suitable gateway found for type=$gatewayType", null)
+            return
+        }
+        
+        // Phase 3C: Track gateway message for return path routing
+        originatingMessageManager.trackGatewayMessage(
+            fromAddr = packet.header.fromAddr,
+            fromPort = packet.header.fromPort,
+            toAddr = packet.header.toAddr,
+            toPort = packet.header.toPort,
+            gatewayType = packet.header.gatewayType,
+            gatewayAddr = selectedGateway.nodeAddress
+        )
+        
+        // Forward packet to gateway
+        forwardToGateway(packet, selectedGateway)
+    }
+
+    /**
+     * Gets list of available Tor gateways from mesh topology.
+     * 
+     * @return List of NodeTopologyInfo for nodes advertising TOR_GATEWAY role
+     */
+    private fun getAvailableTorGateways(): List<NodeTopologyInfo> {
+        return originatingMessageManager.getNodesWithRole(MeshRole.TOR_GATEWAY)
+            .filter { !it.isStale(GATEWAY_STALE_TIMEOUT_MS) }
+    }
+
+    /**
+     * Gets list of available clearnet gateways.
+     * 
+     * @return List of NodeTopologyInfo for nodes advertising CLEARNET_GATEWAY role
+     */
+    private fun getAvailableClearnetGateways(): List<NodeTopologyInfo> {
+        return originatingMessageManager.getNodesWithRole(MeshRole.CLEARNET_GATEWAY)
+            .filter { !it.isStale(GATEWAY_STALE_TIMEOUT_MS) }
+    }
+
+    /**
+     * Selects best gateway from available list.
+     * 
+     * Selection criteria:
+     * 1. Filter out stale gateways
+     * 2. Use gateway suitability score (centrality, fitness, latency)
+     * 3. Select highest scoring gateway
+     *
+     * @param gateways List of available gateway nodes
+     * @param packet Packet being routed
+     * @return Selected gateway NodeTopologyInfo, or null if none suitable
+     */
+    private fun selectBestGateway(
+        gateways: List<NodeTopologyInfo>,
+        packet: VirtualPacket
+    ): NodeTopologyInfo? {
+        if (gateways.isEmpty()) return null
+        
+        // Determine gateway role from packet header
+        val gatewayRole = when (packet.header.gatewayType) {
+            VirtualPacketHeader.GATEWAY_TYPE_TOR -> MeshRole.TOR_GATEWAY
+            VirtualPacketHeader.GATEWAY_TYPE_CLEARNET -> MeshRole.CLEARNET_GATEWAY
+            else -> return null
+        }
+        
+        // Calculate suitability scores and select best
+        return gateways
+            .map { gateway -> 
+                Pair(gateway, gateway.calculateGatewaySuitability(gatewayRole)) 
+            }
+            .filter { it.second > 0f }
+            .maxByOrNull { it.second }
+            ?.first
+    }
+
+    /**
+     * Forwards packet to selected gateway.
+     * 
+     * Updates packet header (toAddr, hopCount, lastHopAddr) and sends to gateway.
+     *
+     * @param packet Packet to forward
+     * @param gateway Target gateway node info
+     */
+    private fun forwardToGateway(
+        packet: VirtualPacket,
+        gateway: NodeTopologyInfo
+    ) {
+        logger(Log.DEBUG,
+            "$logPrefix Forwarding packet to gateway ${gateway.nodeAddress.addressToDotNotation()} " +
+                "(hop ${packet.header.hopCount + 1})",
+            null
+        )
+        
+        // Create new packet with updated header to route to gateway
+        val modifiedHeader = VirtualPacketHeader(
+            toAddr = gateway.nodeAddress,  // Route to gateway
+            toPort = packet.header.toPort,
+            fromAddr = packet.header.fromAddr,
+            fromPort = packet.header.fromPort,
+            lastHopAddr = addressAsInt,
+            hopCount = (packet.header.hopCount + 1).toByte(),
+            maxHops = packet.header.maxHops,
+            gatewayType = packet.header.gatewayType,  // Preserve gateway type
+            payloadSize = packet.header.payloadSize
+        )
+        
+        val forwardedPacket = VirtualPacket.fromHeaderAndPayloadData(
+            header = modifiedHeader,
+            data = packet.data,
+            payloadOffset = packet.payloadOffset
+        )
+        
+        // Find next hop to reach gateway
+        val originatorMessage = originatingMessageManager
+            .findOriginatingMessageFor(gateway.nodeAddress)
+        
+        if (originatorMessage != null) {
+            originatorMessage.receivedFromSocket.send(
+                nextHopAddress = originatorMessage.lastHopRealInetAddr,
+                nextHopPort = originatorMessage.lastHopRealPort,
+                virtualPacket = forwardedPacket
+            )
+        } else {
+            logger(Log.ERROR,
+                "$logPrefix Cannot forward to gateway ${gateway.nodeAddress.addressToDotNotation()}: no route",
+                null
+            )
+        }
+    }
+
+    /**
+     * Handles case where no gateway is available.
+     * 
+     * Behavior based on gateway preference (from GatewayPreference enum):
+     * - TOR_ONLY: Drop packet (no fallback)
+     * - CLEARNET_ONLY: Drop packet (no fallback)
+     * - EITHER: Try alternate gateway type
+     *
+     * @param packet Packet that couldn't be routed
+     * @param requestedType Gateway type that was requested
+     */
+    private fun handleNoGatewayAvailable(
+        packet: VirtualPacket,
+        requestedType: Byte
+    ) {
+        logger(Log.WARN, "$logPrefix No gateway available for type=$requestedType", null)
+        
+        // For EITHER preference, try alternate gateway type
+        // Note: Gateway preference is managed by GatewayTypeResolver at packet creation time
+        // Here we just attempt fallback for EITHER case
+        
+        val alternateType = if (requestedType == VirtualPacketHeader.GATEWAY_TYPE_TOR) {
+            VirtualPacketHeader.GATEWAY_TYPE_CLEARNET
+        } else {
+            VirtualPacketHeader.GATEWAY_TYPE_TOR
+        }
+        
+        val alternateGateways = when (alternateType) {
+            VirtualPacketHeader.GATEWAY_TYPE_TOR -> getAvailableTorGateways()
+            VirtualPacketHeader.GATEWAY_TYPE_CLEARNET -> getAvailableClearnetGateways()
+            else -> emptyList()
+        }
+        
+        if (alternateGateways.isNotEmpty()) {
+            logger(Log.INFO, "$logPrefix Attempting fallback to gateway type=$alternateType", null)
+            
+            // Create new packet with alternate gateway type
+            val fallbackHeader = VirtualPacketHeader(
+                toAddr = packet.header.toAddr,
+                toPort = packet.header.toPort,
+                fromAddr = packet.header.fromAddr,
+                fromPort = packet.header.fromPort,
+                lastHopAddr = packet.header.lastHopAddr,
+                hopCount = packet.header.hopCount,
+                maxHops = packet.header.maxHops,
+                gatewayType = alternateType,  // Updated to alternate type
+                payloadSize = packet.header.payloadSize
+            )
+            
+            val fallbackPacket = VirtualPacket.fromHeaderAndPayloadData(
+                header = fallbackHeader,
+                data = packet.data,
+                payloadOffset = packet.payloadOffset
+            )
+            
+            routeViaGateway(fallbackPacket, null)
+        } else {
+            // No fallback available - drop packet
+            logger(Log.WARN,
+                "$logPrefix Dropping packet: no gateway available (requested=$requestedType)",
+                null
+            )
         }
     }
 
@@ -820,6 +1067,7 @@ abstract class VirtualNode(
             lastHopAddr = addressAsInt,
             hopCount = 0,
             maxHops = 10,
+            gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE, //V3: Mesh-local message
             payloadSize = messageBytes.size
         )
         System.arraycopy(messageBytes, 0, packetData, VirtualPacketHeader.HEADER_SIZE, messageBytes.size)
@@ -964,6 +1212,15 @@ abstract class VirtualNode(
             logger(Log.ERROR, "$logPrefix Failed to route via proxy: ${e.message}", e)
             return false
         }
+    }
+
+    companion object {
+        /**
+         * Timeout threshold for gateway staleness check.
+         * Gateways not seen within this period are considered stale.
+         * Phase 3A: Gateway Routing Core
+         */
+        const val GATEWAY_STALE_TIMEOUT_MS = 30_000L  // 30 seconds
     }
 
     // Removed explicit getter functions - Kotlin auto-generates them from protected val properties

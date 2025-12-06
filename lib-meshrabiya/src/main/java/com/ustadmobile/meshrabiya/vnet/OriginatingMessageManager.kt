@@ -106,6 +106,13 @@ class OriginatingMessageManager(
 
     private val messageCounter = AtomicInteger(0)
 
+    // === PHASE 3C: GATEWAY MESSAGE TRACKING ===
+    /**
+     * Tracks messages sent via gateways for return path routing and statistics.
+     * Key: "fromAddr:fromPort", Value: GatewayMessage
+     */
+    private val gatewayMessages: MutableMap<String, GatewayMessage> = ConcurrentHashMap()
+
     // === TOPOLOGY MAP WITH FULL NODE INFO ===
     // Enhanced to store complete NodeTopologyInfo (roles, metrics) instead of just neighbors
     private val _topologyMapInfo: MutableMap<Int, NodeTopologyInfo> = mutableMapOf()
@@ -657,9 +664,129 @@ class OriginatingMessageManager(
         return messageCounter.incrementAndGet()
     }
 
+    // === PHASE 3C: GATEWAY MESSAGE TRACKING METHODS ===
+    
+    /**
+     * Tracks a message sent via gateway for return path routing.
+     * Phase 3C: Gateway packet tracking
+     *
+     * @param fromAddr Source virtual address
+     * @param fromPort Source port
+     * @param toAddr Destination address (internet)
+     * @param toPort Destination port
+     * @param gatewayType Gateway type (TOR or CLEARNET)
+     * @param gatewayAddr Gateway node address
+     */
+    fun trackGatewayMessage(
+        fromAddr: Int,
+        fromPort: Int,
+        toAddr: Int,
+        toPort: Int,
+        gatewayType: Byte,
+        gatewayAddr: Int
+    ) {
+        val key = createGatewayMessageKey(fromAddr, fromPort)
+        val message = GatewayMessage(
+            fromAddr = fromAddr,
+            fromPort = fromPort,
+            toAddr = toAddr,
+            toPort = toPort,
+            timestamp = System.currentTimeMillis(),
+            gatewayType = gatewayType,
+            gatewayAddr = gatewayAddr
+        )
+        
+        gatewayMessages[key] = message
+        
+        logger(
+            priority = Log.DEBUG,
+            message = { 
+                "$logPrefix Tracked gateway message: ${fromAddr.addressToDotNotation()}:$fromPort → " +
+                "gateway ${gatewayAddr.addressToDotNotation()} (type=$gatewayType)" 
+            }
+        )
+    }
+
+    /**
+     * Gets gateway address for return traffic.
+     * Phase 3C: Used to route return packets back through same gateway
+     *
+     * @param toAddr Destination address (local node)
+     * @param toPort Destination port
+     * @return Gateway node address, or null if not routed via gateway
+     */
+    fun getGatewayForReturnTraffic(toAddr: Int, toPort: Int): Int? {
+        val key = createGatewayMessageKey(toAddr, toPort)
+        return gatewayMessages[key]?.gatewayAddr
+    }
+
+    /**
+     * Returns statistics on gateway usage.
+     * Phase 3C: For debugging and monitoring
+     *
+     * @return Map of gateway type to usage count
+     */
+    fun getGatewayUsageStats(): Map<Byte, Int> {
+        val stats = mutableMapOf<Byte, Int>()
+        
+        gatewayMessages.values.forEach { msg ->
+            val count = stats.getOrDefault(msg.gatewayType, 0)
+            stats[msg.gatewayType] = count + 1
+        }
+        
+        return stats
+    }
+
+    /**
+     * Creates a unique key for gateway message tracking.
+     * Format: "fromAddr:fromPort"
+     */
+    private fun createGatewayMessageKey(fromAddr: Int, fromPort: Int): String {
+        return "$fromAddr:$fromPort"
+    }
+
+    /**
+     * Cleans up stale gateway messages older than threshold.
+     * Called periodically to prevent memory leaks.
+     */
+    fun cleanupStaleGatewayMessages(maxAgeMs: Long = 60_000L) {
+        val now = System.currentTimeMillis()
+        val iterator = gatewayMessages.entries.iterator()
+        var removed = 0
+        
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (now - entry.value.timestamp > maxAgeMs) {
+                iterator.remove()
+                removed++
+            }
+        }
+        
+        if (removed > 0) {
+            logger(
+                priority = Log.DEBUG,
+                message = { "$logPrefix Cleaned up $removed stale gateway messages" }
+            )
+        }
+    }
+
     // Expose the current originatorMessages map for state updates
     fun getOriginatorMessages(): Map<Int, VirtualNode.LastOriginatorMessage> = originatorMessages
 }
+
+/**
+ * Tracks a message sent via gateway for return path routing.
+ * Phase 3C: Gateway packet tracking data structure
+ */
+data class GatewayMessage(
+    val fromAddr: Int,
+    val fromPort: Int,
+    val toAddr: Int,
+    val toPort: Int,
+    val timestamp: Long,
+    val gatewayType: Byte,
+    val gatewayAddr: Int
+)
 
 data class OriginatingMessageState(
     val pendingMessages: Map<Int, MmcpOriginatorMessage> = emptyMap(),
