@@ -11,7 +11,6 @@ import com.ustadmobile.meshrabiya.storage.StorageAllocation
 // Phase 3-4 uses direct broadcast-response pattern (processTaskRequest → node selection)
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
-import com.ustadmobile.meshrabiya.service.compute.model.JobType
 import com.ustadmobile.meshrabiya.model.MeshState
 import com.ustadmobile.meshrabiya.model.NetworkInfo
 import com.ustadmobile.meshrabiya.model.NodeInfo
@@ -134,7 +133,9 @@ interface MeshrabiyaApi {
     // fun getTaskStatus(taskId: String): ExecutionPlan?
     // fun getAllTasks(): List<ComputeTask>
     
-    fun getJobTypes(): List<JobType>
+    // DEPRECATED 2025-12-06: getJobTypes() removed
+    // JobType is for ServiceLibraryEntry categorization only, not for API-level task validation
+    // Use taskType (execution engine: python, jvm, js, ml-native) for task submission
 
     // --- Event Registration ---
     fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit)
@@ -165,4 +166,12 @@ interface MeshrabiyaApi {
     // fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit)
     // fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit)
     fun setOnGossipMessage(handler: (senderId: Int, messageBytes: ByteArray) -> Unit)
+    
+    /**
+     * Section 9: Task status update callback
+     * Invoked when a distributed compute task changes status.
+     * 
+     * @param handler Callback function receiving taskId and status string
+     */
+    fun setOnTaskStatusUpdate(handler: (taskId: String, status: String) -> Unit)
 }

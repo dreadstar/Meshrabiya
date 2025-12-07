@@ -350,6 +350,18 @@ abstract class VirtualNode(
         )
     }
     
+    /**
+     * Public accessor for DistributedComputeClient (for MeshrabiyaApi)
+     * Added 2025-12-06 for API-level task submission
+     */
+    fun obtainDistributedComputeClient(): DistributedComputeClient = distributedComputeClient
+    
+    /**
+     * Public accessor for MeshEcosystemListener (for MeshrabiyaApi)
+     * Added 2025-12-06 for distributed storage enable/disable
+     */
+    fun obtainMeshEcosystemListener(): MeshEcosystemListener = meshEcosystemListener
+    
     // DistributedComputeServer: Server-side distributed compute service
     protected val distributedComputeServer: DistributedComputeServer by lazy {
         DistributedComputeServer(

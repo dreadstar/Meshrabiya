@@ -223,6 +223,15 @@ class MeshEcosystemListener(
                 scope.launch {
                     computeClient?.handleTaskCompletionMessage(message)
                 }
+                
+                // Section 9: Trigger task status callback
+                scope.launch {
+                    val api = com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl.getInstance()
+                    api.triggerTaskStatusUpdate(
+                        taskId = message.taskId,
+                        status = "COMPLETED"
+                    )
+                }
             }
             
             is TaskCompletionAckMessage -> {
