@@ -17,16 +17,6 @@ enum class JobType {
 }
 
 /**
- * Enum representing the priority of a distributed job.
- */
-enum class JobPriority {
-    BACKGROUND,
-    NORMAL,
-    HIGH,
-    CRITICAL
-}
-
-/**
  * Enum representing aggregation strategies for distributed compute results.
  */
 enum class AggregationStrategy {

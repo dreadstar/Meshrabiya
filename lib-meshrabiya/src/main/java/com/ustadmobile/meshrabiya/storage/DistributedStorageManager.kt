@@ -199,7 +199,6 @@ class DistributedStorageManager(
     suspend fun storeFile(
         path: String,
         data: ByteArray,
-        priority: SyncPriority = SyncPriority.NORMAL,
         replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
         owner: String? = null,
         recipients: List<RecipientEntry>? = null,
@@ -211,7 +210,7 @@ class DistributedStorageManager(
             throw IllegalArgumentException("Task-isolated storage requires at least one recipient for hybrid encryption.")
         }
         // Pass accessScope to client for correct encryption handling
-            return client.storeFile(path, data, priority, replicationLevel, owner, recipients)
+            return client.storeFile(path, data, replicationLevel, owner, recipients)
     }
     
     /**
@@ -412,13 +411,6 @@ data class FileReference(
 enum class ReplicationLevel {
     MINIMAL,
     STANDARD,
-    HIGH,
-    CRITICAL
-}
-
-enum class SyncPriority {
-    LOW,
-    NORMAL,
     HIGH,
     CRITICAL
 }

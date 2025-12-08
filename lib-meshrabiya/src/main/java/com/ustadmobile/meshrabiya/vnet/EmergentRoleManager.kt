@@ -1127,6 +1127,11 @@ class EmergentRoleManager(
     }
 
     // Accessor methods for UI integration
+    fun getFitnessScore(): Float {
+        val node = getCurrentCapabilities()
+        return calculateNormalizedFitness(node)
+    }
+    
     fun getCurrentMeshRoles(): Set<MeshRole> = _currentMeshRoles.value
     
     fun getMeshIntelligence(): MeshIntelligence = _meshIntelligence.value

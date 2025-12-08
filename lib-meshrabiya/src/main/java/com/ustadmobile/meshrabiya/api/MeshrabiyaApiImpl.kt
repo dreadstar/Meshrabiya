@@ -181,11 +181,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Mesh State & Network Info ---
     override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
-    override fun getFitnessScore(): Int {
-        // Fitness score calculation not yet implemented in EmergentRoleManager
-        // Return 0 until backend implementation available
-        return 0
-    }
+
+    override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
+    
     override fun getConnectionUri(): String = myNode?.currentNodeState?.connectUri ?: ""
     override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = myNode?.currentNodeState ?: throw IllegalStateException("Mesh not initialized")
     override fun getNeighbors(): List<Int> = myNode?.neighbors()?.map { it.first } ?: emptyList()
@@ -641,7 +639,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * @param requestParams Map containing:
      *   - taskId (String, optional): Unique task identifier (auto-generated if not provided)
      *   - taskType (String, required): Execution engine (python, jvm, javascript, ml-native)
-     *   - priority (Int, optional): Task priority 0-10 (default: 5)
      *   
      * @return ApiResult.Success if task submitted, ApiResult.Failure on error
      * 
@@ -654,12 +651,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             val taskId = requestParams["taskId"] as? String ?: java.util.UUID.randomUUID().toString()
             val taskType = requestParams["taskType"] as? String 
                 ?: return ApiResult.Failure(IllegalArgumentException("taskType required (python, jvm, javascript, ml-native)"))
-            val priority = requestParams["priority"] as? Int ?: 5
-            
-            // Validate priority range
-            if (priority < 0 || priority > 10) {
-                return ApiResult.Failure(IllegalArgumentException("Priority must be 0-10"))
-            }
             
             // Check compute client availability
             val computeClient = myNode?.obtainDistributedComputeClient() 
@@ -670,7 +661,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 requestId = java.util.UUID.randomUUID().toString(),
                 taskId = taskId,
                 taskType = taskType,  // Execution engine: python, jvm, javascript, ml-native
-                priority = priority,
                 timestamp = System.currentTimeMillis()
             )
             

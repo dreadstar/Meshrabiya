@@ -10,18 +10,22 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import kotlin.test.*
 
 /**
  * Unit tests for Tor status monitoring integration.
  * Tests TorStatusMonitor BroadcastReceiver and StateFlow updates.
  */
+@RunWith(RobolectricTestRunner::class)
 class TorStatusMonitoringTest {
 
     private lateinit var torStatusFlow: MutableStateFlow<Boolean>
 
     @Before
     fun setup() {
+        println("[DEBUG] TorStatusMonitoringTest: Starting @Before setup()")
         torStatusFlow = MutableStateFlow(false)
     }
 

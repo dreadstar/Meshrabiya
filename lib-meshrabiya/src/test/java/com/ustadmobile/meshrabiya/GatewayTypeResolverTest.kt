@@ -9,12 +9,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import kotlin.test.*
 
 /**
  * Unit tests for GatewayTypeResolver.
  * Tests precedence logic: VPN rules > Tor status > global preference.
  */
+@RunWith(RobolectricTestRunner::class)
 class GatewayTypeResolverTest {
 
     private lateinit var mockPrefs: SharedPreferences
@@ -23,6 +26,7 @@ class GatewayTypeResolverTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] GatewayTypeResolverTest: Starting @Before setup()")
         mockPrefs = mockk(relaxed = true)
         torStatusFlow = MutableStateFlow(false)
         globalPreference = GatewayPreference.TOR_ONLY
@@ -142,12 +146,16 @@ class GatewayTypeResolverTest {
                     .filter { it.isNotBlank() }
                 
                 if (torifiedPackages.contains(packageName)) {
+                    // App IS in torified list -> route through Tor mesh
                     return VirtualPacketHeader.GATEWAY_TYPE_TOR
-                }
-                
-                // If VPN is active but package not in list, conservative: NONE
-                if (torifiedPackages.isNotEmpty()) {
-                    return VirtualPacketHeader.GATEWAY_TYPE_NONE
+                } else {
+                    // App NOT in torified list but VPN mode is active
+                    // When global=TOR_ONLY, be conservative: return NONE (don't leak clearnet)
+                    // Otherwise, fall through to global preference
+                    if (globalPreference == GatewayPreference.TOR_ONLY) {
+                        return VirtualPacketHeader.GATEWAY_TYPE_NONE
+                    }
+                    // For other preferences, fall through to step 2
                 }
             }
         }

@@ -15,6 +15,7 @@ class GatewaySelectionTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] GatewaySelectionTest: Starting @Before setup()")
         testPacket = createTestPacket(
             toAddr = 0x08080808,  // 8.8.8.8
             toPort = 53,
@@ -24,6 +25,7 @@ class GatewaySelectionTest {
 
     @Test
     fun `selectBestGateway chooses gateway with highest suitability score`() {
+        println("[DEBUG] GatewaySelectionTest: Starting 'selectBestGateway chooses gateway with highest suitability score'")
         val gateway1 = createMockGateway(address = 10, centrality = 0.5f, fitness = 0.8f, latency = 100L)
         val gateway2 = createMockGateway(address = 20, centrality = 0.8f, fitness = 0.9f, latency = 50L)
         val gateway3 = createMockGateway(address = 30, centrality = 0.3f, fitness = 0.6f, latency = 200L)
@@ -86,7 +88,7 @@ class GatewaySelectionTest {
             latency = 0L        // 30% weight (normalized to 1.0)
         )
         
-        val score = calculateSuitability(gateway, MeshRole.TOR_GATEWAY, maxLatency = 100L)
+        val score = gateway.calculateGatewaySuitability(MeshRole.TOR_GATEWAY)
         
         // Perfect score: 0.3*1.0 + 0.4*1.0 + 0.3*1.0 = 1.0
         assertEquals(1.0f, score, 0.01f)
@@ -97,9 +99,8 @@ class GatewaySelectionTest {
         val lowLatencyGateway = createMockGateway(address = 10, centrality = 0.5f, fitness = 0.5f, latency = 10L)
         val highLatencyGateway = createMockGateway(address = 20, centrality = 0.5f, fitness = 0.5f, latency = 200L)
         
-        val maxLatency = 200L
-        val scoreLow = calculateSuitability(lowLatencyGateway, MeshRole.TOR_GATEWAY, maxLatency)
-        val scoreHigh = calculateSuitability(highLatencyGateway, MeshRole.TOR_GATEWAY, maxLatency)
+        val scoreLow = lowLatencyGateway.calculateGatewaySuitability(MeshRole.TOR_GATEWAY)
+        val scoreHigh = highLatencyGateway.calculateGatewaySuitability(MeshRole.TOR_GATEWAY)
         
         assertTrue(scoreLow > scoreHigh, "Lower latency should result in higher score")
     }
@@ -144,36 +145,32 @@ class GatewaySelectionTest {
             }
             every { calculateGatewaySuitability(any()) } answers {
                 val requestedRole = firstArg<MeshRole>()
-                if (!roles.contains(requestedRole)) 0.0f
-                else calculateSuitability(this@apply, requestedRole, 200L)
+                if (!roles.contains(requestedRole)) {
+                    0.0f
+                } else {
+                    // Use actual algorithm from NodeTopologyInfo
+                    val centralityWeight = 0.3f
+                    val fitnessWeight = 0.4f
+                    val latencyWeight = 0.3f
+                    val normalizedLatency = 1f - (pingTime / 1000f).coerceIn(0f, 1f)
+                    (centralityScore * centralityWeight) +
+                    (fitnessScore * fitnessWeight) +
+                    (normalizedLatency * latencyWeight)
+                }
             }
         }
     }
 
+    /**
+     * Test implementation of selectBestGateway matching VirtualNode.testSelectBestGateway().
+     * This tests the selection algorithm independently of VirtualNode infrastructure.
+     */
     private fun selectBestGateway(gateways: List<NodeTopologyInfo>, role: MeshRole): NodeTopologyInfo? {
         return gateways
             .map { Pair(it, it.calculateGatewaySuitability(role)) }
             .filter { it.second > 0f }
             .maxByOrNull { it.second }
             ?.first
-    }
-
-    private fun calculateSuitability(node: NodeTopologyInfo, role: MeshRole, maxLatency: Long): Float {
-        if (!node.hasRole(role)) return 0.0f
-        
-        val centralityWeight = 0.3f
-        val fitnessWeight = 0.4f
-        val latencyWeight = 0.3f
-        
-        val latencyScore = if (maxLatency > 0 && node.pingTime > 0) {
-            1.0f - (node.pingTime.toFloat() / maxLatency.toFloat())
-        } else {
-            1.0f
-        }
-        
-        return (centralityWeight * node.centralityScore) +
-               (fitnessWeight * node.fitnessScore) +
-               (latencyWeight * latencyScore.coerceIn(0f, 1f))
     }
 
     private fun createTestPacket(
@@ -192,6 +189,8 @@ class GatewaySelectionTest {
             gatewayType = gatewayType,
             payloadSize = 0
         )
-        return VirtualPacket.fromHeaderAndPayloadData(header, ByteArray(0), 0)
+        // Use buffer with proper offset for header (minimum HEADER_SIZE bytes before payload)
+        val buffer = ByteArray(VirtualPacketHeader.HEADER_SIZE)
+        return VirtualPacket.fromHeaderAndPayloadData(header, buffer, VirtualPacketHeader.HEADER_SIZE)
     }
 }

@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.vnet
 
 import io.mockk.*
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.*
@@ -16,7 +17,12 @@ class GatewayDiscoveryTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] GatewayDiscoveryTest: Starting @Before setup()")
+        // Clear any static mocks from previous tests
+        unmockkAll()
+        println("[DEBUG] GatewayDiscoveryTest: Cleared all mocks")
         mockOriginatingMessageManager = mockk(relaxed = true)
+        println("[DEBUG] GatewayDiscoveryTest: Created mockOriginatingMessageManager")
         
         // Create test topology with mixed gateway nodes
         testTopologyNodes = listOf(
@@ -26,6 +32,14 @@ class GatewayDiscoveryTest {
             createMockNodeInfo(address = 4, roles = emptySet(), lastHeartbeat = System.currentTimeMillis() - 5000),  // No gateway role
             createMockNodeInfo(address = 5, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = System.currentTimeMillis() - 60000),  // Stale
         )
+        println("[DEBUG] GatewayDiscoveryTest: Completed @Before setup()")
+    }
+
+    @After
+    fun teardown() {
+        println("[DEBUG] GatewayDiscoveryTest: Starting @After teardown()")
+        unmockkAll()
+        println("[DEBUG] GatewayDiscoveryTest: Completed @After teardown()")
     }
 
     @Test
@@ -107,15 +121,22 @@ class GatewayDiscoveryTest {
 
     @Test
     fun `stale timeout threshold is 30 seconds`() {
-        val now = System.currentTimeMillis()
+        // Fix timing race condition by using fixed timestamp
+        val fixedNow = 1000000000L
         
-        val node29sec = createMockNodeInfo(address = 1, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = now - 29_000)
-        val node30sec = createMockNodeInfo(address = 2, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = now - 30_000)
-        val node31sec = createMockNodeInfo(address = 3, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = now - 31_000)
+        val node29sec = createMockNodeInfo(address = 1, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = fixedNow - 29_000)
+        val node30sec = createMockNodeInfo(address = 2, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = fixedNow - 30_000)
+        val node31sec = createMockNodeInfo(address = 3, roles = setOf(MeshRole.TOR_GATEWAY), lastHeartbeat = fixedNow - 31_000)
+        
+        // Mock System.currentTimeMillis() in isStale calculation using the fixed value
+        mockkStatic(System::class)
+        every { System.currentTimeMillis() } returns fixedNow
         
         assertFalse(node29sec.isStale(30_000L), "29 seconds should be fresh")
         assertFalse(node30sec.isStale(30_000L), "30 seconds should be fresh (boundary)")
         assertTrue(node31sec.isStale(30_000L), "31 seconds should be stale")
+        
+        println("[DEBUG] GatewayDiscoveryTest: Test completed, static mock will be cleared in @After")
     }
 
     @Test

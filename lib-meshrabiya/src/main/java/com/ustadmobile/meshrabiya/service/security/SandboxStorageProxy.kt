@@ -274,8 +274,7 @@ class SandboxStorageProxy(
             // Store in distributed storage
             val fileReference = distributedStorageManager.storeFile(
                 path = namespacedFileName,
-                data = data,
-                priority = com.ustadmobile.meshrabiya.storage.SyncPriority.NORMAL
+                data = data
             )
             
             if (fileReference != null) {

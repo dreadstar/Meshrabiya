@@ -37,7 +37,13 @@ android {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
             all {
-                it.jvmArgs("-XX:+EnableDynamicAgentLoading")
+                it.jvmArgs(
+                    "-XX:+EnableDynamicAgentLoading",
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "-Djava.security.manager=allow"
+                )
                 it.systemProperty("mockito.verbose", "true")
                 it.testLogging {
                     events("passed", "skipped", "failed")

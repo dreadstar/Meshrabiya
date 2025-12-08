@@ -11,6 +11,7 @@ class GatewayPreferenceTest {
 
     @Test
     fun `default preference is TOR_ONLY`() {
+        println("[DEBUG] GatewayPreferenceTest: Running test")
         assertEquals(GatewayPreference.TOR_ONLY, GatewayPreference.DEFAULT)
     }
 

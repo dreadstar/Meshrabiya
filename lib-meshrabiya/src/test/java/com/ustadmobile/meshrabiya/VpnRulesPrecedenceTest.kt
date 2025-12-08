@@ -17,6 +17,7 @@ class VpnRulesPrecedenceTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] VpnRulesPrecedenceTest: Starting @Before setup()")
         mockPrefs = mockk(relaxed = true)
         mockEditor = mockk(relaxed = true)
         

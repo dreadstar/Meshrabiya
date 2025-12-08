@@ -40,7 +40,7 @@ interface MeshrabiyaApi {
 
     // --- Mesh State & Network Info ---
     fun getNodeRole(): Byte
-    fun getFitnessScore(): Int
+    fun getFitnessScore(): Float
     fun getConnectionUri(): String
     fun getLocalNodeState(): LocalNodeState
     fun getNeighbors(): List<Int>

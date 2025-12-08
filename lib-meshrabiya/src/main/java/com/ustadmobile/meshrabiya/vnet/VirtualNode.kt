@@ -292,7 +292,6 @@ abstract class VirtualNode(
     private val activeSockets: MutableMap<Int, VirtualDatagramSocketImpl> = ConcurrentHashMap()
 
     // === New Service Instantiations ===
-    protected val scheduledExecutorService = Executors.newScheduledThreadPool(2)
     
     // Core mesh services instantiated with proper dependency injection
     protected val meshGossipService: MeshGossipService = MeshGossipService.initialize(this)
@@ -869,6 +868,27 @@ abstract class VirtualNode(
         return gateways
             .map { gateway -> 
                 Pair(gateway, gateway.calculateGatewaySuitability(gatewayRole)) 
+            }
+            .filter { it.second > 0f }
+            .maxByOrNull { it.second }
+            ?.first
+    }
+
+    /**
+     * Internal test accessor for selectBestGateway.
+     * Allows testing of gateway selection algorithm without VirtualPacket dependency.
+     * 
+     * @param gateways List of available gateway nodes
+     * @param role Gateway role to filter by
+     * @return Selected gateway NodeTopologyInfo, or null if none suitable
+     */
+    internal fun testSelectBestGateway(
+        gateways: List<NodeTopologyInfo>,
+        role: MeshRole
+    ): NodeTopologyInfo? {
+        return gateways
+            .map { gateway -> 
+                Pair(gateway, gateway.calculateGatewaySuitability(role)) 
             }
             .filter { it.second > 0f }
             .maxByOrNull { it.second }

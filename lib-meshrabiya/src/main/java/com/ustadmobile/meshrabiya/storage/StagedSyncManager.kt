@@ -76,7 +76,6 @@ class StagedSyncManager(
         filePath: String,
         fileId: String,
         size: Long,
-        priority: SyncPriority = SyncPriority.NORMAL,
         targetReplicaCount: Int = 3
     ): Boolean {
         return try {
@@ -85,7 +84,6 @@ class StagedSyncManager(
                 fileId = fileId,
                 size = size,
                 state = FileState.PENDING_SYNC,
-                priority = priority,
                 checksum = null, // Will be calculated during replication
                 lastModified = System.currentTimeMillis(),
                 replicaCount = 0,
@@ -98,7 +96,7 @@ class StagedSyncManager(
             persistMetadata()
             
             // Queue for mesh sync if conditions allow
-            if (isMeshAvailable.get() && batteryAwareSync.shouldSync(priority)) {
+            if (isMeshAvailable.get() && batteryAwareSync.shouldSync()) {
                 queueForSync(syncedFile, SyncType.REPLICATE)
             }
             
@@ -152,11 +150,11 @@ class StagedSyncManager(
     /**
      * Request immediate sync for a file, bypassing normal queue ordering.
      */
-    fun requestSync(filePath: String, priority: SyncPriority = SyncPriority.HIGH) {
+    fun requestSync(filePath: String) {
         val file = syncedFiles[filePath] ?: return
-        if (batteryAwareSync.shouldSync(priority)) {
-            syncedFiles[filePath] = file.copy(priority = priority, state = FileState.PENDING_SYNC)
-            queueForSync(file.copy(priority = priority), SyncType.REPLICATE)
+        if (batteryAwareSync.shouldSync()) {
+            syncedFiles[filePath] = file.copy(state = FileState.PENDING_SYNC)
+            queueForSync(file, SyncType.REPLICATE)
         }
     }
     
@@ -307,21 +305,8 @@ class StagedSyncManager(
             // Remove existing operations for this file
             syncQueue.removeAll { it.file.filePath == file.filePath }
             
-            // Insert based on priority
-            when (file.priority) {
-                SyncPriority.CRITICAL -> syncQueue.addFirst(operation)
-                SyncPriority.HIGH -> {
-                    val insertIndex = syncQueue.indexOfFirst { 
-                        it.file.priority in setOf(SyncPriority.NORMAL, SyncPriority.LOW)
-                    }
-                    if (insertIndex >= 0) {
-                        syncQueue.add(insertIndex, operation)
-                    } else {
-                        syncQueue.addLast(operation)
-                    }
-                }
-                else -> syncQueue.addLast(operation)
-            }
+            // Add to end of queue (FIFO)
+            syncQueue.addLast(operation)
         }
         
         betaLogger.log(LogLevel.DEBUG, TAG, "Queued ${file.filePath} for ${syncType.name}, queue size: ${syncQueue.size}")
@@ -338,13 +323,11 @@ class StagedSyncManager(
                     
                     val batch = mutableListOf<SyncOperation>()
                     synchronized(syncQueue) {
-                        // Respect priority and battery constraints
-                        val availableOps = syncQueue.filter { op ->
-                            batteryAwareSync.shouldSync(op.file.priority)
-                        }
-                        
-                        repeat(minOf(SYNC_BATCH_SIZE, availableOps.size)) {
-                            syncQueue.removeFirstOrNull()?.let { batch.add(it) }
+                        // Respect battery constraints only
+                        if (batteryAwareSync.shouldSync()) {
+                            repeat(minOf(SYNC_BATCH_SIZE, syncQueue.size)) {
+                                syncQueue.removeFirstOrNull()?.let { batch.add(it) }
+                            }
                         }
                     }
                     
@@ -606,7 +589,6 @@ data class SyncedFile(
     val fileId: String,                 // SHA-256 hash for mesh identification
     val size: Long,                     // File size in bytes
     val state: FileState,               // Current sync state
-    val priority: SyncPriority,         // Sync priority level
     val lastModified: Long,             // File last modification time
     val lastSyncAttempt: Long? = null,  // When last sync was attempted (null if never)
     val syncAttempts: Int = 0,          // Number of sync retry attempts
@@ -677,29 +659,23 @@ data class SyncProgress(
 class BatteryAwareSync(private val context: Context) {
     
     /**
-     * Determines if sync should proceed based on battery level, charging state, and priority.
+     * Determines if sync should proceed based on battery level and charging state.
      */
-    fun shouldSync(priority: SyncPriority = SyncPriority.NORMAL): Boolean {
+    fun shouldSync(): Boolean {
         val batteryLevel = getBatteryLevel()
         val isCharging = isCharging()
         
         return when {
-            // Critical files always sync (security updates, user-requested)
-            priority == SyncPriority.CRITICAL -> true
-            
-            // Very low battery - stop all non-critical sync
+            // Very low battery - stop all sync
             batteryLevel < 10 -> false
             
-            // Low battery - only high priority or when charging
-            batteryLevel < 20 -> isCharging || priority == SyncPriority.HIGH
+            // Low battery - only when charging
+            batteryLevel < 20 -> isCharging
             
-            // Medium battery - sync when charging or normal+ priority
-            batteryLevel < 50 -> isCharging || priority in setOf(SyncPriority.HIGH, SyncPriority.NORMAL)
+            // Medium battery - sync when charging
+            batteryLevel < 50 -> isCharging
             
-            // Good battery - sync everything except LOW priority when not charging
-            batteryLevel < 80 -> isCharging || priority != SyncPriority.LOW
-            
-            // Excellent battery - sync everything
+            // Good battery and above - sync allowed
             else -> true
         }
     }

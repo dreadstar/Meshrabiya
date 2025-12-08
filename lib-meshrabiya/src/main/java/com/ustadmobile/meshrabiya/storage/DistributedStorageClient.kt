@@ -112,7 +112,6 @@ class DistributedStorageClient(
     suspend fun storeFile(
         path: String,
         data: ByteArray,
-        priority: SyncPriority = SyncPriority.NORMAL,
         replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
         owner: String? = null,
         recipients: List<RecipientEntry>? = null
@@ -235,7 +234,6 @@ class DistributedStorageClient(
             filePath = path,
             fileId = fileId,
             size = data.size.toLong(),
-            priority = priority,
             targetReplicaCount = targetReplicaCount
         )
         

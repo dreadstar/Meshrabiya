@@ -7,7 +7,6 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
 import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
 import com.ustadmobile.meshrabiya.service.*
 import com.ustadmobile.meshrabiya.storage.DistributedStorageClient
-import com.ustadmobile.meshrabiya.storage.SyncPriority
 import com.ustadmobile.meshrabiya.storage.RecipientEntry
 import com.ustadmobile.meshrabiya.storage.RecipientType
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
@@ -334,7 +333,6 @@ class DistributedComputeServer(
                     val fileRef = distributedStorageClient.storeFile(
                         path = file.name,
                         data = file.readBytes(),
-                        priority = SyncPriority.HIGH,
                         owner = task.executionContext.requesterNodeId,
                         recipients = listOf(
                             RecipientEntry(

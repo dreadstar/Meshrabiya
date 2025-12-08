@@ -9,7 +9,6 @@ data class LocalComputeTaskRequest(
     val taskId: String,
     val taskType: String,  // "ml-kit-native", "ml-kit-custom", etc.
     // val requiredMLFeatures: List<String> = emptyList(),  // Required ML Kit features
-    val priority: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
 ) {
     // Placeholder for actual MMCP message (will be properly implemented in future)

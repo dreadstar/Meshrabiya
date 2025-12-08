@@ -153,7 +153,7 @@ class CoreGossipBroadcastService private constructor() {
      * @param taskId Unique task identifier
      * @param serviceId Service identifier for the task
      * @param inputParams Task input parameters
-     * @param metadata Task metadata (timeout, priority, etc.)
+     * @param metadata Task metadata (timeout, etc.)
      */
     fun sendComputeTaskRequest(
         taskId: String,

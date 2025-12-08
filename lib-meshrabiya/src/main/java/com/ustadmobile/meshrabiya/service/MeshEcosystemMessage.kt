@@ -996,7 +996,6 @@ data class TaskScheduledMessage(
     val requesterNodeId: String,
     val scheduledAt: Long = System.currentTimeMillis(),
     val estimatedStartTime: Long? = null,
-    val taskPriority: String = "NORMAL",  // BACKGROUND, NORMAL, HIGH, CRITICAL
     val resourceLimits: ResourceLimits = ResourceLimits.zero(),
     val resourceAllocation: Map<String, Any> = emptyMap(),
     val metadata: Map<String, Any>? = null,
@@ -1019,8 +1018,6 @@ data class TaskScheduledMessage(
             packer.packBoolean(false)
         }
         
-        packer.packString(taskPriority)
-        
         // Pack resource allocation as JSON
         val resourceJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceAllocation)
         packer.packString(resourceJson)
@@ -1041,15 +1038,13 @@ data class TaskScheduledMessage(
                 unpacker.unpackLong()
             } else null
             
-            val taskPriority = unpacker.unpackString()
-            
             // Unpack resource allocation from JSON
             val resourceJson = unpacker.unpackString()
             val resourceLimits = Json.decodeFromString(ResourceLimits.serializer(), resourceJson)
             
             return TaskScheduledMessage(
                 taskId, executorNodeId, requesterNodeId,
-                scheduledAt, estimatedStartTime, taskPriority, resourceLimits
+                scheduledAt, estimatedStartTime, resourceLimits
             )
         }
     }
@@ -1073,7 +1068,6 @@ data class TaskAssignmentMessage(
     val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
     val inputFiles: List<Map<String, String>>,  // List of {fileId, storageRef, accessScope}
     val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
-    val priority: String = "NORMAL",
     val assignedAt: Long = System.currentTimeMillis(),
     val metadata: Map<String, Any>? = null,
     val requestId: String? = null
@@ -1117,7 +1111,6 @@ data class TaskAssignmentMessage(
         val outputJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), outputRequirements)
         packer.packString(outputJson)
         
-        packer.packString(priority)
         packer.packLong(assignedAt)
         
         packer.close()
@@ -1171,13 +1164,12 @@ data class TaskAssignmentMessage(
                 outputJson
             )
             
-            val priority = unpacker.unpackString()
             val assignedAt = unpacker.unpackLong()
             
             return TaskAssignmentMessage(
                 taskId, executorNodeId, requesterNodeId, callbackAddress, executorType, jobType,
                 codeBundle, executionContext, resourceLimits, inputFiles, outputRequirements,
-                priority, assignedAt
+                assignedAt
             )
         }
     }

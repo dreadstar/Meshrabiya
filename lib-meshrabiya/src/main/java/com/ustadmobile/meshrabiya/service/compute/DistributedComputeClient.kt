@@ -49,8 +49,7 @@ class DistributedComputeClient(
             serviceId = request.taskType,  // Use taskType as serviceId
             inputParams = emptyMap(),  // Will be properly implemented in Part 2
             metadata = mapOf(
-                "requestId" to request.requestId,
-                "priority" to request.priority.toString()
+                "requestId" to request.requestId
             )
         )
         
@@ -165,7 +164,6 @@ class DistributedComputeClient(
             resourceLimits = emptyMap(),
             inputFiles = emptyList(),
             outputRequirements = emptyMap(),
-            priority = "NORMAL",
             assignedAt = System.currentTimeMillis()
         )
         

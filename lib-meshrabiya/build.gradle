@@ -33,6 +33,12 @@ android {
         unitTests {
             includeAndroidResources = true
             all {
+                // Robolectric 4.10.3 has compatibility issues with Java 21 SecurityManager
+                // Must run tests with Java 17 while keeping main compilation at Java 21
+                jvmArgs '-XX:+EnableDynamicAgentLoading',
+                       '--add-opens=java.base/java.lang=ALL-UNNAMED',
+                       '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+                       '--add-opens=java.base/java.util=ALL-UNNAMED'
                 testLogging {
                     events "passed", "skipped", "failed"
                     showStandardStreams = true
