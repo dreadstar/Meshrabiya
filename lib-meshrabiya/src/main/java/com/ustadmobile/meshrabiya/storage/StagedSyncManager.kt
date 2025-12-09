@@ -1,4 +1,5 @@
 package com.ustadmobile.meshrabiya.storage
+import android.os.Build
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -692,7 +693,11 @@ class BatteryAwareSync(private val context: Context) {
     private fun isCharging(): Boolean {
         return try {
             val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-            val status = batteryManager?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS) ?: 0
+            val status = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                batteryManager?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS) ?: 0
+            } else {
+                0 // Not available pre-API 26
+            }
             status == android.os.BatteryManager.BATTERY_STATUS_CHARGING || 
             status == android.os.BatteryManager.BATTERY_STATUS_FULL
         } catch (e: Exception) {

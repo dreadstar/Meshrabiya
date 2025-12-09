@@ -1,5 +1,6 @@
-package com.ustadmobile.meshrabiya.vnet
 
+package com.ustadmobile.meshrabiya.vnet
+import java.util.Locale
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import android.util.Log
@@ -96,9 +97,9 @@ class GatewaySelector(
         
         val best = rankedGateways.first()
         logger(
-            Log.INFO,
-            "$logPrefix Selected gateway ${best.nodeAddress.addressToDotNotation()} " +
-                    "for $gatewayType (suitability=${String.format("%.3f", best.suitability)})"
+                Log.INFO,
+                "$logPrefix Selected gateway ${best.nodeAddress.addressToDotNotation()} " +
+                    "for $gatewayType (suitability=${String.format(Locale.US, "%.3f", best.suitability)})"
         )
         
         return GatewaySelectionResult.SingleGateway(
@@ -168,7 +169,7 @@ class GatewaySelector(
             Log.INFO,
             "$logPrefix Selected ${rankedGateways.size} gateways for $gatewayType: " +
                     rankedGateways.joinToString { 
-                        "${it.nodeAddress.addressToDotNotation()}(${String.format("%.3f", it.suitability)})" 
+                        "${it.nodeAddress.addressToDotNotation()}(${String.format(Locale.US, "%.3f", it.suitability)})" 
                     }
         )
         

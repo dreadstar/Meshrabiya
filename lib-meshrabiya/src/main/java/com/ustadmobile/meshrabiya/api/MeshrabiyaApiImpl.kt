@@ -475,122 +475,109 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getDropFolder(): File? = null // distributedStorageManager?.getDropFolder()
     override fun getDropFolderFiles(): List<File> = emptyList() // distributedStorageManager?.getDropFolderFiles() ?: emptyList()
 
-    // --- File Operations ---
-    // TODO: Reimplement using canonical workflows (2025-12-04)
+    // =========================================================
+    // Section 1: File Operations (Canonical Workflow Refactor)
+    // =========================================================
+    // All file operations below are refactored to match canonical workflow requirements.
+    // Each method includes explicit TODOs, error handling, and implementation notes.
+    // Remove TODOs and update implementation when DistributedStorageManager supports each operation.
     override fun storeFile(file: File, callback: (Result<String>) -> Unit) {
-        callback(Result.failure(NotImplementedError("storeFile not yet implemented in canonical workflows")))
-        // distributedStorageManager?.storeFile(file) { result ->
-        //     result.onSuccess { fileId ->
-        //         callback(Result.success(fileId))
-        //         onFileStored?.invoke(fileId, file)
-        //     }.onFailure { error ->
-        //         callback(Result.failure(error))
-        //         onOperationFailed?.invoke("storeFile", error)
-        //     }
-        // }
-    }
-    override fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit) {
-        // Validate fileId
-        if (fileId.isBlank()) {
-            callback(Result.failure(IllegalArgumentException("File ID cannot be blank")))
-            return
-        }
-        
-        // Check storage manager availability
         val storageManager = myNode?.distributedStorageManager
         if (storageManager == null) {
             callback(Result.failure(IllegalStateException("Storage manager not initialized")))
             return
         }
-        
-        // Get file metadata to determine owner and subfolder
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val fileBytes = file.readBytes()
+                val owner = myNode?.address?.hostAddress
+                val fileRef = storageManager.storeFile(
+                    path = file.absolutePath,
+                    data = fileBytes,
+                    owner = owner
+                )
+                if (fileRef != null) {
+                    callback(Result.success(fileRef.id))
+                    onFileStored?.invoke(fileRef.id, file)
+                } else {
+                    callback(Result.failure(Exception("Failed to store file")))
+                }
+            } catch (e: Exception) {
+                callback(Result.failure(e))
+                onOperationFailed?.invoke("storeFile", e)
+            }
+        }
+    }
+
+    override fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit) {
+        if (fileId.isBlank()) {
+            callback(Result.failure(IllegalArgumentException("File ID cannot be blank")))
+            return
+        }
+        val storageManager = myNode?.distributedStorageManager
+        if (storageManager == null) {
+            callback(Result.failure(IllegalStateException("Storage manager not initialized")))
+            return
+        }
         val metadata = storageManager.getFileMetadata(fileId)
         if (metadata == null) {
             callback(Result.failure(java.io.FileNotFoundException("File not found: $fileId")))
             return
         }
-        
-        // Determine subfolder based on owner
-        val currentNodeAddress = myNode?.address?.hostAddress ?: ""
-        val subfolder = if (metadata.owner != currentNodeAddress) "shared" else "received"
-        
-        // Create target directory
         val context = appContext
         if (context == null) {
             callback(Result.failure(IllegalStateException("Context not available")))
             return
         }
-        
         val receivedDir = File(context.getExternalFilesDir(null), "MeshrabiyaFiles/received")
-        val targetDir = if (subfolder == "shared") {
-            File(receivedDir, "shared")
-        } else {
-            receivedDir
+        if (!receivedDir.exists()) {
+            receivedDir.mkdirs()
         }
-        
-        if (!targetDir.exists()) {
-            targetDir.mkdirs()
-        }
-        
-        // Retrieve file using coroutine
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // Create FileReference from metadata
                 val fileRef = FileReference(
                     id = fileId,
                     path = metadata.path,
                     size = metadata.sizeBytes
                 )
-                
                 val fileData = storageManager.retrieveFile(fileRef)
                 if (fileData != null) {
-                    // Write to target file
-                    val targetFile = File(targetDir, File(metadata.path).name)
+                    val targetFile = File(receivedDir, File(metadata.path).name)
                     targetFile.writeBytes(fileData)
-                    onFileRetrieved?.invoke(fileId, targetFile)
                     callback(Result.success(targetFile))
+                    onFileRetrieved?.invoke(fileId, targetFile)
                 } else {
                     callback(Result.failure(java.io.FileNotFoundException("File data not found: $fileId")))
                 }
             } catch (e: Exception) {
-                onOperationFailed?.invoke("retrieveFile", e)
                 callback(Result.failure(e))
+                onOperationFailed?.invoke("retrieveFile", e)
             }
         }
     }
+
     override fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        callback(Result.failure(NotImplementedError("streamFile not yet implemented in canonical workflows")))
-        // distributedStorageManager?.streamFile(fileId) { result ->
-        //     callback(result)
-        //     result.onFailure { error ->
-        //         onOperationFailed?.invoke("streamFile", error)
-        //     }
-        // }
+        // Streaming not implemented in DistributedStorageManager; return error for now
+        callback(Result.failure(NotImplementedError("streamFile not implemented in DistributedStorageManager")))
     }
+
     override fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit) {
-        // Validate fileId
         if (fileId.isBlank()) {
             callback(Result.failure(IllegalArgumentException("File ID cannot be blank")))
             return
         }
-        
-        // Check storage manager availability
         val storageManager = myNode?.distributedStorageManager
         if (storageManager == null) {
             callback(Result.failure(IllegalStateException("Storage manager not initialized")))
             return
         }
-        
-        // Verify file exists
         val metadata = storageManager.getFileMetadata(fileId)
         if (metadata == null) {
             callback(Result.failure(java.io.FileNotFoundException("File not found: $fileId")))
             return
         }
-        
-        // TODO: Delete not yet implemented in DistributedStorageManager
-        // For now, return success (metadata exists, file would be deleted)
-        callback(Result.success(Unit))
+        // No deleteFile API in DistributedStorageManager; return error for now
+        callback(Result.failure(NotImplementedError("deleteFile not implemented in DistributedStorageManager")))
     }
     override fun getAllMeshFiles(): List<MeshFile> {
         // Check storage manager availability

@@ -1,4 +1,5 @@
 package com.ustadmobile.meshrabiya.service
+import androidx.core.content.ContextCompat
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -106,7 +107,12 @@ class TorStatusMonitor : BroadcastReceiver() {
 
         try {
             val filter = IntentFilter(ACTION_TOR_STATUS)
-            context.registerReceiver(this, filter)
+            ContextCompat.registerReceiver(
+                context,
+                this,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             isRegistered = true
             Log.i(TAG, "TorStatusMonitor registered for Orbot status broadcasts")
         } catch (e: Exception) {

@@ -292,15 +292,15 @@ class OriginatingMessageManager(
         }
     }
 
-    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleWithFixedDelay(
         sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
     )
 
-    private val pingNeighborsFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val pingNeighborsFuture = scheduledExecutor.scheduleWithFixedDelay(
         pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
     )
 
-    private val checkLostNodesFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val checkLostNodesFuture = scheduledExecutor.scheduleWithFixedDelay(
         checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
     )
 
