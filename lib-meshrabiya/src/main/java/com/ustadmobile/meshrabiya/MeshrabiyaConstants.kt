@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya
 
 import java.util.UUID
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -91,4 +92,75 @@ object MeshrabiyaConstants {
     // Phase 1: Task completion retry constants
     const val TASK_COMPLETION_RETRY_PERIOD_MS = 30000L  // 30 seconds
     const val TASK_COMPLETION_RETRY_INTERVAL_MS = 5000L // 5 seconds
+
+    // --- TaskType enablement persistence ---
+    private const val ENABLED_TASK_TYPES_KEY = "enabled_task_types"
+
+    /**
+     * Returns whether the given TaskType is enabled (default: true if not set).
+     */
+    fun isTaskTypeEnabled(taskType: TaskType): Boolean {
+        val enabledMap = getAllTaskTypeEnabled()
+        return enabledMap[taskType] ?: true
+    }
+
+    /**
+     * Sets enabled status for a TaskType and persists the map.
+     */
+    fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean) {
+        val enabledMap = getAllTaskTypeEnabled().toMutableMap()
+        enabledMap[taskType] = enabled
+        saveTaskTypeEnabledMap(enabledMap)
+    }
+
+    /**
+     * Returns a map of TaskType to enabled status, auto-adapting to enum changes.
+     */
+    fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
+        val raw = prefs?.getString(ENABLED_TASK_TYPES_KEY, null)
+        val result = mutableMapOf<TaskType, Boolean>()
+        val allTypes = TaskType.values()
+        if (raw != null) {
+            raw.split(",").forEach { entry ->
+                val parts = entry.split(":")
+                if (parts.size == 2) {
+                    val type = allTypes.find { it.name == parts[0] }
+                    if (type != null) {
+                        result[type] = parts[1] == "1"
+                    }
+                }
+            }
+        }
+        // Add any new TaskTypes (default enabled)
+        allTypes.forEach { type ->
+            if (!result.containsKey(type)) result[type] = true
+        }
+        return result
+    }
+
+    /**
+     * Persists the TaskType enabled map as a comma-separated string.
+     */
+    private fun saveTaskTypeEnabledMap(map: Map<TaskType, Boolean>) {
+        val encoded = map.entries.joinToString(",") { "${it.key.name}:${if (it.value) "1" else "0"}" }
+        prefs?.edit()?.putString(ENABLED_TASK_TYPES_KEY, encoded)?.apply()
+    }
+
+    // --- Compute Layer Participation (Global Enable/Disable) ---
+    private const val COMPUTE_LAYER_ENABLED_KEY = "compute_layer_enabled"
+
+    /**
+     * Returns whether the compute layer is enabled (default: true if not set).
+     */
+    fun isComputeLayerParticipating(): Boolean {
+        return prefs?.getBoolean(COMPUTE_LAYER_ENABLED_KEY, true) ?: true
+    }
+
+    /**
+     * Sets whether the compute layer is enabled (persistently).
+     */
+    fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(COMPUTE_LAYER_ENABLED_KEY, enabled)?.apply()
+    }
+    
 }

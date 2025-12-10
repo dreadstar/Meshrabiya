@@ -1,5 +1,6 @@
 package com.ustadmobile.meshrabiya.api
-
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
+    
 import java.io.File
 import android.content.Context
 import kotlinx.coroutines.flow.Flow
@@ -104,6 +105,11 @@ interface MeshrabiyaApi {
     fun disableDistributedStorage()
     fun isComputeLayerParticipating(): Boolean
 
+    /**
+     * Enable or disable the entire compute service (persistent, global).
+     */
+    fun setComputeLayerParticipatingEnabled(enabled: Boolean)
+
     // --- Drop Folder Management ---
     fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
     fun getDropFolder(): File?
@@ -174,4 +180,19 @@ interface MeshrabiyaApi {
      * @param handler Callback function receiving taskId and status string
      */
     fun setOnTaskStatusUpdate(handler: (taskId: String, status: String) -> Unit)
+
+    /**
+     * Returns whether the given TaskType is enabled for compute participation.
+     */
+    fun isTaskTypeEnabled(taskType: TaskType): Boolean
+
+    /**
+     * Sets enabled status for a TaskType (persistently).
+     */
+    fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean)
+
+    /**
+     * Returns a map of all TaskTypes and their enabled status.
+     */
+    fun getAllTaskTypeEnabled(): Map<TaskType, Boolean>
 }

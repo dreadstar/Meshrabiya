@@ -1,5 +1,7 @@
-package com.ustadmobile.meshrabiya.api
+   
 
+package com.ustadmobile.meshrabiya.api
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -459,7 +461,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
     // TODO: Reimplement using TaskManager from canonical workflows (2025-12-04)
     override fun isComputeLayerParticipating(): Boolean {
-        return false // distributedStorageManager?.participationEnabled?.value ?: false
+        return com.ustadmobile.meshrabiya.MeshrabiyaConstants.isComputeLayerParticipating()
+    }
+
+    override fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
+        com.ustadmobile.meshrabiya.MeshrabiyaConstants.setComputeLayerParticipatingEnabled(enabled)
     }
 
     // --- Drop Folder Management ---
@@ -808,5 +814,18 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      */
     fun triggerTaskStatusUpdate(taskId: String, status: String) {
         onTaskStatusUpdate?.invoke(taskId, status)
+    }
+
+    // --- TaskType enablement API ---
+    override fun isTaskTypeEnabled(taskType: TaskType): Boolean {
+        return com.ustadmobile.meshrabiya.MeshrabiyaConstants.isTaskTypeEnabled(taskType)
+    }
+
+    override fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean) {
+        com.ustadmobile.meshrabiya.MeshrabiyaConstants.setTaskTypeEnabled(taskType, enabled)
+    }
+
+    override fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
+        return com.ustadmobile.meshrabiya.MeshrabiyaConstants.getAllTaskTypeEnabled()
     }
 }
