@@ -35,6 +35,7 @@ sealed class MmcpMessage(
                 lastHopAddr = lastHopAddr,
                 hopCount =  hopCount,
                 maxHops = 0,
+                gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE, //V3: MMCP is mesh-local
                 payloadSize = packetPayload.size
             ),
             data =packetData,
@@ -71,13 +72,19 @@ sealed class MmcpMessage(
         
         // New enhanced message types
         const val WHAT_NODE_ANNOUNCEMENT = 8.toByte()
-        const val WHAT_SERVICE_ADVERTISEMENT = 9.toByte()
-        const val WHAT_COMPUTE_TASK_REQUEST = 10.toByte()
-        const val WHAT_I2P_ROUTER_ADVERTISEMENT = 11.toByte()
-        const val WHAT_STORAGE_ADVERTISEMENT = 12.toByte()
-        const val WHAT_QUORUM_PROPOSAL = 13.toByte()
+        // DEPRECATED: Service advertisement system (false start - never sent or processed)
+        // const val WHAT_SERVICE_ADVERTISEMENT = 9.toByte()
+        // DEPRECATED: Compute task request (superseded by MeshEcosystemMessage.ComputeTaskRequestMessage)
+        // const val WHAT_COMPUTE_TASK_REQUEST = 10.toByte()
+        // DEPRECATED: I2P Router Advertisement (remove all usage)
+        // const val WHAT_I2P_ROUTER_ADVERTISEMENT = 11.toByte()
+        // DEPRECATED: Storage advertisement (superseded by OriginatorMessage with MeshRole.STORAGE)
+        // const val WHAT_STORAGE_ADVERTISEMENT = 12.toByte()
+        // DEPRECATED: Quorum system (false start - MmcpQuorumProposal class doesn't exist)
+        // const val WHAT_QUORUM_PROPOSAL = 13.toByte()
         const val WHAT_HEARTBEAT = 14.toByte()
-        const val WHAT_EMERGENCY_BROADCAST = 15.toByte()
+        // DEPRECATED: Emergency Broadcast (remove all usage)
+        // const val WHAT_EMERGENCY_BROADCAST = 15.toByte()
         const val WHAT_NETWORK_METRICS = 16.toByte()
         const val WHAT_GATEWAY_ANNOUNCEMENT = 17.toByte()
 
@@ -104,17 +111,25 @@ sealed class MmcpMessage(
                 WHAT_ACK -> MmcpAck.fromBytes(byteArray, offset, len)
                 WHAT_HOTSPOT_REQUEST -> MmcpHotspotRequest.fromBytes(byteArray, offset, len)
                 WHAT_HOTSPOT_RESPONSE -> MmcpHotspotResponse.fromBytes(byteArray, offset, len)
-                // WHAT_ORIGINATOR is deprecated, use WHAT_NODE_ANNOUNCEMENT instead
-                WHAT_NODE_ANNOUNCEMENT -> MmcpNodeAnnouncement.fromBytes(byteArray, offset, len)
-                WHAT_SERVICE_ADVERTISEMENT -> MmcpServiceAdvertisement.fromBytes(byteArray, offset, len)
-                WHAT_COMPUTE_TASK_REQUEST -> MmcpComputeTaskRequest.fromBytes(byteArray, offset, len)
-                WHAT_I2P_ROUTER_ADVERTISEMENT -> MmcpI2PRouterAdvertisement.fromBytes(byteArray, offset, len)
-                WHAT_STORAGE_ADVERTISEMENT -> MmcpStorageAdvertisement.fromBytes(byteArray, offset, len)
-                WHAT_QUORUM_PROPOSAL -> MmcpQuorumProposal.fromBytes(byteArray, offset, len)
+                WHAT_ORIGINATOR -> MmcpOriginatorMessage.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Node announcement (superseded by MmcpOriginatorMessage - class doesn't exist)
+                // WHAT_NODE_ANNOUNCEMENT -> MmcpNodeAnnouncement.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Service advertisement (false start - never sent or processed)
+                // WHAT_SERVICE_ADVERTISEMENT -> MmcpServiceAdvertisement.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Compute task request (superseded by MeshEcosystemMessage.ComputeTaskRequestMessage)
+                // WHAT_COMPUTE_TASK_REQUEST -> MmcpComputeTaskRequest.fromBytes(byteArray, offset, len)
+                // DEPRECATED: I2P Router Advertisement (removed)
+                // WHAT_I2P_ROUTER_ADVERTISEMENT -> MmcpI2PRouterAdvertisement.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Storage advertisement (superseded by OriginatorMessage with MeshRole.STORAGE)
+                // WHAT_STORAGE_ADVERTISEMENT -> MmcpStorageAdvertisement.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Quorum proposal handling (false start - MmcpQuorumProposal class doesn't exist)
+                // WHAT_QUORUM_PROPOSAL -> MmcpQuorumProposal.fromBytes(byteArray, offset, len)
                 WHAT_HEARTBEAT -> MmcpHeartbeat.fromBytes(byteArray, offset, len)
-                WHAT_EMERGENCY_BROADCAST -> MmcpEmergencyBroadcast.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Emergency Broadcast (removed)
+                // WHAT_EMERGENCY_BROADCAST -> MmcpEmergencyBroadcast.fromBytes(byteArray, offset, len)
                 WHAT_NETWORK_METRICS -> MmcpNetworkMetrics.fromBytes(byteArray, offset, len)
-                WHAT_GATEWAY_ANNOUNCEMENT -> MmcpGatewayAnnouncement.fromBytes(byteArray, offset, len)
+                // DEPRECATED: Gateway announcement (MmcpGatewayAnnouncement.md - class doesn't exist)
+                // WHAT_GATEWAY_ANNOUNCEMENT -> MmcpGatewayAnnouncement.fromBytes(byteArray, offset, len)
                 else -> throw IllegalArgumentException("Mmcp: Invalid what: $what")
             }
         }

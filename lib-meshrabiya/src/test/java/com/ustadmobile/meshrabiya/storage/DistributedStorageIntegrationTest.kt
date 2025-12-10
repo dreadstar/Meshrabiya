@@ -25,6 +25,7 @@ class DistributedStorageIntegrationTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] DistributedStorageIntegrationTest: Starting @Before setup()")
         mockContext = mock(Context::class.java)
         
         // Mock SharedPreferences for BetaTestLogger

@@ -23,6 +23,7 @@ class BetaLoggerIntegrationTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] BetaLoggerIntegrationTest: Starting @Before setup()")
         mockContext = mock(Context::class.java)
         
         // Mock SharedPreferences for BetaTestLogger

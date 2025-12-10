@@ -2,13 +2,93 @@ package com.ustadmobile.meshrabiya
 
 import java.util.UUID
 
+import android.content.Context
+import android.content.SharedPreferences
+
 object MeshrabiyaConstants {
-
+    private const val DEFAULT_BROADCAST_TTL_MS = 60_000L
+    fun getBroadcastTtlMs(): Long {
+        return prefs?.getLong("broadcast_ttl_ms", DEFAULT_BROADCAST_TTL_MS) ?: DEFAULT_BROADCAST_TTL_MS
+    }
+    fun setBroadcastTtlMs(ttl: Long) {
+        prefs?.edit()?.putLong("broadcast_ttl_ms", ttl)?.apply()
+    }
     const val LOG_TAG = "Meshrabiya"
-
     const val VERSION = "0.1d11"
-
     val UUID_BUSY = UUID(0, 0)
 
+    // --- Settings logic migrated from MeshSettings ---
+    private var prefs: SharedPreferences? = null
 
+    fun init(context: Context) {
+        prefs = context.getSharedPreferences("mesh_settings", Context.MODE_PRIVATE)
+    }
+
+    fun getReplicaCount(): Int {
+        return prefs?.getInt("replica_count", 3) ?: 3
+    }
+
+    fun setReplicaCount(count: Int) {
+        prefs?.edit()?.putInt("replica_count", count)?.apply()
+    }
+
+    fun getTimeoutMs(): Long {
+        return prefs?.getLong("timeout_ms", 5000L) ?: 5000L
+    }
+
+    fun setTimeoutMs(timeout: Long) {
+        prefs?.edit()?.putLong("timeout_ms", timeout)?.apply()
+    }
+
+    fun getMaxRetries(): Int {
+        return prefs?.getInt("max_retries", 3) ?: 3
+    }
+
+    fun setMaxRetries(retries: Int) {
+        prefs?.edit()?.putInt("max_retries", retries)?.apply()
+    }
+
+    fun getChunkSizeKb(): Int = prefs?.getInt("chunk_size_kb", 256) ?: 256
+    fun setChunkSizeKb(size: Int) = prefs?.edit()?.putInt("chunk_size_kb", size)?.apply()
+
+    // If true, avoid splitting files into chunks when storing. Default: false
+    fun getNoChunking(): Boolean = prefs?.getBoolean("no_chunking", false) ?: false
+    fun setNoChunking(noChunking: Boolean) = prefs?.edit()?.putBoolean("no_chunking", noChunking)?.apply()
+
+    // Replication configuration for distributed storage
+    fun getMinimalReplicaCount(): Int = prefs?.getInt("minimal_replica_count", 1) ?: 1
+    fun setMinimalReplicaCount(count: Int) = prefs?.edit()?.putInt("minimal_replica_count", count)?.apply()
+
+    fun getStandardReplicaCount(): Int = prefs?.getInt("standard_replica_count", 3) ?: 3
+    fun setStandardReplicaCount(count: Int) = prefs?.edit()?.putInt("standard_replica_count", count)?.apply()
+
+    fun getHighReplicaCount(): Int = prefs?.getInt("high_replica_count", 5) ?: 5
+    fun setHighReplicaCount(count: Int) = prefs?.edit()?.putInt("high_replica_count", count)?.apply()
+
+    fun getCriticalReplicaCount(): Int = prefs?.getInt("critical_replica_count", 7) ?: 7
+    fun setCriticalReplicaCount(count: Int) = prefs?.edit()?.putInt("critical_replica_count", count)?.apply()
+
+
+    private const val DEFAULT_ECOSYSTEM_GOSSIP_PORT = 8647
+    fun getEcosystemGossipPort(): Int {
+        return prefs?.getInt("ecosystem_gossip_port", DEFAULT_ECOSYSTEM_GOSSIP_PORT) ?: DEFAULT_ECOSYSTEM_GOSSIP_PORT
+    }
+
+    fun setEcosystemGossipPort(port: Int) {
+        prefs?.edit()?.putInt("ecosystem_gossip_port", port)?.apply()
+    }
+
+    private const val DEFAULT_CONNECTION_POOL_SIZE = 8
+
+    fun getConnectionPoolSize(): Int {
+        return prefs?.getInt("connection_pool_size", DEFAULT_CONNECTION_POOL_SIZE) ?: DEFAULT_CONNECTION_POOL_SIZE
+    }
+
+    fun setConnectionPoolSize(size: Int) {
+        prefs?.edit()?.putInt("connection_pool_size", size)?.apply()
+    }
+
+    // Phase 1: Task completion retry constants
+    const val TASK_COMPLETION_RETRY_PERIOD_MS = 30000L  // 30 seconds
+    const val TASK_COMPLETION_RETRY_INTERVAL_MS = 5000L // 5 seconds
 }

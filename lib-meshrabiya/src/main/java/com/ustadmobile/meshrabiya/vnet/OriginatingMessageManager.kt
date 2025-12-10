@@ -3,10 +3,15 @@ package com.ustadmobile.meshrabiya.vnet
 import android.util.Log
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
+import com.ustadmobile.meshrabiya.ext.addressToByteArray
+
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.mmcp.MmcpMessage
-import com.ustadmobile.meshrabiya.mmcp.MmcpNodeAnnouncement
-import com.ustadmobile.meshrabiya.mmcp.MmcpMessageFactory
+import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage  // NEW: Import official message type
+// TODO: Uncomment when MmcpNodeAnnouncement is available
+// import com.ustadmobile.meshrabiya.mmcp.MmcpNodeAnnouncement (DEPRECATED)
+// TODO: Uncomment when MmcpMessageFactory is available
+// import com.ustadmobile.meshrabiya.mmcp.MmcpMessageFactory (DEPRECATED)
 import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
@@ -37,8 +42,8 @@ import java.util.concurrent.TimeUnit
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import java.util.concurrent.atomic.AtomicInteger
-import com.ustadmobile.meshrabiya.vnet.MeshRoleManager
 import com.ustadmobile.meshrabiya.vnet.HasNodeState
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 
 class OriginatingMessageManager(
     private val localNodeInetAddr: InetAddress,
@@ -46,8 +51,13 @@ class OriginatingMessageManager(
     private val scheduledExecutor: ScheduledExecutorService,
     private val nextMmcpMessageId: () -> Int,
     private val getWifiState: () -> MeshrabiyaWifiState,
-    private val getFitnessScore: () -> Int,
-    private val getNodeRole: () -> Byte,
+    
+    // === NEW: Callbacks to break circular dependency ===
+    private val getCentralityScore: (() -> Float)? = null,
+    private val getMeshRoles: (() -> Set<MeshRole>)? = null,
+    private val getFitnessScore: (() -> Float)? = null,  // Changed from () -> Int
+    
+    // === EXISTING PARAMS ===
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
     lostNodeCheckInterval: Int = 1_000,
@@ -96,9 +106,52 @@ class OriginatingMessageManager(
 
     private val messageCounter = AtomicInteger(0)
 
-    // 1. When sending a gossip message, set neighbors to originatorMessages.keys.toList()
-    private val topologyMap: MutableMap<Int, Set<Int>> = mutableMapOf()
-    fun getTopologyMap(): Map<Int, Set<Int>> = topologyMap
+    // === PHASE 3C: GATEWAY MESSAGE TRACKING ===
+    /**
+     * Tracks messages sent via gateways for return path routing and statistics.
+     * Key: "fromAddr:fromPort", Value: GatewayMessage
+     */
+    private val gatewayMessages: MutableMap<String, GatewayMessage> = ConcurrentHashMap()
+
+    // === TOPOLOGY MAP WITH FULL NODE INFO ===
+    // Enhanced to store complete NodeTopologyInfo (roles, metrics) instead of just neighbors
+    private val _topologyMapInfo: MutableMap<Int, NodeTopologyInfo> = mutableMapOf()
+    
+    // Expose as Flow for observers (e.g., GatewaySelector)
+    private val _topologyMapFlow = MutableStateFlow<Map<Int, NodeTopologyInfo>>(emptyMap())
+    val topologyMapFlow: StateFlow<Map<Int, NodeTopologyInfo>> = _topologyMapFlow.asStateFlow()
+    
+    /**
+     * Get full topology map with NodeTopologyInfo (roles, metrics, neighbors)
+     * Used by GatewaySelector for intelligent gateway selection
+     */
+    fun getTopologyMapInfo(): Map<Int, NodeTopologyInfo> = _topologyMapInfo
+    
+    /**
+     * Get nodes with specific role (e.g., TOR_GATEWAY, CLEARNET_GATEWAY)
+     * @param role MeshRole to filter by
+     * @return List of NodeTopologyInfo for nodes with the specified role
+     */
+    fun getNodesWithRole(role: MeshRole): List<NodeTopologyInfo> {
+        return _topologyMapInfo.filter { it.value.hasRole(role) }.values.toList()
+    }
+    
+    /**
+     * Get all gateway nodes (TOR, CLEARNET, I2P)
+     * @return List of NodeTopologyInfo for gateway nodes
+     */
+    fun getGatewayNodes(): List<NodeTopologyInfo> {
+        return _topologyMapInfo.filter { it.value.isGatewayNode() }.values.toList()
+    }
+    
+    /**
+     * Backward compatibility: Convert NodeTopologyInfo to old Map<Int, Set<Int>> format
+     * Used by EmergentRoleManager for centrality calculations
+     */
+    @Deprecated("Use getTopologyMapInfo() for full node information")
+    fun getTopologyMap(): Map<Int, Set<Int>> {
+        return _topologyMapInfo.mapValues { it.value.neighbors }
+    }
 
     private fun logBeta(level: LogLevel, message: String, throwable: Throwable? = null) {
         betaLogger?.log(level, message, throwable)
@@ -106,20 +159,17 @@ class OriginatingMessageManager(
 
     private val sendOriginatingMessageRunnable = Runnable {
         try {
-            val neighborAddrs = originatorMessages.keys.toList()
-            // Calculate centrality score using MeshRoleManager if available
-            val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
-            val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
-            val originatingMessage = MmcpMessageFactory.createNodeAnnouncement(
-                messageId = nextMmcpMessageId(),
-                nodeId = localNodeAddress.toString(),
-                centralityScore = centralityScore
-            )
-            logBeta(LogLevel.DEBUG, "Sending originating message: $originatingMessage")
+            val originatingMessage = makeOriginatingMessage()  // Now includes callbacks
+            
+            logBeta(LogLevel.DEBUG, "Sending originating message: " +
+                "messageId=${originatingMessage.messageId}, " +
+                "neighbors=${originatingMessage.neighbors.size}, " +
+                "centrality=${originatingMessage.centralityScore}")
 
             logger(
                 priority = Log.VERBOSE,
-                message = { "$logPrefix sending originating message messageId=${originatingMessage.messageId} timestamp=${originatingMessage.timestamp}" }
+                message = { "$logPrefix sending originating message messageId=${originatingMessage.messageId} " +
+                    "sentTime=${originatingMessage.sentTime} neighbors=${originatingMessage.neighbors.size}" }
             )
 
             val packet = originatingMessage.toVirtualPacket(
@@ -242,15 +292,15 @@ class OriginatingMessageManager(
         }
     }
 
-    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val sendOriginatorMessagesFuture = scheduledExecutor.scheduleWithFixedDelay(
         sendOriginatingMessageRunnable, 1000, 3000, TimeUnit.MILLISECONDS
     )
 
-    private val pingNeighborsFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val pingNeighborsFuture = scheduledExecutor.scheduleWithFixedDelay(
         pingNeighborsRunnable, 1000, 10000, TimeUnit.MILLISECONDS
     )
 
-    private val checkLostNodesFuture = scheduledExecutor.scheduleAtFixedRate(
+    private val checkLostNodesFuture = scheduledExecutor.scheduleWithFixedDelay(
         checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
     )
 
@@ -258,20 +308,27 @@ class OriginatingMessageManager(
     private var closed = false
 
 
-    private fun makeOriginatingMessage(fitnessScore: Int, nodeRole: Byte): MmcpNodeAnnouncement {
-        // Calculate centrality score using MeshRoleManager if available
-        val meshRoleManager = (localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()
-        val centralityScore = meshRoleManager?.calculateCentralityScore() ?: 0f
+    private fun makeOriginatingMessage(): MmcpOriginatorMessage {
+        // Get current direct neighbor addresses for topology building
+        val neighborAddrs = originatorMessages
+            .filter { it.value.hopCount == 1.toByte() }
+            .keys
+            .toList()
         
-        // Get current mesh roles from EmergentRoleManager if available
-        val meshRoles = (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.currentMeshRoles?.value 
-            ?: setOf(com.ustadmobile.meshrabiya.mmcp.MeshRole.MESH_PARTICIPANT)
+        // Use callbacks instead of direct EmergentRoleManager access
+        val centralityScore = getCentralityScore?.invoke() ?: 0f
+        val meshRoles = getMeshRoles?.invoke() ?: setOf(MeshRole.MESH_PARTICIPANT)
+        val fitnessScore = getFitnessScore?.invoke() ?: 0f
         
-        return MmcpMessageFactory.createNodeAnnouncement(
+        return MmcpOriginatorMessage(
             messageId = nextMmcpMessageId(),
-            nodeId = localNodeAddress.toString(),
-            centralityScore = centralityScore,
-            meshRoles = meshRoles
+            sentTime = System.currentTimeMillis(),
+            pingTimeSum = 0,  // Will be incremented as message propagates
+            connectConfig = getWifiState().connectConfig,
+            neighbors = neighborAddrs,  // NEW: For topology building
+            centralityScore = centralityScore,  // NEW: From callback
+            fitnessScore = fitnessScore,  // NEW: From callback
+            meshRoles = meshRoles,  // NEW: From callback
         )
     }
 
@@ -283,13 +340,18 @@ class OriginatingMessageManager(
 
 
     fun onReceiveOriginatingMessage(
-        mmcpMessage: MmcpNodeAnnouncement,
+        mmcpMessage: MmcpOriginatorMessage,  // Changed type
         datagramPacket: DatagramPacket,
         datagramSocket: VirtualNodeDatagramSocket,
         virtualPacket: VirtualPacket,
     ): Boolean {
         assertNotClosed()
-        logBeta(LogLevel.DEBUG, "Received originating message from ${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}, messageId=${mmcpMessage.messageId}, hopCount=${virtualPacket.header.hopCount}, timestamp=${mmcpMessage.timestamp}")
+        
+        logBeta(LogLevel.DEBUG, "Received originating message from " +
+            "${virtualPacket.header.fromAddr.addressToDotNotation()}: " +
+            "neighbors=${mmcpMessage.neighbors.size}, " +
+            "centrality=${mmcpMessage.centralityScore}")
+
         //Dont keep originator messages in our own table for this node
         logger(
             Log.VERBOSE,
@@ -301,19 +363,16 @@ class OriginatingMessageManager(
         )
 
         val connectionPingTime = neighborPingTimes[virtualPacket.header.lastHopAddr]?.pingTime ?: 0.toLong()
-        // MmcpOriginatorMessage.takeIf { connectionPingTime != 0.toShort() }
-        //     ?.incrementPingTimeSum(virtualPacket, connectionPingTime)
 
         val currentOriginatorMessage = originatorMessages[virtualPacket.header.fromAddr]
 
-        //Update this only if it is more recent and/or better. It might be that we are getting it back
-        //via some other (suboptimal) route with more hops
-        val currentlyKnownSentTime = (currentOriginatorMessage?.originatorMessage?.timestamp ?: 0)
+        // === OFFICIAL FRESHNESS CHECK (preserved from canonical design) ===
+        val currentlyKnownSentTime = (currentOriginatorMessage?.originatorMessage?.sentTime ?: 0)
         val currentlyKnownHopCount = (currentOriginatorMessage?.hopCount ?: Byte.MAX_VALUE)
         val receivedFromRealInetAddr = datagramPacket.address
         val receivedFromSocket = datagramSocket
-        val isMoreRecentOrBetter = mmcpMessage.timestamp > currentlyKnownSentTime
-                || mmcpMessage.timestamp == currentlyKnownSentTime && virtualPacket.header.hopCount < currentlyKnownHopCount
+        val isMoreRecentOrBetter = mmcpMessage.sentTime > currentlyKnownSentTime
+                || mmcpMessage.sentTime == currentlyKnownSentTime && virtualPacket.header.hopCount < currentlyKnownHopCount
         val isNewNeighbor = virtualPacket.header.hopCount == 1.toByte() &&
                 !originatorMessages.containsKey(virtualPacket.header.fromAddr)
 
@@ -323,12 +382,13 @@ class OriginatingMessageManager(
                 "$logPrefix received originating message from " +
                         "${virtualPacket.header.fromAddr.addressToDotNotation()} via ${virtualPacket.header.lastHopAddr.addressToDotNotation()}" +
                         " messageId=${mmcpMessage.messageId} " +
-                        " hopCount=${virtualPacket.header.hopCount} timestamp=${mmcpMessage.timestamp} " +
-                        " Currently known: timestamp=$currentlyKnownSentTime  hop count = $currentlyKnownHopCount " +
+                        " hopCount=${virtualPacket.header.hopCount} sentTime=${mmcpMessage.sentTime} " +
+                        " Currently known: sentTime=$currentlyKnownSentTime  hop count = $currentlyKnownHopCount " +
                         "isMoreRecentOrBetter=$isMoreRecentOrBetter "
             }
         )
 
+        // === UPDATE ROUTING TABLE (official logic) ===
         if(currentOriginatorMessage == null || isMoreRecentOrBetter) {
             originatorMessages[virtualPacket.header.fromAddr] = VirtualNode.LastOriginatorMessage(
                 originatorMessage = mmcpMessage.copyWithPingTimeIncrement(connectionPingTime.toLong()),
@@ -337,61 +397,86 @@ class OriginatingMessageManager(
                 hopCount = virtualPacket.header.hopCount,
                 lastHopRealInetAddr = receivedFromRealInetAddr,
                 receivedFromSocket = receivedFromSocket,
-                lastHopRealPort = datagramPacket.port
-            )
-            // Store neighbor fitness and role info
-            neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair((mmcpMessage.fitnessScore * 100).toInt(), 0) // Convert fitness score back to 0-100 scale, default role
-            
-            // Update EmergentRoleManager with mesh intelligence if available
-            (localNodeInetAddr as? AndroidVirtualNode)?.emergentRoleManager?.processNodeAnnouncement(
-                nodeId = mmcpMessage.nodeId,
-                meshRoles = mmcpMessage.meshRoles
+                lastHopRealPort = datagramPacket.port,
+                neighborAddr =  InetAddress.getByAddress(virtualPacket.header.fromAddr.addressToByteArray())
             )
             
-            // Also update MeshRoleManager if available
-            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborFitnessInfo(
-            //     neighborId = virtualPacket.header.fromAddr.toString(),
-            //     fitnessScore = mmcpMessage.fitnessScore,
-            //     nodeRole = mmcpMessage.nodeRole
-            // )
-            // Update neighbor RSSI (if available)
-            val rssi = datagramPacket.javaClass.getDeclaredField("rssi").let { field ->
-                field.isAccessible = true
-                (field.get(datagramPacket) as? Int) ?: 0
+            // === ENHANCED: BUILD TOPOLOGY MAP WITH ROLES ===
+            val nodeInfo = NodeTopologyInfo(
+                nodeAddress = virtualPacket.header.fromAddr,
+                neighbors = mmcpMessage.neighbors.toSet(),
+                meshRoles = mmcpMessage.meshRoles,  // Store ALL roles (gateway + intelligence)
+                centralityScore = mmcpMessage.centralityScore,
+                fitnessScore = mmcpMessage.fitnessScore,
+                lastSeen = System.currentTimeMillis(),
+                pingTime = mmcpMessage.pingTimeSum
+            )
+            
+            _topologyMapInfo[virtualPacket.header.fromAddr] = nodeInfo
+            _topologyMapFlow.value = _topologyMapInfo.toMap()  // Emit update for observers
+            
+            // Log gateway role changes (TOR/CLEARNET/I2P only)
+            val gatewayRoles = nodeInfo.meshRoles.filter { 
+                it in setOf(MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY, MeshRole.I2P_GATEWAY)
             }
-            // (virtualNode as? AndroidVirtualNode)?.meshRoleManager?.updateNeighborSignalStrength(
-            //     neighborId = virtualPacket.header.fromAddr.toString(),
-            //     rssi = rssi
-            // )
-            // Multi-hop: update neighbor centrality info if available
-            neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
-            // Optionally, use neighborCount for richer mesh awareness
+            if (gatewayRoles.isNotEmpty()) {
+                logger(
+                    Log.INFO, 
+                    message = { "$logPrefix Node ${virtualPacket.header.fromAddr.addressToDotNotation()} offers gateways: $gatewayRoles " +
+                        "(fitness=${nodeInfo.fitnessScore}, centrality=${nodeInfo.centralityScore})" }
+                )
+            }
+            
+            // Log intelligence roles (STORAGE/COMPUTE) at DEBUG level
+            val intelligenceRoles = nodeInfo.meshRoles.filter {
+                it in setOf(MeshRole.STORAGE_NODE, MeshRole.COMPUTE_NODE)
+            }
+            if (intelligenceRoles.isNotEmpty()) {
+                logger(
+                    Log.DEBUG,
+                    message = { "$logPrefix Node ${virtualPacket.header.fromAddr.addressToDotNotation()} offers intelligence: $intelligenceRoles " +
+                        "(fitness=${nodeInfo.fitnessScore}, centrality=${nodeInfo.centralityScore})" }
+                )
+            }
+            
+            logger(
+                Log.VERBOSE,
+                message = { "$logPrefix updated topology: node ${virtualPacket.header.fromAddr.addressToDotNotation()} " +
+                    "has ${mmcpMessage.neighbors.size} neighbors, ${nodeInfo.meshRoles.size} roles" }
+            )
+            
+            // === NEW: STORE NEIGHBOR METADATA ===
+            if (virtualPacket.header.hopCount == 1.toByte()) {
+                neighborFitnessInfo[virtualPacket.header.fromAddr] = Pair(
+                    (mmcpMessage.fitnessScore * 100).toInt(),
+                    0  // Reserved
+                )
+                neighborCentralityInfo[virtualPacket.header.fromAddr] = mmcpMessage.centralityScore
+            }
+            
             logger(
                 Log.VERBOSE,
                 message = {
                     "$logPrefix update originator messages: " +
                             "currently known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}; " +
                             "neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}" +
-                            ", neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}" +
+                            ", neighbor count: ${neighborFitnessInfo.size}" +
                             ", multi-hop neighbor centrality: ${neighborCentralityInfo}"
                 }
             )
+
+            // === EMIT STATE UPDATE ===
             _state.value = OriginatingMessageState(
                 pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
             )
-            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, avg RSSI: ${((localNodeInetAddr as? VirtualNode)?.getMeshRoleManager()?.calculateCentralityScore() ?: 0f)}, multi-hop neighbor centrality: ${neighborCentralityInfo}")
+            
+            logBeta(LogLevel.INFO, "Updated originator messages: known nodes = ${originatorMessages.keys.joinToString { it.addressToDotNotation() }}, neighbor fitness/role: ${neighborFitnessInfo.map { (k, v) -> k.addressToDotNotation() + ":" + v.first + ",role=" + v.second }.joinToString()}, neighbor count: ${neighborFitnessInfo.size}, multi-hop neighbor centrality: ${neighborCentralityInfo}")
         }
 
+        // === TRIGGER IMMEDIATE REPLY FOR NEW NEIGHBORS (official behavior) ===
         if(isNewNeighbor) {
-            //trigger immediate sending of originator messages so it can see us
             scheduledExecutor.submit(sendOriginatingMessageRunnable)
         }
-
-        // 2. When receiving, update topology map
-        // topologyMap[virtualPacket.header.fromAddr] = mmcpMessage.neighbors.toSet() // neighbors not present in MmcpNodeAnnouncement
-
-        // 4. Placeholder for choke point and hop calculations
-        // (to be used by MeshRoleManager)
 
         return isMoreRecentOrBetter
     }
@@ -492,7 +577,7 @@ class OriginatingMessageManager(
         //send originating packets out to the other device until we get something back from it
         val sendOriginatingMessageJob = scope.launch {
             try {
-                val originatingMessage = makeOriginatingMessage(getFitnessScore(), getNodeRole())
+                val originatingMessage = makeOriginatingMessage()  // Use no-arg version with callbacks
                 socket.send(
                     nextHopAddress = neighborRealInetAddr,
                     nextHopPort = neighborRealPort,
@@ -550,17 +635,18 @@ class OriginatingMessageManager(
         // Optionally, could send additional messages with multi-hop info, or piggyback on existing ones
     }
 
+    /**
+     * Send a custom message (deprecated - use makeOriginatingMessage for originating messages).
+     * This is a placeholder for generic message sending.
+     */
     fun sendMessage(message: MmcpMessage) {
-        val messageId = nextMmcpMessageId()
-        val originatorMessage = MmcpMessageFactory.createNodeAnnouncement(
-            messageId = messageId,
-            nodeId = localNodeAddress.toString(),
-            centralityScore = 0.0f
-        )
-
-        _state.value = _state.value.copy(
-            pendingMessages = _state.value.pendingMessages + (messageId to originatorMessage)
-        )
+        // Generic message sending - add to pending messages
+        val messageId = message.messageId
+        if (message is MmcpOriginatorMessage) {
+            _state.value = _state.value.copy(
+                pendingMessages = _state.value.pendingMessages + (messageId to message)
+            )
+        }
     }
 
     fun handlePong(pong: MmcpPong) {
@@ -578,10 +664,130 @@ class OriginatingMessageManager(
         return messageCounter.incrementAndGet()
     }
 
+    // === PHASE 3C: GATEWAY MESSAGE TRACKING METHODS ===
+    
+    /**
+     * Tracks a message sent via gateway for return path routing.
+     * Phase 3C: Gateway packet tracking
+     *
+     * @param fromAddr Source virtual address
+     * @param fromPort Source port
+     * @param toAddr Destination address (internet)
+     * @param toPort Destination port
+     * @param gatewayType Gateway type (TOR or CLEARNET)
+     * @param gatewayAddr Gateway node address
+     */
+    fun trackGatewayMessage(
+        fromAddr: Int,
+        fromPort: Int,
+        toAddr: Int,
+        toPort: Int,
+        gatewayType: Byte,
+        gatewayAddr: Int
+    ) {
+        val key = createGatewayMessageKey(fromAddr, fromPort)
+        val message = GatewayMessage(
+            fromAddr = fromAddr,
+            fromPort = fromPort,
+            toAddr = toAddr,
+            toPort = toPort,
+            timestamp = System.currentTimeMillis(),
+            gatewayType = gatewayType,
+            gatewayAddr = gatewayAddr
+        )
+        
+        gatewayMessages[key] = message
+        
+        logger(
+            priority = Log.DEBUG,
+            message = { 
+                "$logPrefix Tracked gateway message: ${fromAddr.addressToDotNotation()}:$fromPort → " +
+                "gateway ${gatewayAddr.addressToDotNotation()} (type=$gatewayType)" 
+            }
+        )
+    }
+
+    /**
+     * Gets gateway address for return traffic.
+     * Phase 3C: Used to route return packets back through same gateway
+     *
+     * @param toAddr Destination address (local node)
+     * @param toPort Destination port
+     * @return Gateway node address, or null if not routed via gateway
+     */
+    fun getGatewayForReturnTraffic(toAddr: Int, toPort: Int): Int? {
+        val key = createGatewayMessageKey(toAddr, toPort)
+        return gatewayMessages[key]?.gatewayAddr
+    }
+
+    /**
+     * Returns statistics on gateway usage.
+     * Phase 3C: For debugging and monitoring
+     *
+     * @return Map of gateway type to usage count
+     */
+    fun getGatewayUsageStats(): Map<Byte, Int> {
+        val stats = mutableMapOf<Byte, Int>()
+        
+        gatewayMessages.values.forEach { msg ->
+            val count = stats.getOrDefault(msg.gatewayType, 0)
+            stats[msg.gatewayType] = count + 1
+        }
+        
+        return stats
+    }
+
+    /**
+     * Creates a unique key for gateway message tracking.
+     * Format: "fromAddr:fromPort"
+     */
+    private fun createGatewayMessageKey(fromAddr: Int, fromPort: Int): String {
+        return "$fromAddr:$fromPort"
+    }
+
+    /**
+     * Cleans up stale gateway messages older than threshold.
+     * Called periodically to prevent memory leaks.
+     */
+    fun cleanupStaleGatewayMessages(maxAgeMs: Long = 60_000L) {
+        val now = System.currentTimeMillis()
+        val iterator = gatewayMessages.entries.iterator()
+        var removed = 0
+        
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (now - entry.value.timestamp > maxAgeMs) {
+                iterator.remove()
+                removed++
+            }
+        }
+        
+        if (removed > 0) {
+            logger(
+                priority = Log.DEBUG,
+                message = { "$logPrefix Cleaned up $removed stale gateway messages" }
+            )
+        }
+    }
+
     // Expose the current originatorMessages map for state updates
     fun getOriginatorMessages(): Map<Int, VirtualNode.LastOriginatorMessage> = originatorMessages
 }
 
+/**
+ * Tracks a message sent via gateway for return path routing.
+ * Phase 3C: Gateway packet tracking data structure
+ */
+data class GatewayMessage(
+    val fromAddr: Int,
+    val fromPort: Int,
+    val toAddr: Int,
+    val toPort: Int,
+    val timestamp: Long,
+    val gatewayType: Byte,
+    val gatewayAddr: Int
+)
+
 data class OriginatingMessageState(
-    val pendingMessages: Map<Int, MmcpNodeAnnouncement> = emptyMap(),
+    val pendingMessages: Map<Int, MmcpOriginatorMessage> = emptyMap(),
 )

@@ -16,6 +16,7 @@ class BetaLoggerConsentDemoTest {
 
     @Before
     fun setup() {
+        println("[DEBUG] BetaLoggerConsentDemoTest: Starting @Before setup()")
         // Reset singleton state for clean test
         BetaTestLogger.resetForTesting()
         

@@ -346,24 +346,17 @@ class MockDeviceCapabilityManager(
     }
     
     override suspend fun getStorageCapabilities(): StorageCapabilities {
-        val usedStorage = baseConfig.storageCapacity * 0.3f // 30% used
         val offeredStorage = (baseConfig.storageCapacity * 0.4f).toLong() // Offer 40% of total
+        val availableMB = (baseConfig.storageCapacity * 0.7f / (1024 * 1024)).toLong() // 70% available
         
         return StorageCapabilities(
             totalOffered = offeredStorage,
-            currentlyUsed = usedStorage.toLong(),
-            replicationFactor = when {
-                baseConfig.baseStability > 0.8f -> 2 // High stability = lower replication needed
-                baseConfig.baseStability > 0.6f -> 3 // Normal replication
-                else -> 4 // Unstable devices need higher replication
-            },
+            localStorageAvailableMB = availableMB,
             compressionSupported = true,
-            encryptionSupported = true,
-            accessPatterns = when {
-                baseConfig.networkBandwidth > 50_000_000L -> setOf(AccessPattern.RANDOM, AccessPattern.SEQUENTIAL, AccessPattern.STREAMING)
-                baseConfig.networkBandwidth > 10_000_000L -> setOf(AccessPattern.RANDOM, AccessPattern.SEQUENTIAL)
-                else -> setOf(AccessPattern.SEQUENTIAL) // Low bandwidth = sequential only
-            }
+            encryptionSupported = true
+            // REMOVED: replicationFactor (handled by storage manager)
+            // REMOVED: currentlyUsed (less useful than localStorageAvailableMB)
+            // REMOVED: accessPatterns (incorporated into fitness via I/O benchmarking)
         )
     }
     

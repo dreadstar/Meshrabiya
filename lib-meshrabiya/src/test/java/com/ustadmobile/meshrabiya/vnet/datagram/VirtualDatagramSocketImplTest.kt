@@ -52,6 +52,7 @@ class VirtualDatagramSocketImplTest {
                 lastHopAddr = fromVirtualAddress,
                 hopCount = 0,
                 maxHops = 5,
+                gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
                 payloadSize = payloadSize
             ),
             data = virtualPacketBuffer,

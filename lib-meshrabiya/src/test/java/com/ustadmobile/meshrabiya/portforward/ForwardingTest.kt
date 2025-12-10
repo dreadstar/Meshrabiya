@@ -13,6 +13,7 @@ class ForwardingTest {
 
     @Test(timeout = 5000)
     fun givenEchoSent_whenListening_willReceive() {
+        println("[DEBUG] ForwardingTest: Running givenEchoSent_whenListening_willReceive")
         val executor = Executors.newCachedThreadPool()
         val echoServer = EchoDatagramServer(0, executor)
 
@@ -30,11 +31,13 @@ class ForwardingTest {
         val decoded = String(receivePacket.data, receivePacket.offset, receivePacket.length)
         Assert.assertEquals("Hello", decoded)
         executor.shutdown()
+        executor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)
         echoServer.close()
     }
 
     @Test(timeout = 5000)
     fun givenPortForwardingRuleActive_whenPacketSentToForwarder_thenReplyWillBeReceived() {
+        println("[DEBUG] ForwardingTest: Running givenPortForwardingRuleActive_whenPacketSentToForwarder_thenReplyWillBeReceived")
         val executor = Executors.newCachedThreadPool()
         val echoServer = EchoDatagramServer(0, executor)
 
@@ -64,11 +67,13 @@ class ForwardingTest {
         val decoded = String(receivePacket.data, receivePacket.offset, receivePacket.length)
         Assert.assertEquals("Hello", decoded)
         
-        // Cleanup
-        executor.shutdown()
-        echoServer.close()
+        // Cleanup - close forwardingRule first to stop listening, then close socket
         forwardingRule.close()
+        Thread.sleep(100)  // Give the thread time to exit the receive() call
         boundSocket.close()
         client.close()
+        echoServer.close()
+        executor.shutdown()
+        executor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)
     }
 }

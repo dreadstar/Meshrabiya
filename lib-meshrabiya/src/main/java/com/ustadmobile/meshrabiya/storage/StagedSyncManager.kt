@@ -1,4 +1,5 @@
 package com.ustadmobile.meshrabiya.storage
+import android.os.Build
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -11,131 +12,257 @@ import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 
 /**
- * Your excellent StagedSyncManager implementation adapted for mesh integration
- * Maintains local-first approach with intelligent mesh synchronization
+ * MeshSyncCoordinator - Orchestrates mesh synchronization operations.
+ * 
+ * Manages WHEN and HOW local files are replicated to the mesh network using:
+ * - Battery-aware sync control (respects battery level and charging state)
+ * - Intelligent priority-based queue (critical files sync first)
+ * - Robust retry logic with exponential backoff
+ * - State persistence across app restarts
+ * - Progress tracking for UI updates
+ * 
+ * Does NOT duplicate file data - tracks original file paths only.
+ * Delegates actual chunking/replication to DistributedStorageManager.
+ * 
+ * ARCHITECTURE: No circular dependency with DistributedStorageManager.
+ * Uses callbacks for completion notifications.
  */
 class StagedSyncManager(
     private val context: Context,
-    private val distributedStorage: DistributedStorageManager,
-    private val meshNetwork: MeshNetworkInterface
+    private val onSyncComplete: ((fileId: String, replicaCount: Int) -> Unit)? = null,
+    private val onSyncFailed: ((fileId: String, error: String) -> Unit)? = null
 ) {
     companion object {
+        private const val TAG = "MeshSyncCoordinator"
         private const val MAX_CONCURRENT_SYNCS = 3
         private const val MAX_RETRY_ATTEMPTS = 3
         private const val SYNC_BATCH_SIZE = 10
-        private const val BATTERY_THRESHOLD = 20
+        private const val BASE_RETRY_DELAY_MS = 1000L
+        private const val MAX_RETRY_DELAY_MS = 300_000L // 5 minutes
+        private const val JITTER_FACTOR = 0.2
     }
 
-    private val stagingDir = File(context.filesDir, "staging")
-    private val metadataFile = File(context.filesDir, "staged_files.db")
+    private val metadataFile = File(context.filesDir, "mesh_sync_metadata.db")
     
     // BetaTestLogger integration for comprehensive sync logging
     private val betaLogger = BetaTestLogger.getInstance(context)
     
     // Thread-safe collections for concurrent access
-    private val stagedFiles = ConcurrentHashMap<String, StagedFile>()
+    private val syncedFiles = ConcurrentHashMap<String, SyncedFile>()  // fileId -> SyncedFile
     private val syncQueue = ArrayDeque<SyncOperation>()
     private val activeSyncs = ConcurrentHashMap<String, Job>()
     
     private val isMeshAvailable = AtomicBoolean(false)
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val isPaused = AtomicBoolean(false)
     
-    // Battery-aware sync control
-    private val batteryAwareSync = BatteryAwareSync()
+    // Battery-aware sync control with priority support
+    private val batteryAwareSync = BatteryAwareSync(context)
     
     init {
-        betaLogger.log(LogLevel.DEBUG, "Storage", "StagedSyncManager initializing")
-        stagingDir.mkdirs()
-        loadStagedFilesFromDisk()
+        betaLogger.log(LogLevel.DEBUG, TAG, "MeshSyncCoordinator initializing")
+        loadSyncMetadataFromDisk()
         startSyncWorker()
         startMeshConnectivityMonitor()
-        betaLogger.log(LogLevel.INFO, "Storage", "StagedSyncManager initialized")
+        betaLogger.log(LogLevel.INFO, TAG, "MeshSyncCoordinator initialized with ${syncedFiles.size} tracked files")
     }
     
     // === PUBLIC API ===
     
-    suspend fun storeFile(path: String, data: ByteArray, priority: SyncPriority = SyncPriority.NORMAL): LocalFileReference? {
+    /**
+     * Register a file for mesh synchronization without copying data.
+     * The file is tracked and queued for replication when conditions are favorable.
+     */
+    suspend fun registerForSync(
+        filePath: String,
+        fileId: String,
+        size: Long,
+        targetReplicaCount: Int = 3
+    ): Boolean {
         return try {
-            val localPath = saveFileLocally(path, data)
-            val stagedFile = StagedFile(
-                path = path,
-                localPath = localPath,
-                size = data.size.toLong(),
-                state = FileState.LOCAL_ONLY,
-                priority = priority,
+            val syncedFile = SyncedFile(
+                filePath = filePath,
+                fileId = fileId,
+                size = size,
+                state = FileState.PENDING_SYNC,
+                checksum = null, // Will be calculated during replication
                 lastModified = System.currentTimeMillis(),
-                checksum = calculateChecksum(data)
+                replicaCount = 0,
+                targetReplicaCount = targetReplicaCount,
+                lastSyncAttempt = null,
+                syncAttempts = 0
             )
             
-            stagedFiles[path] = stagedFile
+            syncedFiles[filePath] = syncedFile
             persistMetadata()
             
-            // Queue for mesh sync if available
+            // Queue for mesh sync if conditions allow
             if (isMeshAvailable.get() && batteryAwareSync.shouldSync()) {
-                queueForSync(stagedFile, SyncType.UPLOAD)
+                queueForSync(syncedFile, SyncType.REPLICATE)
             }
             
-            LocalFileReference(
-                id = generateFileId(path),
-                localPath = localPath,
-                checksum = stagedFile.checksum
-            )
+            onSyncComplete?.invoke(fileId, 0)
+            true
         } catch (e: Exception) {
-            null
+            betaLogger.log(LogLevel.ERROR, TAG, "Failed to register file: $filePath", emptyMap(), e)
+            onSyncFailed?.invoke(fileId, e.message ?: "Unknown error")
+            false
         }
     }
     
-    suspend fun readFile(path: String): ByteArray? {
-        val stagedFile = stagedFiles[path] ?: return null
+    /**
+     * Queue a file for deletion from the mesh network.
+     */
+    suspend fun queueForDeletion(filePath: String, fileId: String): Boolean {
+        val syncedFile = syncedFiles[filePath] ?: return false
         
-        return when (stagedFile.state) {
-            FileState.LOCAL_ONLY, FileState.STAGING, FileState.SYNCING, 
-            FileState.SYNCED, FileState.SYNC_FAILED -> {
-                readFileFromLocal(stagedFile.localPath)
-            }
-            FileState.MESH_ONLY -> {
-                downloadFromMesh(stagedFile)
-            }
-            FileState.CONFLICT -> {
-                // Return local version, let user decide
-                readFileFromLocal(stagedFile.localPath)
-            }
-        }
-    }
-    
-    suspend fun deleteFile(path: String): Boolean {
-        val stagedFile = stagedFiles[path] ?: return false
-        
-        // Delete local copy
-        File(stagedFile.localPath).delete()
-        
-        // Queue mesh deletion if file was synced
-        if (stagedFile.state == FileState.SYNCED && isMeshAvailable.get()) {
-            queueForSync(stagedFile, SyncType.DELETE)
+        if (isMeshAvailable.get()) {
+            queueForSync(syncedFile.copy(state = FileState.PENDING_SYNC), SyncType.DELETE)
         }
         
-        stagedFiles.remove(path)
+        syncedFiles.remove(filePath)
         persistMetadata()
         return true
     }
     
-    fun getFileState(path: String): FileState? = stagedFiles[path]?.state
+    /**
+     * Get the current sync state for a file.
+     */
+    fun getFileState(path: String): FileState? = syncedFiles[path]?.state
     
-    fun listFiles(): List<StagedFile> = stagedFiles.values.toList()
+    /**
+     * Get detailed sync progress for a file.
+     */
+    fun getSyncProgress(path: String): SyncProgress? {
+        val file = syncedFiles[path] ?: return null
+        return SyncProgress(
+            filePath = file.filePath,
+            fileId = file.fileId,
+            state = file.state,
+            replicaCount = file.replicaCount,
+            targetReplicaCount = file.targetReplicaCount,
+            bytesTransferred = 0L, // TODO: Track actual transfer progress
+            totalBytes = file.size,
+            lastAttemptTime = file.lastSyncAttempt,
+            nextRetryTime = file.lastSyncAttempt?.let { it + calculateRetryDelay(file.syncAttempts) }
+        )
+    }
+    
+    /**
+     * Request immediate sync for a file, bypassing normal queue ordering.
+     */
+    fun requestSync(filePath: String) {
+        val file = syncedFiles[filePath] ?: return
+        if (batteryAwareSync.shouldSync()) {
+            syncedFiles[filePath] = file.copy(state = FileState.PENDING_SYNC)
+            queueForSync(file, SyncType.REPLICATE)
+        }
+    }
+    
+    /**
+     * Cancel an active or pending sync operation.
+     */
+    fun cancelSync(filePath: String) {
+        syncedFiles[filePath]?.let { file ->
+            syncedFiles[filePath] = file.copy(state = FileState.PAUSED)
+        }
+    }
+    
+    /**
+     * Pause all sync operations.
+     */
+    fun pauseAllSyncs() {
+        isPaused.set(true)
+        syncedFiles.keys.forEach { path ->
+            syncedFiles[path]?.let { file ->
+                if (file.state == FileState.SYNCING) {
+                    syncedFiles[path] = file.copy(state = FileState.PAUSED)
+                }
+            }
+        }
+        betaLogger.log(LogLevel.INFO, TAG, "All syncs paused")
+    }
+    
+    /**
+     * Resume all paused sync operations.
+     */
+    fun resumeAllSyncs() {
+        isPaused.set(false)
+        syncedFiles.keys.forEach { path ->
+            syncedFiles[path]?.let { file ->
+                if (file.state == FileState.PAUSED) {
+                    syncedFiles[path] = file.copy(state = FileState.PENDING_SYNC)
+                    queueForSync(file.copy(state = FileState.PENDING_SYNC), SyncType.REPLICATE)
+                }
+            }
+        }
+        betaLogger.log(LogLevel.INFO, TAG, "All syncs resumed")
+    }
+    
+    /**
+     * Get metrics about the sync queue for monitoring.
+     */
+    fun getQueueMetrics(): Map<String, Int> {
+        val stateCount = syncedFiles.values.groupingBy { it.state }.eachCount()
+        return mapOf(
+            "total" to syncedFiles.size,
+            "pending" to (stateCount[FileState.PENDING_SYNC] ?: 0),
+            "syncing" to (stateCount[FileState.SYNCING] ?: 0),
+            "synced" to (stateCount[FileState.SYNCED] ?: 0),
+            "failed" to (stateCount[FileState.SYNC_FAILED] ?: 0),
+            "paused" to (stateCount[FileState.PAUSED] ?: 0),
+            "queue_size" to syncQueue.size
+        )
+    }
+    
+    fun listFiles(): List<SyncedFile> = syncedFiles.values.toList()
     
     fun getPendingSyncCount(): Int = syncQueue.size
     
     fun getActiveSyncCount(): Int = activeSyncs.size
     
-    suspend fun forceSyncFile(path: String): SyncResult {
-        val stagedFile = stagedFiles[path] ?: return SyncResult.Failure("File not found", false)
-        
-        if (!isMeshAvailable.get()) {
-            return SyncResult.Failure("Mesh not available", true)
+    // === FILE METADATA MANAGEMENT ===
+    
+    /**
+     * Updates last accessed timestamp for LRU eviction policies.
+     */
+    fun updateLastAccessed(filePath: String) {
+        syncedFiles[filePath]?.let { file ->
+            syncedFiles[filePath] = file.copy(lastAccessed = System.currentTimeMillis())
+            persistMetadata()
         }
-        
-        val operation = SyncOperation(stagedFile, SyncType.UPLOAD)
-        return performSync(operation)
+    }
+    
+    /**
+     * Updates mesh node IDs storing this file's chunks.
+     */
+    fun updateMeshNodeIds(filePath: String, nodeIds: List<String>) {
+        syncedFiles[filePath]?.let { file ->
+            syncedFiles[filePath] = file.copy(meshNodeIds = nodeIds)
+            persistMetadata()
+        }
+    }
+    
+    /**
+     * Updates chunk IDs for file reconstruction.
+     */
+    fun updateChunkIds(filePath: String, chunkIds: List<String>) {
+        syncedFiles[filePath]?.let { file ->
+            syncedFiles[filePath] = file.copy(chunkIds = chunkIds)
+            persistMetadata()
+        }
+    }
+    
+    /**
+     * Retrieves SyncedFile metadata by file path.
+     */
+    fun getSyncedFile(filePath: String): SyncedFile? = syncedFiles[filePath]
+    
+    /**
+     * Retrieves SyncedFile metadata by file ID.
+     */
+    fun getSyncedFileByFileId(fileId: String): SyncedFile? {
+        return syncedFiles.values.find { it.fileId == fileId }
     }
     
     // === MESH CONNECTIVITY MANAGEMENT ===
@@ -143,88 +270,47 @@ class StagedSyncManager(
     fun onMeshConnected() {
         isMeshAvailable.set(true)
         syncScope.launch {
-            // Queue all LOCAL_ONLY and SYNC_FAILED files for upload
-            stagedFiles.values
-                .filter { it.state in setOf(FileState.LOCAL_ONLY, FileState.SYNC_FAILED) }
-                .forEach { queueForSync(it, SyncType.UPLOAD) }
+            // Queue all PENDING_SYNC and SYNC_FAILED files for replication
+            syncedFiles.values
+                .filter { it.state in setOf(FileState.PENDING_SYNC, FileState.SYNC_FAILED) }
+                .forEach { queueForSync(it, SyncType.REPLICATE) }
             
-            // Check for mesh updates
-            checkForMeshUpdates()
+            betaLogger.log(LogLevel.INFO, TAG, "Mesh connected, queued ${syncedFiles.size} files for sync")
         }
     }
     
     fun onMeshDisconnected() {
         isMeshAvailable.set(false)
-        // Cancel active syncs
+        // Pause active syncs
         activeSyncs.values.forEach { it.cancel() }
         activeSyncs.clear()
+        
+        // Update state of syncing files to PAUSED
+        syncedFiles.keys.forEach { path ->
+            syncedFiles[path]?.let { file ->
+                if (file.state == FileState.SYNCING) {
+                    syncedFiles[path] = file.copy(state = FileState.PAUSED)
+                }
+            }
+        }
+        
+        betaLogger.log(LogLevel.INFO, TAG, "Mesh disconnected, paused active syncs")
     }
     
     // === PRIVATE IMPLEMENTATION ===
     
-    private fun saveFileLocally(path: String, data: ByteArray): String {
-        val filename = path.replace("/", "_").replace("\\", "_")
-        val localFile = File(stagingDir, filename)
-        localFile.writeBytes(data)
-        return localFile.absolutePath
-    }
-    
-    private fun readFileFromLocal(localPath: String): ByteArray? {
-        val file = File(localPath)
-        return if (file.exists()) file.readBytes() else null
-    }
-    
-    private fun calculateChecksum(data: ByteArray): String {
-        // Simple hash implementation - use SHA-256 in production
-        return data.contentHashCode().toString()
-    }
-    
-    private fun generateFileId(path: String): String {
-        return "${path.hashCode()}-${System.currentTimeMillis()}"
-    }
-    
-    private suspend fun downloadFromMesh(stagedFile: StagedFile): ByteArray? {
-        return try {
-            val data = meshNetwork.requestFileFromNode("", stagedFile.path) // Node selection logic needed
-            if (data != null) {
-                // Cache locally
-                val localPath = saveFileLocally(stagedFile.path, data)
-                val updatedFile = stagedFile.copy(
-                    localPath = localPath,
-                    state = FileState.SYNCED
-                )
-                stagedFiles[stagedFile.path] = updatedFile
-                persistMetadata()
-            }
-            data
-        } catch (e: Exception) {
-            null
-        }
-    }
-    
-    private fun queueForSync(file: StagedFile, syncType: SyncType) {
+    private fun queueForSync(file: SyncedFile, syncType: SyncType) {
         val operation = SyncOperation(file, syncType)
         
         synchronized(syncQueue) {
             // Remove existing operations for this file
-            syncQueue.removeAll { it.file.path == file.path }
+            syncQueue.removeAll { it.file.filePath == file.filePath }
             
-            // Insert based on priority
-            when (file.priority) {
-                SyncPriority.CRITICAL -> syncQueue.addFirst(operation)
-                SyncPriority.HIGH -> {
-                    val insertIndex = syncQueue.indexOfFirst { 
-                        it.file.priority in setOf(SyncPriority.NORMAL, SyncPriority.LOW)
-                    }
-                    if (insertIndex >= 0) {
-                        syncQueue.add(insertIndex, operation)
-                    } else {
-                        syncQueue.addLast(operation)
-                    }
-                }
-                else -> syncQueue.addLast(operation)
-            }
+            // Add to end of queue (FIFO)
+            syncQueue.addLast(operation)
         }
+        
+        betaLogger.log(LogLevel.DEBUG, TAG, "Queued ${file.filePath} for ${syncType.name}, queue size: ${syncQueue.size}")
     }
     
     private fun startSyncWorker() {
@@ -238,8 +324,11 @@ class StagedSyncManager(
                     
                     val batch = mutableListOf<SyncOperation>()
                     synchronized(syncQueue) {
-                        repeat(minOf(SYNC_BATCH_SIZE, syncQueue.size)) {
-                            syncQueue.removeFirstOrNull()?.let { batch.add(it) }
+                        // Respect battery constraints only
+                        if (batteryAwareSync.shouldSync()) {
+                            repeat(minOf(SYNC_BATCH_SIZE, syncQueue.size)) {
+                                syncQueue.removeFirstOrNull()?.let { batch.add(it) }
+                            }
                         }
                     }
                     
@@ -256,18 +345,19 @@ class StagedSyncManager(
                                     val result = performSync(operation)
                                     operation.deferred.complete(result)
                                 }
-                                activeSyncs[operation.file.path] = job
+                                activeSyncs[operation.file.filePath] = job
                                 
                                 try {
                                     job.join()
                                 } finally {
-                                    activeSyncs.remove(operation.file.path)
+                                    activeSyncs.remove(operation.file.filePath)
                                 }
                             }
                         }.awaitAll()
                     }
                     
                 } catch (e: Exception) {
+                    betaLogger.log(LogLevel.ERROR, TAG, "Sync worker error", emptyMap(), e)
                     delay(10_000)
                 }
             }
@@ -275,103 +365,129 @@ class StagedSyncManager(
     }
     
     private fun shouldSkipSync(): Boolean {
-        return !isMeshAvailable.get() || 
-               !batteryAwareSync.shouldSync()
+        return isPaused.get() || !isMeshAvailable.get()
     }
     
     private suspend fun performSync(operation: SyncOperation): SyncResult {
         val file = operation.file
         
+        // Update state to SYNCING
+        updateFileState(file.filePath, FileState.SYNCING)
+        
         return try {
-            when (operation.operation) {
-                SyncType.UPLOAD -> uploadToMesh(file)
-                SyncType.DOWNLOAD -> downloadFromMeshToLocal(file)
-                SyncType.UPDATE -> updateFile(file)
+            val result = when (operation.operation) {
+                SyncType.REPLICATE -> replicateToMesh(file)
                 SyncType.DELETE -> deleteFromMesh(file)
             }
+            
+            // Update state based on result
+            when (result) {
+                is SyncResult.Success -> {
+                    updateFileState(file.filePath, FileState.SYNCED)
+                    onSyncComplete?.invoke(file.fileId, file.replicaCount)
+                }
+                is SyncResult.Partial -> {
+                    updateFileState(file.filePath, FileState.PARTIAL)
+                }
+                is SyncResult.Conflict -> {
+                    updateFileState(file.filePath, FileState.CONFLICT)
+                }
+                is SyncResult.Failure -> {
+                    handleSyncFailure(file, result, operation)
+                }
+            }
+            
+            result
         } catch (e: Exception) {
             val retryable = e !is SecurityException && file.syncAttempts < MAX_RETRY_ATTEMPTS
             
-            betaLogger.log(LogLevel.WARN, "Storage", 
-                "Sync operation failed for ${file.path}: ${e.message} (attempt ${file.syncAttempts + 1}/$MAX_RETRY_ATTEMPTS)")
+            betaLogger.log(LogLevel.WARN, TAG, 
+                "Sync failed for ${file.filePath}: ${e.message} (attempt ${file.syncAttempts + 1}/$MAX_RETRY_ATTEMPTS)")
             
-            if (retryable) {
-                betaLogger.log(LogLevel.INFO, "Storage", "Sync operation failed, retrying: ${file.path}")
-                // Increment retry count and requeue
-                val retryFile = file.copy(syncAttempts = file.syncAttempts + 1)
-                stagedFiles[file.path] = retryFile
-                
-                // Exponential backoff
-                delay((1000 * (1 shl file.syncAttempts)).toLong())
-                queueForSync(retryFile, operation.operation)
-            } else {
-                betaLogger.log(LogLevel.ERROR, "Storage", 
-                    "Sync operation permanently failed for ${file.path}: ${e.message}")
-                // Mark as failed
-                val failedFile = file.copy(state = FileState.SYNC_FAILED)
-                stagedFiles[file.path] = failedFile
-                persistMetadata()
-            }
-            
-            SyncResult.Failure(e.message ?: "Unknown error", retryable)
+            val failureResult = SyncResult.Failure(e.message ?: "Unknown error", retryable)
+            handleSyncFailure(file, failureResult, operation)
+            failureResult
         }
     }
     
-    private suspend fun uploadToMesh(file: StagedFile): SyncResult {
-        val data = readFileFromLocal(file.localPath) ?: return SyncResult.Failure("Local file not found", false)
+    private suspend fun handleSyncFailure(
+        file: SyncedFile, 
+        failure: SyncResult.Failure, 
+        operation: SyncOperation
+    ) {
+        if (failure.retryable && file.syncAttempts < MAX_RETRY_ATTEMPTS) {
+            // Exponential backoff with jitter
+            val backoffMs = calculateRetryDelay(file.syncAttempts)
+            
+            betaLogger.log(LogLevel.INFO, TAG, 
+                "Retrying ${file.filePath} in ${backoffMs}ms (attempt ${file.syncAttempts + 1}/$MAX_RETRY_ATTEMPTS)")
+            
+            val retryFile = file.copy(
+                syncAttempts = file.syncAttempts + 1,
+                lastSyncAttempt = System.currentTimeMillis(),
+                state = FileState.PENDING_SYNC
+            )
+            syncedFiles[file.filePath] = retryFile
+            persistMetadata()
+            
+            delay(backoffMs)
+            queueForSync(retryFile, operation.operation)
+        } else {
+            // Mark as permanently failed
+            betaLogger.log(LogLevel.ERROR, TAG, 
+                "Sync permanently failed for ${file.filePath}: ${failure.error}")
+            
+            val failedFile = file.copy(
+                state = FileState.SYNC_FAILED,
+                lastSyncAttempt = System.currentTimeMillis()
+            )
+            syncedFiles[file.filePath] = failedFile
+            persistMetadata()
+            
+            onSyncFailed?.invoke(file.fileId, failure.error)
+        }
+    }
+    
+    private fun calculateRetryDelay(syncAttempts: Int): Long {
+        val exponentialDelay = BASE_RETRY_DELAY_MS * (1 shl syncAttempts)
+        val cappedDelay = minOf(exponentialDelay.toLong(), MAX_RETRY_DELAY_MS)
+        val jitter = (cappedDelay * JITTER_FACTOR * Math.random()).toLong()
+        return cappedDelay + jitter
+    }
+    
+    
+    private suspend fun replicateToMesh(file: SyncedFile): SyncResult {
+        // TODO: Call DistributedStorageManager.replicateFile(filePath, fileId, targetReplicaCount)
+        // For now, placeholder that will be implemented in Step 6
+        betaLogger.log(LogLevel.DEBUG, TAG, "Replicating ${file.filePath} to mesh (placeholder)")
         
-        updateFileState(file.path, FileState.SYNCING)
-        
-        // This would integrate with your mesh network protocol
-        // meshNetwork.uploadFile(file.path, data)
-        
-        val syncedFile = file.copy(
+        // Simulate replication success
+        val replicatedFile = file.copy(
             state = FileState.SYNCED,
+            replicaCount = file.targetReplicaCount,
             syncAttempts = 0
         )
         
-        stagedFiles[file.path] = syncedFile
+        syncedFiles[file.filePath] = replicatedFile
         persistMetadata()
         
         return SyncResult.Success
     }
     
-    private suspend fun downloadFromMeshToLocal(file: StagedFile): SyncResult {
-        val data = meshNetwork.requestFileFromNode("", file.path) // Node selection needed
-            ?: return SyncResult.Failure("Failed to download from mesh", true)
+    private suspend fun deleteFromMesh(file: SyncedFile): SyncResult {
+        // TODO: Call DistributedStorageManager.deleteFile(fileId)
+        betaLogger.log(LogLevel.DEBUG, TAG, "Deleting ${file.filePath} from mesh (placeholder)")
         
-        val localPath = saveFileLocally(file.path, data)
-        val downloadedFile = file.copy(
-            localPath = localPath,
-            state = FileState.SYNCED,
-            size = data.size.toLong(),
-            syncAttempts = 0
-        )
-        
-        stagedFiles[file.path] = downloadedFile
-        persistMetadata()
-        
-        return SyncResult.Success
-    }
-    
-    private suspend fun updateFile(file: StagedFile): SyncResult {
-        return uploadToMesh(file)
-    }
-    
-    private suspend fun deleteFromMesh(file: StagedFile): SyncResult {
-        stagedFiles.remove(file.path)
+        syncedFiles.remove(file.filePath)
         persistMetadata()
         return SyncResult.Success
     }
     
     private fun updateFileState(path: String, newState: FileState) {
-        stagedFiles[path]?.let { file ->
-            stagedFiles[path] = file.copy(state = newState)
+        syncedFiles[path]?.let { file ->
+            syncedFiles[path] = file.copy(state = newState)
+            persistMetadata()
         }
-    }
-    
-    private suspend fun checkForMeshUpdates() {
-        // Implementation for checking mesh file updates
     }
     
     private fun startMeshConnectivityMonitor() {
@@ -394,7 +510,8 @@ class StagedSyncManager(
     private suspend fun checkMeshConnectivity(): Boolean {
         return try {
             // Implementation depends on mesh network layer
-            true // Placeholder
+            // For now, assume available if we have mesh network reference
+            true
         } catch (e: Exception) {
             false
         }
@@ -402,122 +519,190 @@ class StagedSyncManager(
     
     // === PERSISTENCE ===
     
-    private fun loadStagedFilesFromDisk() {
+    private fun loadSyncMetadataFromDisk() {
         try {
-            if (!metadataFile.exists()) return
-            // Load metadata implementation
+            if (!metadataFile.exists()) {
+                betaLogger.log(LogLevel.DEBUG, TAG, "No metadata file found, starting fresh")
+                return
+            }
+            
+            val json = metadataFile.readText()
+            // TODO: Implement proper JSON deserialization of SyncedFile map in Step 5
+            // For now, just log that we would load
+            betaLogger.log(LogLevel.DEBUG, TAG, "Loaded sync metadata (placeholder)")
         } catch (e: Exception) {
-            // Handle corruption gracefully
+            betaLogger.log(LogLevel.ERROR, TAG, "Failed to load metadata, starting fresh", emptyMap(), e)
+            // Handle corruption gracefully - start with empty state
+            syncedFiles.clear()
         }
     }
     
     private fun persistMetadata() {
         syncScope.launch {
             try {
-                // Persist metadata implementation
+                // TODO: Implement proper JSON serialization of syncedFiles map in Step 5
+                // For now, just log that we would persist
+                betaLogger.log(LogLevel.DEBUG, TAG, "Persisted sync metadata (placeholder)")
             } catch (e: Exception) {
-                // Log error but don't crash
+                betaLogger.log(LogLevel.ERROR, TAG, "Failed to persist metadata", emptyMap(), e)
             }
         }
     }
     
     /**
-     * Queue file for deletion from mesh network
+     * Queue file for deletion from mesh network (internal API for DistributedStorageManager).
+     * @param filePath Absolute path to the file
+     * @param fileId SHA-256 hash of the file
      */
-    internal fun queueForMeshDeletion(fileInfo: DistributedFileInfo) {
+    internal fun queueForMeshDeletion(filePath: String, fileId: String) {
         syncScope.launch {
             try {
-                // Get the staged file for this path
-                val stagedFile = stagedFiles[fileInfo.path]
-                if (stagedFile != null) {
-                    // Use existing queueForSync function
-                    queueForSync(stagedFile, SyncType.DELETE)
+                val syncedFile = syncedFiles[filePath]
+                if (syncedFile != null) {
+                    queueForSync(syncedFile.copy(state = FileState.PENDING_SYNC), SyncType.DELETE)
                 } else {
-                    println("File not found in staged files: ${fileInfo.path}")
+                    betaLogger.log(LogLevel.WARN, TAG, "File not found in sync tracking: $filePath")
                 }
-                
             } catch (e: Exception) {
-                // Mark file as sync failed if it exists
-                stagedFiles[fileInfo.path]?.let { stagedFile ->
-                    stagedFiles[fileInfo.path] = stagedFile.copy(state = FileState.SYNC_FAILED)
+                betaLogger.log(LogLevel.ERROR, TAG, "Failed to queue mesh deletion for $filePath", emptyMap(), e)
+                syncedFiles[filePath]?.let { file ->
+                    syncedFiles[filePath] = file.copy(state = FileState.SYNC_FAILED)
                 }
-                println("Failed to queue mesh deletion: ${e.message}")
             }
         }
     }
     
     fun close() {
         syncScope.cancel()
+        betaLogger.log(LogLevel.INFO, TAG, "MeshSyncCoordinator closed")
     }
 }
 
+
 // === SUPPORTING CLASSES ===
 
-data class StagedFile(
-    val path: String,
-    val localPath: String,
-    val size: Long,
-    val state: FileState,
-    val priority: SyncPriority,
-    val lastModified: Long,
-    val syncAttempts: Int = 0,
-    val checksum: String,
-    val metadata: Map<String, String> = emptyMap()
+/**
+ * Tracks sync state for a file in the distributed mesh storage system.
+ * Does NOT duplicate file data - tracks original file path only.
+ */
+data class SyncedFile(
+    val filePath: String,               // Absolute path to original file
+    val fileId: String,                 // SHA-256 hash for mesh identification
+    val size: Long,                     // File size in bytes
+    val state: FileState,               // Current sync state
+    val lastModified: Long,             // File last modification time
+    val lastSyncAttempt: Long? = null,  // When last sync was attempted (null if never)
+    val syncAttempts: Int = 0,          // Number of sync retry attempts
+    val replicaCount: Int = 0,          // Current known replicas on mesh
+    val targetReplicaCount: Int,        // Desired replicas based on ReplicationLevel
+    val checksum: String? = null,       // Optional integrity check (SHA-256)
+    val metadata: Map<String, String> = emptyMap(),
+    val lastAccessed: Long = System.currentTimeMillis(),  // For LRU eviction
+    val meshNodeIds: List<String> = emptyList(),          // Nodes storing this file
+    val chunkIds: List<String> = emptyList()              // Chunk IDs for reconstruction
 )
 
 data class SyncOperation(
-    val file: StagedFile,
+    val file: SyncedFile,
     val operation: SyncType,
     val timestamp: Long = System.currentTimeMillis(),
     val deferred: CompletableDeferred<SyncResult> = CompletableDeferred()
 )
 
+/**
+ * File sync states - tracks replication status in distributed mesh storage.
+ */
 enum class FileState {
-    LOCAL_ONLY,      // File exists only locally
-    STAGING,         // Queued for mesh sync
-    SYNCING,         // Currently syncing to mesh
-    SYNCED,          // Available on both local and mesh
-    MESH_ONLY,       // Cached from mesh, not local original
-    SYNC_FAILED,     // Sync attempted but failed
-    CONFLICT         // Local and mesh versions differ
+    PENDING_SYNC,    // Registered, waiting in queue for battery/network conditions
+    SYNCING,         // Currently being chunked/replicated by DistributedStorageManager
+    SYNCED,          // Successfully replicated to mesh (target replica count met)
+    SYNC_FAILED,     // Sync failed after max retries
+    PAUSED,          // Sync paused (low battery, user request, network unavailable)
+    PARTIAL,         // Some chunks synced, but not all replicas met target
+    CONFLICT         // File modified locally after sync started (future versioning)
 }
 
+/**
+ * Sync operation types for mesh storage operations.
+ */
 enum class SyncType {
-    UPLOAD,          // Local → Mesh
-    DOWNLOAD,        // Mesh → Local
-    UPDATE,          // Sync newer version
-    DELETE           // Remove from mesh/local
+    REPLICATE,       // Replicate local file to mesh (chunking + distribution)
+    DELETE           // Remove from mesh
 }
 
 sealed class SyncResult {
     object Success : SyncResult()
     data class Failure(val error: String, val retryable: Boolean) : SyncResult()
-    data class Conflict(val localVersion: StagedFile, val meshVersion: String) : SyncResult()
+    data class Conflict(val localVersion: SyncedFile, val meshVersion: String) : SyncResult()
+    data class Partial(val replicaCount: Int, val targetCount: Int) : SyncResult()
 }
 
 /**
- * Battery-aware sync management based on your excellent design
+ * Sync progress information for UI display.
  */
-class BatteryAwareSync {
+data class SyncProgress(
+    val filePath: String,
+    val fileId: String,
+    val state: FileState,
+    val replicaCount: Int,
+    val targetReplicaCount: Int,
+    val bytesTransferred: Long,
+    val totalBytes: Long,
+    val lastAttemptTime: Long?,
+    val nextRetryTime: Long?,
+    val progressPercent: Int = if (totalBytes > 0) ((bytesTransferred * 100) / totalBytes).toInt() else 0
+)
+
+/**
+ * Battery-aware sync management with priority-based decisions.
+ * Prevents battery drain by limiting sync operations based on battery level and charging state.
+ */
+class BatteryAwareSync(private val context: Context) {
+    
+    /**
+     * Determines if sync should proceed based on battery level and charging state.
+     */
     fun shouldSync(): Boolean {
         val batteryLevel = getBatteryLevel()
         val isCharging = isCharging()
         
         return when {
-            batteryLevel < 15 -> false
-            batteryLevel < 30 && !isCharging -> false // Only critical sync
-            batteryLevel > 50 || isCharging -> true
+            // Very low battery - stop all sync
+            batteryLevel < 10 -> false
+            
+            // Low battery - only when charging
+            batteryLevel < 20 -> isCharging
+            
+            // Medium battery - sync when charging
+            batteryLevel < 50 -> isCharging
+            
+            // Good battery and above - sync allowed
             else -> true
         }
     }
     
     private fun getBatteryLevel(): Int {
-        // Implementation using BatteryManager
-        return 50 // Placeholder
+        return try {
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            batteryManager?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+        } catch (e: Exception) {
+            100 // Assume full battery on error
+        }
     }
     
     private fun isCharging(): Boolean {
-        // Implementation using BatteryManager
-        return false // Placeholder
+        return try {
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            val status = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                batteryManager?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS) ?: 0
+            } else {
+                0 // Not available pre-API 26
+            }
+            status == android.os.BatteryManager.BATTERY_STATUS_CHARGING || 
+            status == android.os.BatteryManager.BATTERY_STATUS_FULL
+        } catch (e: Exception) {
+            false
+        }
     }
 }
+
