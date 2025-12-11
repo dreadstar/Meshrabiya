@@ -261,7 +261,18 @@ class DistributedStorageManager(
      * Chunk file into MeshChunk objects.
      * Used by both client (for initial storage) and server (for replication).
      */
-    fun chunkFile(file: File, fileId: String, chunkSize: Int): List<MeshChunk> {
+    /**
+     * Chunk file into MeshChunk objects.
+     * Used by both client (for initial storage) and server (for replication).
+     * Ownership is explicit: ownerId and ownerPublicKey must be provided by caller.
+     */
+    fun chunkFile(
+        file: File,
+        fileId: String,
+        chunkSize: Int,
+        ownerId: String,
+        ownerPublicKey: ByteArray
+    ): List<MeshChunk> {
         val chunks = mutableListOf<MeshChunk>()
         val fileName = file.name
 
@@ -277,7 +288,9 @@ class DistributedStorageManager(
                     chunkSize = fileBytes.size.toLong(),
                     fileName = fileName,
                     relativePath = "",
-                    hash = chunkId
+                    hash = chunkId,
+                    ownerId = ownerId,
+                    ownerPublicKey = ownerPublicKey
                 )
             )
         } else {
@@ -299,7 +312,9 @@ class DistributedStorageManager(
                             chunkSize = bytesRead.toLong(),
                             fileName = fileName,
                             relativePath = "",
-                            hash = chunkId
+                            hash = chunkId,
+                            ownerId = ownerId,
+                            ownerPublicKey = ownerPublicKey
                         )
                     )
                     chunkIndex++

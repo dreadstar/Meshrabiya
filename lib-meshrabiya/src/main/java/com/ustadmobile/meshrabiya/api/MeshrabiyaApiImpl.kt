@@ -1,6 +1,5 @@
-   
-
 package com.ustadmobile.meshrabiya.api
+import com.ustadmobile.meshrabiya.model.toHash
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
@@ -406,7 +405,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         
         try {
             // Get current config and update participation flag
-            val currentStats = storageManager.storageStats.value
             val config = com.ustadmobile.meshrabiya.storage.DistributedStorageManager.StorageParticipationConfig(
                 participationEnabled = enabled,
                 totalQuota = storageManager.storageConfig.defaultQuota,
@@ -828,4 +826,69 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
         return com.ustadmobile.meshrabiya.MeshrabiyaConstants.getAllTaskTypeEnabled()
     }
+
+
+    // --- User Identity API Implementation ---
+    // Allow provider to be injected for JVM testability; default to AndroidKeyStore
+    private var keyProvider: String =
+        if (System.getProperty("java.vendor")?.contains("Android") == true) "AndroidKeyStore" else "BC"
+
+    fun setKeyProviderForTest(provider: String) {
+        keyProvider = provider
+    }
+
+    override fun getUserInfo(): com.ustadmobile.meshrabiya.model.User {
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keyProvider='$keyProvider'")
+        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.getKeypair(provider = keyProvider)
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keypair=$keypair")
+        if (keypair == null) throw IllegalStateException("User keypair not initialized (provider='$keyProvider')")
+        val publicKey = keypair.public
+        val userId = publicKey.toHash()
+        val nickname = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getNickname() ?: ""
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: userId='$userId', nickname='$nickname'")
+        return com.ustadmobile.meshrabiya.model.User(userId, publicKey, nickname, keypair)
+    }
+
+    override fun setUserNickname(nickname: String) {
+        println("[DEBUG] MeshrabiyaApiImpl.setUserNickname: nickname='$nickname'")
+        com.ustadmobile.meshrabiya.MeshrabiyaConstants.setNickname(nickname)
+    }
+
+    override fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User {
+        val context = getAppContext() ?: throw IllegalStateException("App context not set")
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keyProvider='$keyProvider'")
+        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.rotateKeypair(context, provider = keyProvider)
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keypair=$keypair")
+        val publicKey = keypair.public
+        val userId = publicKey.toHash()
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: new userId='$userId'")
+        com.ustadmobile.meshrabiya.MeshrabiyaConstants.setUserId(userId)
+        com.ustadmobile.meshrabiya.MeshrabiyaConstants.setUserPublicKey(android.util.Base64.encodeToString(publicKey.encoded, android.util.Base64.DEFAULT))
+        return com.ustadmobile.meshrabiya.model.User(userId, publicKey, com.ustadmobile.meshrabiya.MeshrabiyaConstants.getNickname() ?: "", keypair)
+    }
+
+    /**
+     * Initialize user info on first run: generate keypair, set nickname, store userId and nickname.
+     * Should be called during app startup or mesh initialization.
+     */
+    fun initializeUser(context: Context, nicknameProvider: (() -> String)? = null) {
+        // Check if userId is already set
+        val userId = com.ustadmobile.meshrabiya.MeshrabiyaConstants.getUserId()
+        println("[DEBUG] MeshrabiyaApiImpl.initializeUser: userId='$userId', keyProvider='$keyProvider'")
+        if (userId.isNullOrEmpty()) {
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generating keypair")
+            val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.generateKeypair(context, provider = keyProvider)
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generated keypair: $keypair")
+            val publicKey = keypair.public
+            val newUserId = publicKey.toHash()
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: newUserId='$newUserId'")
+            com.ustadmobile.meshrabiya.MeshrabiyaConstants.setUserId(newUserId)
+            // Prompt for nickname or set default
+            val nickname = nicknameProvider?.invoke() ?: "MeshUser"
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: nickname='$nickname'")
+            com.ustadmobile.meshrabiya.MeshrabiyaConstants.setNickname(nickname)
+        }
+    }
+
+
 }

@@ -17,6 +17,7 @@ import com.ustadmobile.meshrabiya.service.StorageNodeResponse
 import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse
 import com.ustadmobile.meshrabiya.service.ReplicaResponse
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 
 /**
  * DistributedStorageClient: Client-side workflows for distributed storage.
@@ -145,7 +146,15 @@ class DistributedStorageClient(
         
         val fileId = manager.sha256File(file)
         val chunkSize = MeshrabiyaConstants.getChunkSizeKb() * 1024
-        val chunks = manager.chunkFile(file, fileId, chunkSize)
+        // Get current user info for ownership fields
+        val user = MeshrabiyaApiImpl().getUserInfo()
+        val chunks = manager.chunkFile(
+            file,
+            fileId,
+            chunkSize,
+            user.userId,
+            user.publicKey.encoded
+        )
         
         val desiredReplicas = when (replicationLevel) {
             ReplicationLevel.MINIMAL -> MeshrabiyaConstants.getMinimalReplicaCount()
@@ -188,6 +197,8 @@ class DistributedStorageClient(
                     )
                     
                     // Step 5: Create ChunkTransferMessage
+                    // Get current user info for ownership fields
+                    val user = MeshrabiyaApiImpl().getUserInfo()
                     val chunkMsg = ChunkTransferMessage(
                         chunkId = chunk.chunkId,
                         fileId = chunk.fileId,
@@ -200,7 +211,9 @@ class DistributedStorageClient(
                         replicaCount = 0,
                         recipientKeyIds = allRecipients.map { it.publicKey.hashCode().toLong() },
                         sessionKeys = emptyMap(),
-                        desiredReplicas = desiredReplicas
+                        desiredReplicas = desiredReplicas,
+                        ownerId = user.userId,
+                        ownerPublicKey = user.publicKey.encoded
                     )
                     
                     // Step 6: Send chunk to selected storage node as direct message
@@ -283,8 +296,9 @@ class DistributedStorageClient(
             manager.betaLogger.log(LogLevel.DEBUG, TAG, "Attempting mesh retrieval: ${fileRef.path}")
             val chunks = getFileChunks(fileRef.id)
             val retrievedChunks = Array<ByteArray?>(chunks.size) { null }
-            
-            val jobs = chunks.map { chunk ->
+
+            val user = MeshrabiyaApiImpl().getUserInfo()
+            val jobs = chunks.mapIndexed { idx, chunk ->
                 async {
                     val connection = try {
                         connectionPool.acquireConnection(timeoutMs = RESPONSE_TIMEOUT_MS)
@@ -293,8 +307,24 @@ class DistributedStorageClient(
                     }
                     if (connection != null) {
                         try {
-                            val chunkInfoList = pendingChunkRetrievals[chunk.chunkId] ?: emptyList()
-                            // TODO: Implement chunk retrieval via broadcast
+                            // Example: request chunk from mesh using ChunkTransferMessage with ownership fields
+                            val requestMsg = ChunkTransferMessage(
+                                chunkId = chunk.chunkId,
+                                fileId = chunk.fileId,
+                                chunkIndex = chunk.chunkIndex,
+                                totalChunks = chunk.totalChunks,
+                                fileName = chunk.fileName,
+                                relativePath = chunk.relativePath,
+                                chunkBytes = ByteArray(0), // No data for request
+                                hash = chunk.hash,
+                                replicaCount = 0,
+                                recipientKeyIds = emptyList(),
+                                sessionKeys = emptyMap(),
+                                desiredReplicas = null,
+                                ownerId = user.userId,
+                                ownerPublicKey = user.publicKey.encoded
+                            )
+                            // TODO: Implement chunk retrieval via broadcast using requestMsg
                         } finally {
                             connectionPool.releaseConnection(connection)
                         }
@@ -452,6 +482,7 @@ class DistributedStorageClient(
             return emptyList()
         }
         
+        val user = MeshrabiyaApiImpl().getUserInfo()
         return syncedFile.chunkIds.mapIndexed { idx, chunkId ->
             MeshChunk(
                 chunkId = chunkId,
@@ -461,7 +492,9 @@ class DistributedStorageClient(
                 chunkSize = MeshrabiyaConstants.getChunkSizeKb() * 1024L,
                 fileName = File(syncedFile.filePath).name,
                 relativePath = "",
-                hash = chunkId
+                hash = chunkId,
+                ownerId = user.userId,
+                ownerPublicKey = user.publicKey.encoded
             )
         }
     }

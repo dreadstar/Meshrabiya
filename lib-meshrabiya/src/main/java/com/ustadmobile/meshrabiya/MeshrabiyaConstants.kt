@@ -149,6 +149,20 @@ object MeshrabiyaConstants {
     // --- Compute Layer Participation (Global Enable/Disable) ---
     private const val COMPUTE_LAYER_ENABLED_KEY = "compute_layer_enabled"
 
+    // --- User Identity Persistence ---
+    private const val USER_ID_KEY = "user_id"
+    private const val USER_PUBLIC_KEY_KEY = "user_public_key"
+    private const val USER_NICKNAME_KEY = "nickname"
+
+    fun getUserId(): String? = prefs?.getString(USER_ID_KEY, null)
+    fun setUserId(id: String) { prefs?.edit()?.putString(USER_ID_KEY, id)?.apply() }
+
+    fun getUserPublicKey(): String? = prefs?.getString(USER_PUBLIC_KEY_KEY, null)
+    fun setUserPublicKey(pubKey: String) { prefs?.edit()?.putString(USER_PUBLIC_KEY_KEY, pubKey)?.apply() }
+
+    fun getNickname(): String? = prefs?.getString(USER_NICKNAME_KEY, null)
+    fun setNickname(nickname: String) { prefs?.edit()?.putString(USER_NICKNAME_KEY, nickname)?.apply() }
+
     /**
      * Returns whether the compute layer is enabled (default: true if not set).
      */

@@ -146,7 +146,9 @@ class StorageDataStore private constructor(context: Context) {
                     hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                     storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
                     recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
-                    sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys")))
+                    sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
+                    ownerId = "",
+                    ownerPublicKey = ByteArray(0)
                 )
             } else null
         }
@@ -170,7 +172,9 @@ class StorageDataStore private constructor(context: Context) {
                         hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                         storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
                         recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
-                        sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys")))
+                        sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
+                        ownerId = "",
+                        ownerPublicKey = ByteArray(0)
                     )
                 )
             }
@@ -194,7 +198,9 @@ class StorageDataStore private constructor(context: Context) {
                         hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                         storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
                         recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
-                        sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys")))
+                        sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
+                        ownerId = "",
+                        ownerPublicKey = ByteArray(0)
                     )
                 )
             }

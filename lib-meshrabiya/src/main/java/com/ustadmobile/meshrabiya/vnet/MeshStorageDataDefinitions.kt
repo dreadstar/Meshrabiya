@@ -17,6 +17,9 @@ data class MeshChunk(
     // Permission-related fields
     val recipientKeyIds: List<Long> = emptyList(), // PGPPublicKey.keyID values
     val sessionKeys: Map<Long, ByteArray> = emptyMap(), // keyID -> encrypted session key
+    // Ownership tracking
+    val ownerId: String, // Owner of the chunk (short name, injected)
+    val ownerPublicKey: ByteArray, // Owner's public key (short name, injected)
     // Replication tracking - CRITICAL for daisy-chain replication
     var replicaCount: Int = 0  // Which replica this is (1st, 2nd, 3rd, etc.)
 )

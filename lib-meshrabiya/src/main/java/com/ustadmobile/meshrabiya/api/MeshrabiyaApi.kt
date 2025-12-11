@@ -195,4 +195,19 @@ interface MeshrabiyaApi {
      * Returns a map of all TaskTypes and their enabled status.
      */
     fun getAllTaskTypeEnabled(): Map<TaskType, Boolean>
+    // --- User Identity API ---
+    /**
+     * Returns current user info (userId, publicKey, nickname).
+     */
+    fun getUserInfo(): com.ustadmobile.meshrabiya.model.User
+
+    /**
+     * Sets the user's nickname (persistent).
+     */
+    fun setUserNickname(nickname: String)
+
+    /**
+     * Rotates the user's keypair and updates userId/publicKey.
+     */
+    fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User
 }

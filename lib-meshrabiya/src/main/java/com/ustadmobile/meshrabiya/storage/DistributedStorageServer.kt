@@ -100,6 +100,8 @@ class DistributedStorageServer(
                     storedAt = System.currentTimeMillis(),
                     recipientKeyIds = chunkTransfer.recipientKeyIds,
                     sessionKeys = chunkTransfer.sessionKeys,
+                    ownerId = chunkTransfer.ownerId,
+                    ownerPublicKey = chunkTransfer.ownerPublicKey,
                     replicaCount = newReplicaCount
                 )
                 
@@ -259,7 +261,9 @@ class DistributedStorageServer(
                 replicaCount = meshChunk.replicaCount,
                 recipientKeyIds = allRecipients.map { it.publicKey.hashCode().toLong() },
                 sessionKeys = originalTransfer.sessionKeys,
-                desiredReplicas = desiredReplicas
+                desiredReplicas = desiredReplicas,
+                ownerId = meshChunk.ownerId,
+                ownerPublicKey = meshChunk.ownerPublicKey
             )
             
             manager.betaLogger.log(
@@ -586,7 +590,9 @@ class DistributedStorageServer(
                     replicaCount = chunk.replicaCount,
                     recipientKeyIds = chunk.recipientKeyIds,
                     sessionKeys = chunk.sessionKeys,
-                    desiredReplicas = null // Not relevant for retrieval
+                    desiredReplicas = null, // Not relevant for retrieval
+                    ownerId = chunk.ownerId,
+                    ownerPublicKey = chunk.ownerPublicKey
                 )
                 
                 // Acquire connection and send chunk

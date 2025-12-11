@@ -271,7 +271,9 @@ sealed class MeshEcosystemMessage(
                         hash, 
                         replicaCount, recipientKeyIds, 
                         sessionKeys, 
-                        desiredReplicas
+                        desiredReplicas,
+                        ownerId = "",
+                        ownerPublicKey = ByteArray(0)
                     ) as MeshEcosystemMessage
                 }
                 "ChunkRetrievalQuery" -> {
@@ -477,7 +479,9 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                     val hasDesiredReplicas = unpacker.unpackBoolean()
                     val desiredReplicas = if (hasDesiredReplicas) unpacker.unpackInt() else null
                     ChunkTransferMessage(
-                        chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash, replicaCount, recipientKeyIds, sessionKeys, desiredReplicas
+                        chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash, replicaCount, recipientKeyIds, sessionKeys, desiredReplicas,
+                        ownerId = "",
+                        ownerPublicKey = ByteArray(0)
                     )
                 }
                 MessageType.CHUNK_RETRIEVAL_QUERY -> {
@@ -570,7 +574,9 @@ data class ChunkTransferMessage(
     val replicaCount: Int = 0,
     val recipientKeyIds: List<Long> = emptyList(),
     val sessionKeys: Map<Long, ByteArray> = emptyMap(),
-    val desiredReplicas: Int? = null
+    val desiredReplicas: Int? = null,
+    val ownerId: String, // Owner of the chunk (short name, injected)
+    val ownerPublicKey: ByteArray // Owner's public key (short name, injected)
 ) : MeshEcosystemMessage("ChunkTransfer") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
