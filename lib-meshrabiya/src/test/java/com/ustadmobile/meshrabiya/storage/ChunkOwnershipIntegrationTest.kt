@@ -50,7 +50,12 @@ class ChunkOwnershipIntegrationTest {
             userId = "integration-user-id",
             publicKey = keypair.public,
             nickname = "IntegrationUser",
-            keypair = keypair
+            keypair = keypair,
+            entry = RecipientEntry(
+                publicKey = java.util.Base64.getEncoder().encodeToString(keypair.public.encoded),
+                recipientType = RecipientType.USER,
+                recipientId = "integration-user-id"
+            )
         )
     }
 
@@ -66,14 +71,12 @@ class ChunkOwnershipIntegrationTest {
             relativePath = "testfile.txt",
             hash = "fakehash",
             storedAt = System.currentTimeMillis(),
-            recipientKeyIds = listOf(),
             sessionKeys = mapOf(),
-            ownerId = user.userId,
-            ownerPublicKey = user.keypair.public.encoded,
-            replicaCount = 1
+            replicaCount = 1,
+            serverPath = "/tmp/testfile.txt"
         )
-        assertEquals(user.userId, chunk.ownerId)
-        assertArrayEquals(user.keypair.public.encoded, chunk.ownerPublicKey)
+        assertEquals(1, chunk.replicaCount)
+        assertEquals("chunk-001", chunk.chunkId)
     }
 
     @Test
@@ -89,16 +92,13 @@ class ChunkOwnershipIntegrationTest {
             relativePath = "testfile2.txt",
             hash = "fakehash2",
             storedAt = System.currentTimeMillis(),
-            recipientKeyIds = listOf(),
             sessionKeys = mapOf(),
-            ownerId = user.userId,
-            ownerPublicKey = user.keypair.public.encoded,
-            replicaCount = 2
+            replicaCount = 2,
+            serverPath = "/tmp/testfile2.txt"
         )
         // Simulate retrieval and replication
         val retrievedChunk = chunk.copy(replicaCount = chunk.replicaCount + 1)
-        assertEquals(chunk.ownerId, retrievedChunk.ownerId)
-        assertArrayEquals(chunk.ownerPublicKey, retrievedChunk.ownerPublicKey)
+        assertEquals(chunk.chunkId, retrievedChunk.chunkId)
         assertEquals(chunk.replicaCount + 1, retrievedChunk.replicaCount)
     }
 }
