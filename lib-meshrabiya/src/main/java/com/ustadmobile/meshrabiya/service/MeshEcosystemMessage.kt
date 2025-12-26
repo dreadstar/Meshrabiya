@@ -6,6 +6,8 @@ import com.ustadmobile.meshrabiya.service.AccessType
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
 import com.ustadmobile.meshrabiya.storage.RecipientEntry
 import com.ustadmobile.meshrabiya.storage.RecipientType
+import org.msgpack.core.MessagePacker
+import org.msgpack.core.MessageUnpacker
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
 
@@ -13,14 +15,12 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
-
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import org.msgpack.core.MessagePack
-import org.msgpack.core.MessageUnpacker
 import org.msgpack.core.MessageBufferPacker
 import com.ustadmobile.meshrabiya.service.compute.model.ResourceLimits
 
@@ -44,13 +44,12 @@ data class StorageNodeRequest(
     val chunkId: String,
     val chunkIndex: Int,
     val fileId: String,
-    val desiredReplicas: Int? = null,
     val chunkSizeBytes: Long,
     val replicaCount: Int = 0,
     // Legacy fields for backward compatibility
     val requiredSpace: Long = chunkSizeBytes,
     val fileName: String = "",
-    val senderId: String = ""
+    val senderId: Int = 0
 )
 
 /**
@@ -58,7 +57,7 @@ data class StorageNodeRequest(
  * Updated for canonical workflow compliance.
  */
 data class StorageNodeResponse(
-    val nodeId: String,
+    val nodeId: Int,
     val availableSpace: Long,
     val totalStorageAllocated: Long = 0L,
     val systemState: String,
@@ -76,21 +75,27 @@ data class StorageNodeResponse(
 data class ChunkRetrievalQuery(
     val fileId: String,
     val chunkIndexes: List<Int>? = null,
-    val senderId: String = ""
+    // val recipients: List<RecipientEntry> = emptyList(),
+    // val sessionKeys: Map<String, ByteArray> = emptyMap(),
+    val owner: RecipientEntry,
+    val senderId: Int,
+    val requestId: String = ""
 )
 
 /**
  * Response containing chunk retrieval metadata from storage nodes.
  */
 data class ChunkRetrievalResponse(
-    val chunkId: String,
+    val chunkId: String, // TODO should possibly be a list of chunkIds for all the chunks present
     val fileId: String,
     val chunkIndex: Int,
     val totalChunks: Int,
-    val nodeId: String,
+    val nodeId: Int,
     val fileName: String,
     val relativePath: String,
-    val chunkSize: Long
+    val chunkSize: Long,
+    val requestId: String ,
+    
 )
 
 /**
@@ -136,6 +141,26 @@ enum class MessageType(val type: String) {
 
     companion object {
         private val map = values().associateBy(MessageType::type)
+        // --- Helper methods for recipients/owner serialization ---
+        fun packRecipientEntry(packer: MessagePacker, entry: RecipientEntry) {
+            packer.packString(entry.publicKey)
+            packer.packString(entry.recipientType.name)
+            packer.packString(entry.recipientId)
+            if (entry.expiresAt != null) {
+                packer.packBoolean(true)
+                packer.packLong(entry.expiresAt)
+            } else {
+                packer.packBoolean(false)
+            }
+        }
+
+        fun unpackRecipientEntry(unpacker: MessageUnpacker): RecipientEntry {
+            val publicKey = unpacker.unpackString()
+            val recipientType = RecipientType.valueOf(unpacker.unpackString())
+            val recipientId = unpacker.unpackString()
+            val expiresAt = if (unpacker.unpackBoolean()) unpacker.unpackLong() else null
+            return RecipientEntry(publicKey, recipientType, recipientId, expiresAt)
+        }
         fun fromType(type: String): MessageType? = map[type]
     }
 }
@@ -190,24 +215,22 @@ sealed class MeshEcosystemMessage(
                     val chunkId = unpacker.unpackString()
                     val chunkIndex = unpacker.unpackInt()
                     val fileId = unpacker.unpackString()
-                    val desiredReplicas = if (unpacker.unpackBoolean()) {
-                        unpacker.unpackInt()
-                    } else null
+
                     val chunkSizeBytes = unpacker.unpackLong()
                     val replicaCount = unpacker.unpackInt()
                     val requiredSpace = unpacker.unpackLong()
                     val fileName = unpacker.unpackString()
-                    val senderId = unpacker.unpackString()
+                    val senderId = unpacker.unpackInt()
                     StorageNodeRequestMessage(
                         StorageNodeRequest(
-                            requestId, chunkId, chunkIndex, fileId, desiredReplicas,
+                            requestId, chunkId, chunkIndex, fileId, 
                             chunkSizeBytes, replicaCount, requiredSpace, fileName, senderId
                         )
                     )
                 }
                 "StorageNodeResponse" -> {
                     val requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
-                    val nodeId = unpacker.unpackString()
+                    val nodeId = unpacker.unpackInt()
                     val availableSpace = unpacker.unpackLong()
                     val totalStorageAllocated = unpacker.unpackLong()
                     val systemState = unpacker.unpackString()
@@ -238,42 +261,30 @@ sealed class MeshEcosystemMessage(
                     unpacker.readPayload(chunkBytes)
                     val hash = unpacker.unpackString()
                     val replicaCount = unpacker.unpackInt()
-                    
-                    // Unpack recipientKeyIds
-                    val recipientKeyIds = List(unpacker.unpackArrayHeader()) {
-                        unpacker.unpackLong()
-                    }
-                    
+
+                    // Unpack recipients
+                    val recipients = List(unpacker.unpackArrayHeader()) { MessageType.unpackRecipientEntry(unpacker) }
+
                     // Unpack sessionKeys
                     val sessionKeysSize = unpacker.unpackMapHeader()
-                    val sessionKeys = mutableMapOf<Long, ByteArray>()
+                    val sessionKeys = mutableMapOf<String, ByteArray>()
                     repeat(sessionKeysSize) {
-                        val keyId = unpacker.unpackLong()
+                        val keyId = unpacker.unpackString()
                         val keySize = unpacker.unpackBinaryHeader()
                         val key = ByteArray(keySize)
                         unpacker.readPayload(key)
                         sessionKeys[keyId] = key
                     }
+
+                    // Unpack owner
+                    val owner = MessageType.unpackRecipientEntry(unpacker)
+
                     
-                    // Unpack desiredReplicas (nullable)
-                    val desiredReplicas = if (unpacker.unpackBoolean()) {
-                        unpacker.unpackInt()
-                    } else null
                     
+
                     ChunkTransferMessage(
-                        chunkId, 
-                        fileId, 
-                        chunkIndex, 
-                        totalChunks, 
-                        fileName, 
-                        relativePath, 
-                        chunkBytes, 
-                        hash, 
-                        replicaCount, recipientKeyIds, 
-                        sessionKeys, 
-                        desiredReplicas,
-                        ownerId = "",
-                        ownerPublicKey = ByteArray(0)
+                        chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash, replicaCount, recipients, sessionKeys, 
+                        owner
                     ) as MeshEcosystemMessage
                 }
                 "ChunkRetrievalQuery" -> {
@@ -281,23 +292,26 @@ sealed class MeshEcosystemMessage(
                     val chunkIndexes = if (unpacker.unpackBoolean()) {
                         List(unpacker.unpackArrayHeader()) { unpacker.unpackInt() }
                     } else null
-                    val senderId = unpacker.unpackString()
+                    val owner = MessageType.unpackRecipientEntry(unpacker)
+                    val senderId = unpacker.unpackInt()
+                    val requestId = unpacker.unpackString()
                     ChunkRetrievalQueryMessage(
-                        ChunkRetrievalQuery(fileId, chunkIndexes, senderId)
+                        ChunkRetrievalQuery(fileId,  chunkIndexes, owner, senderId, requestId )
                     )
                 }
                 "ChunkRetrievalResponse" -> ChunkRetrievalResponseMessage(
                     response = ChunkRetrievalResponse(
+                        requestId = unpacker.unpackString(),
                         chunkId = unpacker.unpackString(),
                         fileId = unpacker.unpackString(),
                         chunkIndex = unpacker.unpackInt(),
                         totalChunks = unpacker.unpackInt(),
-                        nodeId = unpacker.unpackString(),
+                        nodeId = unpacker.unpackInt(),
                         fileName = unpacker.unpackString(),
                         relativePath = unpacker.unpackString(),
-                        chunkSize = unpacker.unpackLong()
-                    ),
-                    requestId = unpacker.unpackString().takeIf { it.isNotEmpty() }
+                        chunkSize = unpacker.unpackLong(),
+                       
+                    )
                 )
                 "ReplicaQuery" -> ReplicaQueryMessage(
                     ReplicaQuery(unpacker.unpackString())
@@ -326,11 +340,11 @@ sealed class MeshEcosystemMessage(
                     val chunkIndexes = if (unpacker.unpackBoolean()) {
                         List(unpacker.unpackArrayHeader()) { unpacker.unpackInt() }
                     } else null
-                    val senderNodeId = unpacker.unpackString()
+                    val senderNodeId = unpacker.unpackInt()
                     FilePermissionUpdateMessage(fileId, addedRecipients, removedRecipients, chunkIndexes, senderNodeId)
                 }
                 "FilePermissionUpdateConfirmation" -> {
-                    val nodeId = unpacker.unpackString()
+                    val nodeId = unpacker.unpackInt()
                     val fileId = unpacker.unpackString()
                     val chunkIndexes = List(unpacker.unpackArrayHeader()) { unpacker.unpackInt() }
                     val status = unpacker.unpackBoolean()
@@ -339,7 +353,7 @@ sealed class MeshEcosystemMessage(
                 
                 "EcosystemBroadcast" -> EcosystemBroadcastMessage(
                     broadcastId = unpacker.unpackString(),
-                    senderId = unpacker.unpackString(),
+                    senderId = unpacker.unpackInt(),
                     messageType = unpacker.unpackString(),
                     payload = unpacker.readPayload(unpacker.unpackBinaryHeader())
                 )
@@ -366,7 +380,7 @@ data class StorageNodeResponseMessage(
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
         packer.packString(requestId ?: "")
-        packer.packString(response.nodeId)
+        packer.packInt(response.nodeId)
         packer.packLong(response.availableSpace)
         packer.packLong(response.totalStorageAllocated)
         packer.packString(response.systemState)
@@ -389,17 +403,12 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
         packer.packString(request.chunkId)
         packer.packInt(request.chunkIndex)
         packer.packString(request.fileId)
-        if (request.desiredReplicas != null) {
-            packer.packBoolean(true)
-            packer.packInt(request.desiredReplicas)
-        } else {
-            packer.packBoolean(false)
-        }
+       
         packer.packLong(request.chunkSizeBytes)
         packer.packInt(request.replicaCount)
         packer.packLong(request.requiredSpace)
         packer.packString(request.fileName)
-        packer.packString(request.senderId)
+        packer.packInt(request.senderId)
         packer.close()
         return packer.toByteArray()
     }
@@ -420,22 +429,21 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                     val chunkId = unpacker.unpackString()
                     val chunkIndex = unpacker.unpackInt()
                     val fileId = unpacker.unpackString()
-                    val hasDesiredReplicas = unpacker.unpackBoolean()
-                    val desiredReplicas = if (hasDesiredReplicas) unpacker.unpackInt() else null
+                    
                     val chunkSizeBytes = unpacker.unpackLong()
                     val replicaCount = unpacker.unpackInt()
                     val requiredSpace = unpacker.unpackLong()
                     val fileName = unpacker.unpackString()
-                    val senderId = unpacker.unpackString()
+                    val senderId = unpacker.unpackInt()
                     StorageNodeRequestMessage(
                         StorageNodeRequest(
-                            requestId, chunkId, chunkIndex, fileId, desiredReplicas, chunkSizeBytes, replicaCount, requiredSpace, fileName, senderId
+                            requestId, chunkId, chunkIndex, fileId, chunkSizeBytes, replicaCount, requiredSpace, fileName, senderId
                         )
                     )
                 }
                 MessageType.STORAGE_NODE_RESPONSE -> {
                     val requestId = unpacker.unpackString()
-                    val nodeId = unpacker.unpackString()
+                    val nodeId = unpacker.unpackInt()
                     val availableSpace = unpacker.unpackLong()
                     val totalStorageAllocated = unpacker.unpackLong()
                     val systemState = unpacker.unpackString()
@@ -465,23 +473,21 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                     unpacker.readPayload(chunkBytes)
                     val hash = unpacker.unpackString()
                     val replicaCount = unpacker.unpackInt()
-                    val recipientKeyIdsLen = unpacker.unpackArrayHeader()
-                    val recipientKeyIds = List(recipientKeyIdsLen) { unpacker.unpackLong() }
+                    val recipients = List(unpacker.unpackArrayHeader()) { MessageType.unpackRecipientEntry(unpacker) }
                     val sessionKeysLen = unpacker.unpackMapHeader()
-                    val sessionKeys = mutableMapOf<Long, ByteArray>()
+                    val sessionKeys = mutableMapOf<String, ByteArray>()
                     repeat(sessionKeysLen) {
-                        val keyId = unpacker.unpackLong()
+                        val keyId = unpacker.unpackString()
                         val encKeyLen = unpacker.unpackBinaryHeader()
                         val encKey = ByteArray(encKeyLen)
                         unpacker.readPayload(encKey)
                         sessionKeys[keyId] = encKey
                     }
-                    val hasDesiredReplicas = unpacker.unpackBoolean()
-                    val desiredReplicas = if (hasDesiredReplicas) unpacker.unpackInt() else null
+                    val owner = MessageType.unpackRecipientEntry(unpacker)
+                
                     ChunkTransferMessage(
-                        chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash, replicaCount, recipientKeyIds, sessionKeys, desiredReplicas,
-                        ownerId = "",
-                        ownerPublicKey = ByteArray(0)
+                        chunkId, fileId, chunkIndex, totalChunks, fileName, relativePath, chunkBytes, hash, replicaCount, recipients, sessionKeys, 
+                        owner
                     )
                 }
                 MessageType.CHUNK_RETRIEVAL_QUERY -> {
@@ -491,8 +497,10 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                         val len = unpacker.unpackArrayHeader()
                         List(len) { unpacker.unpackInt() }
                     } else null
-                    val senderId = unpacker.unpackString()
-                    ChunkRetrievalQueryMessage(ChunkRetrievalQuery(fileId, chunkIndexes, senderId))
+                    val owner = MessageType.unpackRecipientEntry(unpacker)
+                    val senderId = unpacker.unpackInt()
+                    val requestId = unpacker.unpackString()
+                    ChunkRetrievalQueryMessage(ChunkRetrievalQuery(fileId, chunkIndexes,    owner, senderId, requestId))
                 }
                 MessageType.CHUNK_RETRIEVAL_RESPONSE -> {
                     val requestId = unpacker.unpackString()
@@ -500,13 +508,14 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                     val fileId = unpacker.unpackString()
                     val chunkIndex = unpacker.unpackInt()
                     val totalChunks = unpacker.unpackInt()
-                    val nodeId = unpacker.unpackString()
+                    val nodeId = unpacker.unpackInt()
                     val fileName = unpacker.unpackString()
                     val relativePath = unpacker.unpackString()
                     val chunkSize = unpacker.unpackLong()
+                    
                     ChunkRetrievalResponseMessage(
-                        ChunkRetrievalResponse(chunkId, fileId, chunkIndex, totalChunks, nodeId, fileName, relativePath, chunkSize),
-                        requestId
+                        ChunkRetrievalResponse(chunkId, fileId, chunkIndex, totalChunks, nodeId, fileName, relativePath, chunkSize,requestId,
+                        )
                     )
                 }
                 MessageType.REPLICA_QUERY -> {
@@ -527,13 +536,13 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                         val len = unpacker.unpackArrayHeader()
                         List(len) { unpacker.unpackInt() }
                     } else null
-                    val senderNodeId = unpacker.unpackString()
+                    val senderNodeId = unpacker.unpackInt()
                     val addedRecipients = Json.decodeFromString<List<RecipientEntry>>(addedJson)
                     val removedRecipients = Json.decodeFromString<List<RecipientEntry>>(removedJson)
                     FilePermissionUpdateMessage(fileId, addedRecipients, removedRecipients, chunkIndexes, senderNodeId)
                 }
                 MessageType.FILE_PERMISSION_UPDATE_CONFIRMATION -> {
-                    val nodeId = unpacker.unpackString()
+                    val nodeId = unpacker.unpackInt()
                     val fileId = unpacker.unpackString()
                     val chunkIndexesLen = unpacker.unpackArrayHeader()
                     val chunkIndexes = List(chunkIndexesLen) { unpacker.unpackInt() }
@@ -542,7 +551,7 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
                 }
                 MessageType.ECOSYSTEM_BROADCAST -> {
                     val broadcastId = unpacker.unpackString()
-                    val senderId = unpacker.unpackString()
+                    val senderId = unpacker.unpackInt()
                     val messageType = unpacker.unpackString()
                     val payloadLen = unpacker.unpackBinaryHeader()
                     val payload = ByteArray(payloadLen)
@@ -563,7 +572,7 @@ data class StorageNodeRequestMessage(val request: StorageNodeRequest) : MeshEcos
 
 
 data class ChunkTransferMessage(
-    val chunkId: String,
+   val chunkId: String,
     val fileId: String,
     val chunkIndex: Int,
     val totalChunks: Int,
@@ -572,11 +581,9 @@ data class ChunkTransferMessage(
     val chunkBytes: ByteArray,
     val hash: String,
     val replicaCount: Int = 0,
-    val recipientKeyIds: List<Long> = emptyList(),
-    val sessionKeys: Map<Long, ByteArray> = emptyMap(),
-    val desiredReplicas: Int? = null,
-    val ownerId: String, // Owner of the chunk (short name, injected)
-    val ownerPublicKey: ByteArray // Owner's public key (short name, injected)
+    val recipients: List<RecipientEntry> = emptyList(),
+    val sessionKeys: Map<String, ByteArray> = emptyMap(),
+    val owner: RecipientEntry
 ) : MeshEcosystemMessage("ChunkTransfer") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
@@ -592,25 +599,22 @@ data class ChunkTransferMessage(
         packer.packString(hash)
         packer.packInt(replicaCount)
         
-        // Pack recipientKeyIds
-        packer.packArrayHeader(recipientKeyIds.size)
-        recipientKeyIds.forEach { packer.packLong(it) }
-        
+        // Pack recipients
+        packer.packArrayHeader(recipients.size)
+        recipients.forEach { MessageType.packRecipientEntry(packer, it) }
+
         // Pack sessionKeys
         packer.packMapHeader(sessionKeys.size)
         sessionKeys.forEach { (keyId, encryptedKey) ->
-            packer.packLong(keyId)
+            packer.packString(keyId)
             packer.packBinaryHeader(encryptedKey.size)
             packer.writePayload(encryptedKey)
         }
+
+        // Pack owner
+        MessageType.packRecipientEntry(packer, owner)
         
-        // Pack desiredReplicas (nullable)
-        if (desiredReplicas != null) {
-            packer.packBoolean(true)
-            packer.packInt(desiredReplicas)
-        } else {
-            packer.packBoolean(false)
-        }
+        
         
         packer.close()
         return packer.toByteArray()
@@ -631,8 +635,9 @@ data class ChunkRetrievalQueryMessage(val query: ChunkRetrievalQuery) : MeshEcos
         } else {
             packer.packBoolean(false)
         }
-        
-        packer.packString(query.senderId)
+        MessageType.packRecipientEntry(packer, query.owner)
+        packer.packInt(query.senderId)
+        packer.packString(query.requestId)
         
         packer.close()
         return packer.toByteArray()
@@ -651,7 +656,7 @@ data class ChunkRetrievalResponseMessage(
         packer.packString(response.fileId)
         packer.packInt(response.chunkIndex)
         packer.packInt(response.totalChunks)
-        packer.packString(response.nodeId)
+        packer.packInt(response.nodeId)
         packer.packString(response.fileName)
         packer.packString(response.relativePath)
         packer.packLong(response.chunkSize)
@@ -706,7 +711,7 @@ data class FilePermissionUpdateMessage(
     val addedRecipients: List<RecipientEntry>,
     val removedRecipients: List<RecipientEntry>,
     val chunkIndexes: List<Int>? = null,
-    val senderNodeId: String
+    val senderNodeId: Int
 ) : MeshEcosystemMessage("FilePermissionUpdateMessage") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
@@ -730,14 +735,14 @@ data class FilePermissionUpdateMessage(
             packer.packBoolean(false)
         }
         
-        packer.packString(senderNodeId)
+        packer.packInt(senderNodeId)
         packer.close()
         return packer.toByteArray()
     }
 }
 
 data class FilePermissionUpdateConfirmationMessage(
-    val nodeId: String,
+    val nodeId: Int,
     val fileId: String,
     val chunkIndexes: List<Int>,
     val status: Boolean = true
@@ -745,7 +750,7 @@ data class FilePermissionUpdateConfirmationMessage(
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
-        packer.packString(nodeId)
+        packer.packInt(nodeId)
         packer.packString(fileId)
         packer.packArrayHeader(chunkIndexes.size)
         chunkIndexes.forEach { packer.packInt(it) }
@@ -776,7 +781,7 @@ typealias FileAccessUpdateNotification = FilePermissionUpdateConfirmationMessage
  */
 data class EcosystemBroadcastMessage(
     val broadcastId: String,
-    val senderId: String,
+    val senderId: Int,
     val messageType: String,
     val payload: ByteArray,
     val metadata: Map<String, Any>? = null,
@@ -786,7 +791,7 @@ data class EcosystemBroadcastMessage(
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
         packer.packString(broadcastId)
-        packer.packString(senderId)
+        packer.packInt(senderId)
         packer.packString(messageType)
         packer.packBinaryHeader(payload.size)
         packer.writePayload(payload)
@@ -887,7 +892,7 @@ data class ComputeNodeResponseMessage(
  */
 data class TaskCompletedMessage(
     val taskId: String,
-    val executorNodeId: String,
+    val executorNodeId: Int,
     val status: String,  // "SUCCESS", "FAILED", "TIMEOUT"
     val executionStats: ExecutionStats,
     val executionError: ExecutionError? = null,
@@ -916,7 +921,7 @@ data class TaskCompletedMessage(
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
         packer.packString(taskId)
-        packer.packString(executorNodeId)
+        packer.packInt(executorNodeId)
         packer.packString(status)
         
         // Pack execution stats
@@ -951,7 +956,7 @@ data class TaskCompletedMessage(
     companion object {
         fun fromUnpacker(unpacker: MessageUnpacker): TaskCompletedMessage {
             val taskId = unpacker.unpackString()
-            val executorNodeId = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackInt()
             val status = unpacker.unpackString()
             
             // Unpack execution stats
@@ -998,12 +1003,12 @@ data class TaskCompletedMessage(
  */
 data class TaskScheduledMessage(
     val taskId: String,
-    val executorNodeId: String,
-    val requesterNodeId: String,
+    val executorNodeId: Int,
+    val requesterNodeId: Int,
     val scheduledAt: Long = System.currentTimeMillis(),
     val estimatedStartTime: Long? = null,
     val resourceLimits: ResourceLimits = ResourceLimits.zero(),
-    val resourceAllocation: Map<String, Any> = emptyMap(),
+    // val resourceAllocation: Map<String, Any> = emptyMap(),
     val metadata: Map<String, Any>? = null,
     val requestId: String? = null
 ) : MeshEcosystemMessage("TaskScheduled") {
@@ -1012,8 +1017,8 @@ data class TaskScheduledMessage(
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
         packer.packString(taskId)
-        packer.packString(executorNodeId)
-        packer.packString(requesterNodeId)
+        packer.packInt(executorNodeId)
+        packer.packInt(requesterNodeId)
         packer.packLong(scheduledAt)
         
         // Pack estimatedStartTime (nullable)
@@ -1025,8 +1030,8 @@ data class TaskScheduledMessage(
         }
         
         // Pack resource allocation as JSON
-        val resourceJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceAllocation)
-        packer.packString(resourceJson)
+        // val resourceJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceAllocation)
+        // packer.packString(resourceJson)
         
         packer.close()
         return packer.toByteArray()
@@ -1035,8 +1040,8 @@ data class TaskScheduledMessage(
     companion object {
         fun fromUnpacker(unpacker: MessageUnpacker): TaskScheduledMessage {
             val taskId = unpacker.unpackString()
-            val executorNodeId = unpacker.unpackString()
-            val requesterNodeId = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackInt()
+            val requesterNodeId = unpacker.unpackInt()
             val scheduledAt = unpacker.unpackLong()
             
             // Unpack estimatedStartTime (nullable)
@@ -1049,8 +1054,15 @@ data class TaskScheduledMessage(
             val resourceLimits = Json.decodeFromString(ResourceLimits.serializer(), resourceJson)
             
             return TaskScheduledMessage(
-                taskId, executorNodeId, requesterNodeId,
-                scheduledAt, estimatedStartTime, resourceLimits
+                taskId = taskId,
+                executorNodeId = executorNodeId,
+                requesterNodeId = requesterNodeId,
+                scheduledAt = scheduledAt,
+                estimatedStartTime = estimatedStartTime,
+                resourceLimits = resourceLimits,
+                // resourceAllocation = resourceAllocation, // must be unpacked from JSON
+                metadata = null, // or unpack if present
+                requestId = null // or unpack if present
             )
         }
     }
@@ -1060,34 +1072,39 @@ data class TaskScheduledMessage(
  * TaskAssignmentMessage: Complete task assignment sent from scheduler to executor node.
  * Includes all parameters needed for task execution: execution context, resource limits, input files.
  * 
- * Phase 1: Message Protocol Extensions - Comprehensive task assignment
+ * Phase 1: Message Protocol Extensions - Comprehensive task assignment 
+ * taskId, executorNodeId, requesterNodeId, callbackAddress, executorType, jobType,
+                codeBundle, executionContext,  inputFiles, 
+                assignedAt, owner,recipients
  */
 data class TaskAssignmentMessage(
     val taskId: String,
-    val executorNodeId: String,
-    val requesterNodeId: String,
-    val callbackAddress: String,
+    val executorNodeId: Int,
+    val requesterNodeId: Int,
+    // val callbackAddress: String,
     val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
-    val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
+    // val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
     val codeBundle: ByteArray? = null,
     val executionContext: Map<String, Any>,  // Includes working directory, environment vars, etc.
-    val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
+    // val resourceLimits: Map<String, Any>,    // Memory, CPU, disk, network, timeout
     val inputFiles: List<Map<String, String>>,  // List of {fileId, storageRef, accessScope}
-    val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
+    // val outputRequirements: Map<String, Any>,  // Output destination, permissions, etc.
     val assignedAt: Long = System.currentTimeMillis(),
-    val metadata: Map<String, Any>? = null,
-    val requestId: String? = null
+    // val metadata: Map<String, Any>? = null,
+    // val requestId: String? = null,
+    val owner: RecipientEntry,
+    val recipients: List<RecipientEntry> = emptyList()
 ) : MeshEcosystemMessage("TaskAssignment") {
     
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
         packer.packString(type)
         packer.packString(taskId)
-        packer.packString(executorNodeId)
-        packer.packString(requesterNodeId)
-        packer.packString(callbackAddress)
+        packer.packInt(executorNodeId)
+        packer.packInt(requesterNodeId)
+        // packer.packString(callbackAddress)
         packer.packString(executorType)
-        packer.packString(jobType)
+        // packer.packString(jobType)
         
         // Pack code bundle
         if (codeBundle != null) {
@@ -1103,8 +1120,8 @@ data class TaskAssignmentMessage(
         packer.packString(contextJson)
         
         // Pack resource limits as JSON
-        val limitsJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceLimits)
-        packer.packString(limitsJson)
+        // val limitsJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), resourceLimits)
+        // packer.packString(limitsJson)
         
         // Pack input files array
         packer.packArrayHeader(inputFiles.size)
@@ -1114,11 +1131,15 @@ data class TaskAssignmentMessage(
         }
         
         // Pack output requirements as JSON
-        val outputJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), outputRequirements)
-        packer.packString(outputJson)
+        // val outputJson = Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), outputRequirements)
+        // packer.packString(outputJson)
         
         packer.packLong(assignedAt)
-        
+        MessageType.packRecipientEntry(packer, owner)
+        packer.packArrayHeader(recipients.size)
+        recipients.forEach { recipient ->
+            MessageType.packRecipientEntry(packer, recipient)
+        }
         packer.close()
         return packer.toByteArray()
     }
@@ -1126,11 +1147,11 @@ data class TaskAssignmentMessage(
     companion object {
         fun fromUnpacker(unpacker: MessageUnpacker): TaskAssignmentMessage {
             val taskId = unpacker.unpackString()
-            val executorNodeId = unpacker.unpackString()
-            val requesterNodeId = unpacker.unpackString()
-            val callbackAddress = unpacker.unpackString()
+            val executorNodeId = unpacker.unpackInt()
+            val requesterNodeId = unpacker.unpackInt()
+            // val callbackAddress = unpacker.unpackString()
             val executorType = unpacker.unpackString()
-            val jobType = unpacker.unpackString()
+            // val jobType = unpacker.unpackString()
             
             // Unpack code bundle
             val codeBundle = if (unpacker.unpackBoolean()) {
@@ -1148,11 +1169,11 @@ data class TaskAssignmentMessage(
             )
             
             // Unpack resource limits from JSON
-            val limitsJson = unpacker.unpackString()
-            val resourceLimits = Json.decodeFromString(
-                MapSerializer(String.serializer(), AnySerializer),
-                limitsJson
-            )
+            // val limitsJson = unpacker.unpackString()
+            // val resourceLimits = Json.decodeFromString(
+            //     MapSerializer(String.serializer(), AnySerializer),
+            //     limitsJson
+            // )
             
             // Unpack input files array
             val inputFiles = List(unpacker.unpackArrayHeader()) {
@@ -1164,18 +1185,21 @@ data class TaskAssignmentMessage(
             }
             
             // Unpack output requirements from JSON
-            val outputJson = unpacker.unpackString()
-            val outputRequirements = Json.decodeFromString(
-                MapSerializer(String.serializer(), AnySerializer),
-                outputJson
-            )
+            // val outputJson = unpacker.unpackString()
+            // val outputRequirements = Json.decodeFromString(
+            //     MapSerializer(String.serializer(), AnySerializer),
+            //     outputJson
+            // )
             
             val assignedAt = unpacker.unpackLong()
-            
+            val owner = MessageType.unpackRecipientEntry(unpacker)
+            val recipients = List(unpacker.unpackArrayHeader()) {
+                MessageType.unpackRecipientEntry(unpacker)
+            }
             return TaskAssignmentMessage(
-                taskId, executorNodeId, requesterNodeId, callbackAddress, executorType, jobType,
-                codeBundle, executionContext, resourceLimits, inputFiles, outputRequirements,
-                assignedAt
+                taskId, executorNodeId, requesterNodeId,  executorType, 
+                codeBundle, executionContext,  inputFiles, 
+                assignedAt, owner,recipients
             )
         }
     }

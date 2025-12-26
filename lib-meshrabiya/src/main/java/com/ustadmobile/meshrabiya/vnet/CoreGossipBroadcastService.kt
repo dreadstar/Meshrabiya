@@ -22,6 +22,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import com.ustadmobile.meshrabiya.model.User
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 
 /**
  * CoreGossipBroadcastService: Handles serialization and UDP broadcast of ecosystem messages.
@@ -113,10 +115,12 @@ class CoreGossipBroadcastService private constructor() {
      * @param fileId The file ID to query for
      */
     fun sendChunkRetrievalQuery(fileId: String) {
+        val user = MeshrabiyaApiImpl.getInstance().getUserInfo()
         val query = ChunkRetrievalQuery(
             fileId = fileId,
-            chunkIndexes = null,
-            senderId = meshGossipService.getLocalNodeAddress().toString()
+            // chunkIndexes = null,
+            senderId = MeshGossipService.getInstance().getNodeAddressAsInt(),
+            owner = user.entry
         )
         val message = ChunkRetrievalQueryMessage(query)
         sendBroadcast(message)
@@ -199,7 +203,7 @@ class CoreGossipBroadcastService private constructor() {
      */
     fun sendEcosystemBroadcast(
         broadcastId: String,
-        senderId: String,
+        senderId: Int,
         messageType: String,
         payload: ByteArray
     ) {

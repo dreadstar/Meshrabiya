@@ -6,15 +6,24 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.content.ContentValues
 import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.vnet.MeshFile
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.ustadmobile.meshrabiya.storage.FileReference
+
 
 class MeshDataStoreDb(context: Context) : SQLiteOpenHelper(context, "mesh_datastore.db", null, 3) {
+    
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE mesh_files (
                 fileId TEXT PRIMARY KEY,
                 fileName TEXT,
-                fileSize INTEGER,
-                storedAt INTEGER
+                path TEXT,
+                sizeBytes INTEGER,
+                owner TEXT,
+                recipients TEXT,
+                createdAt INTEGER,
+                relativePath TEXT
             )
         """.trimIndent())
         db.execSQL("""
@@ -28,11 +37,13 @@ class MeshDataStoreDb(context: Context) : SQLiteOpenHelper(context, "mesh_datast
                 relativePath TEXT,
                 hash TEXT,
                 storedAt INTEGER,
-                recipientKeyIds TEXT,
-                sessionKeys BLOB
+                sessionKeys BLOB,
+                serverPath TEXT
             )
         """.trimIndent())
     }
+                // recipients TEXT,
+                // owner TEXT,
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 3) {
@@ -44,7 +55,7 @@ class MeshDataStoreDb(context: Context) : SQLiteOpenHelper(context, "mesh_datast
 }
 
 class StorageDataStore private constructor(context: Context) {
-
+    private val gson = Gson()
     private val dbHelper = MeshDataStoreDb(context)
 
     companion object {
@@ -60,8 +71,12 @@ class StorageDataStore private constructor(context: Context) {
         val values = ContentValues().apply {
             put("fileId", file.fileId)
             put("fileName", file.fileName)
-            put("fileSize", file.fileSize)
-            put("storedAt", file.storedAt)
+            put("path", file.path)
+            put("sizeBytes", file.sizeBytes)
+            put("owner", serializeRecipient(file.owner))
+            put("recipients", serializeRecipients(file.recipients))
+            put("createdAt", file.createdAt)
+            put("relativePath", file.relativePath)
         }
         dbHelper.writableDatabase.insertWithOnConflict("mesh_files", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -74,8 +89,12 @@ class StorageDataStore private constructor(context: Context) {
                 MeshFile(
                     fileId = cursor.getString(cursor.getColumnIndexOrThrow("fileId")),
                     fileName = cursor.getString(cursor.getColumnIndexOrThrow("fileName")),
-                    fileSize = cursor.getLong(cursor.getColumnIndexOrThrow("fileSize")),
-                    storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt"))
+                    path = cursor.getString(cursor.getColumnIndexOrThrow("path")),
+                    sizeBytes = cursor.getLong(cursor.getColumnIndexOrThrow("sizeBytes")),
+                    owner = deserializeRecipient(cursor.getString(cursor.getColumnIndexOrThrow("owner"))),
+                    recipients = deserializeRecipients(cursor.getString(cursor.getColumnIndexOrThrow("recipients"))),
+                    createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("createdAt")),
+                    relativePath = cursor.getString(cursor.getColumnIndexOrThrow("relativePath"))
                 )
             } else null
         }
@@ -92,9 +111,13 @@ class StorageDataStore private constructor(context: Context) {
                 files.add(
                     MeshFile(
                         fileId = cursor.getString(cursor.getColumnIndexOrThrow("fileId")),
-                        fileName = cursor.getString(cursor.getColumnIndexOrThrow("fileName")),
-                        fileSize = cursor.getLong(cursor.getColumnIndexOrThrow("fileSize")),
-                        storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt"))
+                        path = cursor.getString(cursor.getColumnIndexOrThrow("path")),
+                        sizeBytes = cursor.getLong(cursor.getColumnIndexOrThrow("sizeBytes")),
+                        owner = deserializeRecipient(cursor.getString(cursor.getColumnIndexOrThrow("owner"))),
+                        recipients = deserializeRecipients(cursor.getString(cursor.getColumnIndexOrThrow("recipients"))),
+                        createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("createdAt")),
+                        relativePath = cursor.getString(cursor.getColumnIndexOrThrow("relativePath")),
+                        fileName = cursor.getString(cursor.getColumnIndexOrThrow("fileName"))
                     )
                 )
             }
@@ -124,8 +147,10 @@ class StorageDataStore private constructor(context: Context) {
             put("relativePath", chunk.relativePath)
             put("hash", chunk.hash)
             put("storedAt", chunk.storedAt)
-            put("recipientKeyIds", chunk.recipientKeyIds.joinToString(","))
+            // put("recipients", serializeRecipients(chunk.recipients))
+            // put("owner", serializeRecipient(chunk.owner))
             put("sessionKeys", serializeSessionKeys(chunk.sessionKeys))
+            put("serverPath", chunk.serverPath) // <-- NEW FIELD
         }
         dbHelper.writableDatabase.insertWithOnConflict("mesh_chunks", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -145,10 +170,10 @@ class StorageDataStore private constructor(context: Context) {
                     relativePath = cursor.getString(cursor.getColumnIndexOrThrow("relativePath")),
                     hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                     storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
-                    recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
                     sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
-                    ownerId = "",
-                    ownerPublicKey = ByteArray(0)
+                    replicaCount = cursor.getInt(cursor.getColumnIndexOrThrow("replicaCount")),
+                    // fileReference = deserializeFileReference(cursor.getString(cursor.getColumnIndexOrThrow("fileReference"))) ?: error("fileReference must not be null for chunkId=${cursor.getString(cursor.getColumnIndexOrThrow("chunkId"))}"),
+                    serverPath = cursor.getString(cursor.getColumnIndexOrThrow("serverPath")) // <-- NEW FIELD
                 )
             } else null
         }
@@ -171,10 +196,10 @@ class StorageDataStore private constructor(context: Context) {
                         relativePath = cursor.getString(cursor.getColumnIndexOrThrow("relativePath")),
                         hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                         storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
-                        recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
                         sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
-                        ownerId = "",
-                        ownerPublicKey = ByteArray(0)
+                        replicaCount = cursor.getInt(cursor.getColumnIndexOrThrow("replicaCount")),
+                        // fileReference = deserializeFileReference(cursor.getString(cursor.getColumnIndexOrThrow("fileReference"))) ?: error("fileReference must not be null for chunkId=${cursor.getString(cursor.getColumnIndexOrThrow("chunkId"))}"),
+                        serverPath = cursor.getString(cursor.getColumnIndexOrThrow("serverPath")) // <-- NEW FIELD
                     )
                 )
             }
@@ -197,10 +222,10 @@ class StorageDataStore private constructor(context: Context) {
                         relativePath = cursor.getString(cursor.getColumnIndexOrThrow("relativePath")),
                         hash = cursor.getString(cursor.getColumnIndexOrThrow("hash")),
                         storedAt = cursor.getLong(cursor.getColumnIndexOrThrow("storedAt")),
-                        recipientKeyIds = parseRecipientKeyIds(cursor.getString(cursor.getColumnIndexOrThrow("recipientKeyIds"))),
                         sessionKeys = deserializeSessionKeys(cursor.getBlob(cursor.getColumnIndexOrThrow("sessionKeys"))),
-                        ownerId = "",
-                        ownerPublicKey = ByteArray(0)
+                        replicaCount = cursor.getInt(cursor.getColumnIndexOrThrow("replicaCount")),
+                        // fileReference = deserializeFileReference(cursor.getString(cursor.getColumnIndexOrThrow("fileReference"))) ?: error("fileReference must not be null for chunkId=${cursor.getString(cursor.getColumnIndexOrThrow("chunkId"))}"),
+                        serverPath = cursor.getString(cursor.getColumnIndexOrThrow("serverPath")) // <-- NEW FIELD
                     )
                 )
             }
@@ -229,8 +254,8 @@ class StorageDataStore private constructor(context: Context) {
             put("relativePath", chunk.relativePath)
             put("hash", chunk.hash)
             put("storedAt", chunk.storedAt)
-            put("recipientKeyIds", chunk.recipientKeyIds.joinToString(","))
             put("sessionKeys", serializeSessionKeys(chunk.sessionKeys))
+            put("serverPath", chunk.serverPath)
         }
         dbHelper.writableDatabase.update("mesh_chunks", values, "chunkId = ?", arrayOf(chunk.chunkId))
     }
@@ -249,7 +274,7 @@ class StorageDataStore private constructor(context: Context) {
     fun getStorageSummary(): StorageSummary {
         val files = getAllMeshFiles()
         val chunks = getAllMeshChunks()
-        val totalSize = files.sumOf { it.fileSize }
+        val totalSize = files.sumOf { it.sizeBytes }
         return StorageSummary(
             fileCount = files.size,
             chunkCount = chunks.size,
@@ -263,18 +288,42 @@ class StorageDataStore private constructor(context: Context) {
         val totalSize: Long
     )
 
-    // --- Helper methods for recipientKeyIds and sessionKeys serialization ---
-    private fun parseRecipientKeyIds(str: String?): List<Long> {
-        if (str.isNullOrEmpty()) return emptyList()
-        return str.split(",").mapNotNull { it.toLongOrNull() }
+    // --- Helper methods for recipients/owner and sessionKeys serialization ---
+
+    private fun serializeRecipients(recipients: List<RecipientEntry>): String {
+        return gson.toJson(recipients)
     }
 
-    private fun serializeSessionKeys(sessionKeys: Map<Long, ByteArray>): ByteArray {
+    private fun deserializeRecipients(data: String): List<RecipientEntry> {
+        if (data.isBlank()) return emptyList()
+        val type = object : TypeToken<List<RecipientEntry>>() {}.type
+        return gson.fromJson(data, type)
+    }
+
+    private fun serializeRecipient(owner: RecipientEntry): String {
+        return gson.toJson(owner)
+    }
+
+    private fun deserializeRecipient(data: String): RecipientEntry {
+        if (data.isBlank()) throw IllegalArgumentException("Recipient data must not be blank")
+        return gson.fromJson(data, RecipientEntry::class.java)
+    }
+
+    private fun serializeFileReference(fileReference: FileReference?): String {
+        return if (fileReference == null) "" else gson.toJson(fileReference)
+    }
+
+    private fun deserializeFileReference(data: String): FileReference? {
+        if (data.isBlank()) return null
+        return gson.fromJson(data, FileReference::class.java)
+    }
+
+    private fun serializeSessionKeys(sessionKeys: Map<String, ByteArray>): ByteArray {
         // Simple serialization: keyId:length:data ... (not for cryptographic use)
         if (sessionKeys.isEmpty()) return ByteArray(0)
         val out = mutableListOf<Byte>()
         for ((keyId, data) in sessionKeys) {
-            val keyIdBytes = keyId.toString().toByteArray(Charsets.UTF_8)
+            val keyIdBytes = keyId.toByteArray(Charsets.UTF_8)
             val lengthBytes = data.size.toString().toByteArray(Charsets.UTF_8)
             out.add(keyIdBytes.size.toByte())
             out.addAll(keyIdBytes.toList())
@@ -285,14 +334,14 @@ class StorageDataStore private constructor(context: Context) {
         return out.toByteArray()
     }
 
-    private fun deserializeSessionKeys(blob: ByteArray?): Map<Long, ByteArray> {
+    private fun deserializeSessionKeys(blob: ByteArray?): Map<String, ByteArray> {
         if (blob == null || blob.isEmpty()) return emptyMap()
-        val map = mutableMapOf<Long, ByteArray>()
+        val map = mutableMapOf<String, ByteArray>()
         var idx = 0
         while (idx < blob.size) {
             val keyIdLen = blob[idx].toInt()
             idx++
-            val keyId = String(blob, idx, keyIdLen, Charsets.UTF_8).toLongOrNull()
+            val keyId = String(blob, idx, keyIdLen, Charsets.UTF_8)
             idx += keyIdLen
             val lenLen = blob[idx].toInt()
             idx++
@@ -304,4 +353,53 @@ class StorageDataStore private constructor(context: Context) {
         }
         return map
     }
+    private fun parseRecipientKeyIds(str: String?): List<Long> {
+        if (str.isNullOrEmpty()) return emptyList()
+        return str.split(",").mapNotNull { it.toLongOrNull() }
+    }
+
+    // private fun serializeFileReference(fileReference: FileReference?): String {
+    //     return if (fileReference == null) "" else gson.toJson(fileReference)
+    // }
+
+    // private fun deserializeFileReference(data: String): FileReference? {
+    //     if (data.isBlank()) return null
+    //     return gson.fromJson(data, FileReference::class.java)
+    // }
+
+    // private fun serializeSessionKeys(sessionKeys: Map<Long, ByteArray>): ByteArray {
+    //     // Simple serialization: keyId:length:data ... (not for cryptographic use)
+    //     if (sessionKeys.isEmpty()) return ByteArray(0)
+    //     val out = mutableListOf<Byte>()
+    //     for ((keyId, data) in sessionKeys) {
+    //         val keyIdBytes = keyId.toString().toByteArray(Charsets.UTF_8)
+    //         val lengthBytes = data.size.toString().toByteArray(Charsets.UTF_8)
+    //         out.add(keyIdBytes.size.toByte())
+    //         out.addAll(keyIdBytes.toList())
+    //         out.add(lengthBytes.size.toByte())
+    //         out.addAll(lengthBytes.toList())
+    //         out.addAll(data.toList())
+    //     }
+    //     return out.toByteArray()
+    // }
+
+    // private fun deserializeSessionKeys(blob: ByteArray?): Map<Long, ByteArray> {
+    //     if (blob == null || blob.isEmpty()) return emptyMap()
+    //     val map = mutableMapOf<Long, ByteArray>()
+    //     var idx = 0
+    //     while (idx < blob.size) {
+    //         val keyIdLen = blob[idx].toInt()
+    //         idx++
+    //         val keyId = String(blob, idx, keyIdLen, Charsets.UTF_8).toLongOrNull()
+    //         idx += keyIdLen
+    //         val lenLen = blob[idx].toInt()
+    //         idx++
+    //         val dataLen = String(blob, idx, lenLen, Charsets.UTF_8).toIntOrNull() ?: 0
+    //         idx += lenLen
+    //         val data = blob.copyOfRange(idx, idx + dataLen)
+    //         idx += dataLen
+    //         if (keyId != null) map[keyId] = data
+    //     }
+    //     return map
+    // }
 }

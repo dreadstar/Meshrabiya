@@ -21,7 +21,15 @@ import kotlinx.serialization.Serializable
 import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
 import com.ustadmobile.meshrabiya.service.FilePermissionUpdateConfirmationMessage
 import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
-
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+import com.ustadmobile.meshrabiya.storage.RecipientType
+import com.ustadmobile.meshrabiya.storage.FileMetadata
+import com.ustadmobile.meshrabiya.storage.FileReference
+import com.ustadmobile.meshrabiya.storage.DistributedStorageClient
+import com.ustadmobile.meshrabiya.storage.DistributedStorageServer
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalQuery
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalResponseMessage
 
 /**
  * DistributedStorageManager: Core manager for distributed storage operations.
@@ -139,7 +147,7 @@ class DistributedStorageManager(
     // === Shared State ===
     
     val fileMetadataStore = ConcurrentHashMap<String, FileMetadata>()
-    val chunkReplicaTracker = ConcurrentHashMap<String, MutableSet<String>>()
+    val chunkReplicaTracker = ConcurrentHashMap<String, MutableSet<Int>>()
     
     private val _storageStats = MutableStateFlow(StorageStats())
     val storageStats: StateFlow<StorageStats> = _storageStats.asStateFlow()
@@ -200,25 +208,29 @@ class DistributedStorageManager(
         path: String,
         data: ByteArray,
         replicationLevel: ReplicationLevel = ReplicationLevel.STANDARD,
-        owner: String? = null,
+        owner: RecipientEntry? = null,
         recipients: List<RecipientEntry>? = null,
         accessScope: AccessScope = AccessScope.TASK_ISOLATED
     ): FileReference? {
         // Hybrid encryption: encrypt data for each recipient using their public key, then encrypt symmetric key with service keypair
         // This logic is enforced in the client layer, but we document and check here
+        // TODO ELIMINAE requirement for there to be recipients. files can be sent to the mesh just for the user to have remote storage
         if (accessScope == AccessScope.TASK_ISOLATED && (recipients == null || recipients.isEmpty())) {
             throw IllegalArgumentException("Task-isolated storage requires at least one recipient for hybrid encryption.")
         }
         // Pass accessScope to client for correct encryption handling
-            return client.storeFile(path, data, replicationLevel, owner, recipients)
+            return client.storeFile(path, data, replicationLevel, recipients)
     }
     
     /**
      * Retrieve file from distributed storage.
      * Delegates to DistributedStorageClient.
      */
-    suspend fun retrieveFile(fileRef: FileReference): ByteArray? {
-        return client.retrieveFile(fileRef)
+    suspend fun retrieveFile(fileId: String): ByteArray? {
+        return client.retrieveFile(fileId)
+    }
+    fun handleIncomingChunkTransfer(chunkTransfer: ChunkTransferMessage) {
+        client.handleIncomingChunkTransfer( chunkTransfer)
     }
     
     /**
@@ -239,7 +251,7 @@ class DistributedStorageManager(
         client.handleStorageNodeResponse(requestId, senderId, response)
     }
 
-    fun handleChunkRetrievalResponse(requestId: String, senderId: Int, response: com.ustadmobile.meshrabiya.service.ChunkRetrievalResponse) {
+    fun handleChunkRetrievalResponse(requestId: String, senderId: Int, response: ChunkRetrievalResponse) {
         client.handleChunkRetrievalResponse(requestId, senderId, response)
     }
 
@@ -255,23 +267,97 @@ class DistributedStorageManager(
         server.handleIncomingChunkTransfer(senderId, chunkTransfer)
     }
     
+    // refactor: add other message handlers as needed 
+    fun onChunkRetrievalQuery(senderId: Int, query: ChunkRetrievalQuery) {
+        val metadata = fileMetadataStore[query.fileId] ?: return
+        val syncedFile = stagedSyncManager.getSyncedFileByFileId(query.fileId) ?: return
+        val chunkIds = syncedFile.chunkIds
+        chunkIds.forEachIndexed { idx, chunkId ->
+            val chunkFile = getChunkFile(chunkId)
+            if (chunkFile.exists()) {
+                val response = ChunkRetrievalResponse(
+                    chunkId = chunkId,
+                    fileId = query.fileId,
+                    chunkIndex = idx,
+                    totalChunks = chunkIds.size,
+                    nodeId = virtualNode.addressAsInt,
+                    fileName = File(syncedFile.filePath).name,
+                    relativePath = "",
+                    chunkSize = chunkFile.length(),
+                    requestId = query.requestId, // might need to be passed in instead
+                )
+                val responseMsg = ChunkRetrievalResponseMessage(response)
+                virtualNode.sendEcosystemMessage(senderId, responseMsg.toBytes())
+            }
+        }
+    }
+
+    fun onChunkDataRequest(senderId: Int, request: ChunkTransferMessage) {
+        val chunkFile = getChunkFile(request.chunkId)
+        if (chunkFile.exists()) {
+            val chunkBytes = chunkFile.readBytes()
+            val responseMsg = ChunkTransferMessage(
+                chunkId = request.chunkId,
+                fileId = request.fileId,
+                chunkIndex = request.chunkIndex,
+                totalChunks = request.totalChunks,
+                fileName = request.fileName,
+                relativePath = request.relativePath,
+                chunkBytes = chunkBytes,
+                hash = request.hash,
+                replicaCount = request.replicaCount,
+                recipients = request.recipients,
+                sessionKeys = request.sessionKeys,
+                owner = request.owner
+            )
+            virtualNode.sendEcosystemMessage(senderId, responseMsg.toBytes())
+        }
+    }
+
+    private fun getChunkFile(chunkId: String): File {
+        // Lookup MeshChunk in the mesh_chunks table
+        val meshChunk = storageDataStore.getMeshChunk(chunkId)
+            ?: throw IllegalArgumentException("MeshChunk not found for chunkId: $chunkId")
+
+        // Get the storage participation folder from configuration or API
+        // Example: Use MeshrabiyaConstants.getParticipationFolder() or similar
+       val allocations = MeshrabiyaConstants.getStorageAllocations()
+        if (allocations.isEmpty()) {
+            throw IllegalStateException("No storage allocations configured")
+        }
+        val participationFolder = allocations[0] // Use allocations[0].path if you need the path string
+
+        // Build the full path: <participation_folder>/shared_storage/<fileId>/<relativePath>/<chunkId>.chunk
+        val sharedStorageDir = File(
+            participationFolder.path,
+            "shared_storage/${meshChunk.fileId}/${meshChunk.relativePath}"
+        )
+        if (!sharedStorageDir.exists()) sharedStorageDir.mkdirs()
+
+        return File(sharedStorageDir, "${meshChunk.chunkId}.chunk")
+    }
+
     // === Common Utilities ===
     
     /**
      * Chunk file into MeshChunk objects.
      * Used by both client (for initial storage) and server (for replication).
-     */
-    /**
-     * Chunk file into MeshChunk objects.
-     * Used by both client (for initial storage) and server (for replication).
-     * Ownership is explicit: ownerId and ownerPublicKey must be provided by caller.
+     * Ownership is explicit: owner must be provided by caller as RecipientEntry.
      */
     fun chunkFile(
         file: File,
+        // chunkId: String,
         fileId: String,
-        chunkSize: Int,
-        ownerId: String,
-        ownerPublicKey: ByteArray
+        // chunkIndex: Int,
+        // totalChunks: Int,
+        // fileName: String,
+        // relativePath: String,
+        // chunkBytes: ByteArray,
+        // hash: String,
+        // replicaCount: Int = 0,
+        // recipients: List<RecipientEntry> = emptyList(),
+        // sessionKeys: Map<String, ByteArray> = emptyMap(),
+        owner: RecipientEntry
     ): List<MeshChunk> {
         val chunks = mutableListOf<MeshChunk>()
         val fileName = file.name
@@ -289,8 +375,8 @@ class DistributedStorageManager(
                     fileName = fileName,
                     relativePath = "",
                     hash = chunkId,
-                    ownerId = ownerId,
-                    ownerPublicKey = ownerPublicKey
+                    serverPath = file.path,
+                    // owner = owner
                 )
             )
         } else {
@@ -313,8 +399,8 @@ class DistributedStorageManager(
                             fileName = fileName,
                             relativePath = "",
                             hash = chunkId,
-                            ownerId = ownerId,
-                            ownerPublicKey = ownerPublicKey
+                            serverPath = file.path,
+                            // owner = owner
                         )
                     )
                     chunkIndex++
@@ -417,11 +503,7 @@ class DistributedStorageManager(
 
 // === Supporting Data Classes ===
 
-data class FileReference(
-    val id: String,
-    val path: String,
-    val size: Long
-)
+
 
 enum class ReplicationLevel {
     MINIMAL,
@@ -430,34 +512,3 @@ enum class ReplicationLevel {
     CRITICAL
 }
 
-@Serializable
-data class FileMetadata(
-    val fileId: String,
-    val path: String,
-    val sizeBytes: Long,
-    val owner: String,
-    val recipients: List<RecipientEntry>,
-    val createdAt: Long,
-    val lastAccessedBy: String? = null,
-    val encryptionKeyId: String? = null
-) {
-    fun getActiveRecipients(): List<RecipientEntry> {
-        return recipients.filter { !it.isExpired() }
-    }
-    
-    fun getUserRecipients(): List<RecipientEntry> {
-        return recipients.filter { it.recipientType == RecipientType.USER }
-    }
-    
-    fun getTaskRecipients(): List<RecipientEntry> {
-        return recipients.filter { it.recipientType == RecipientType.TASK }
-    }
-    
-    fun hasTaskAccess(taskId: String): Boolean {
-        return recipients.any { 
-            it.recipientType == RecipientType.TASK && 
-            it.taskId == taskId && 
-            !it.isExpired() 
-        }
-    }
-}

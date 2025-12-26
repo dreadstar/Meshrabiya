@@ -18,6 +18,9 @@ import com.ustadmobile.meshrabiya.model.NodeInfo
 import com.ustadmobile.meshrabiya.model.ApiResult
 import com.ustadmobile.meshrabiya.vnet.LocalNodeState
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+import com.ustadmobile.meshrabiya.storage.DropFolderItem
+import com.ustadmobile.meshrabiya.storage.StoreFileTrigger
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -104,6 +107,8 @@ interface MeshrabiyaApi {
     fun enableDistributedStorage()
     fun disableDistributedStorage()
     fun isComputeLayerParticipating(): Boolean
+    fun setDropFolderPath(path: String) 
+    fun getDropFolderPath(): String
 
     /**
      * Enable or disable the entire compute service (persistent, global).
@@ -114,10 +119,11 @@ interface MeshrabiyaApi {
     fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
     fun getDropFolder(): File?
     fun getDropFolderFiles(): List<File>
+    fun setOnDropFolderUpdate(handler: (List<DropFolderItem>) -> Unit)
 
     // --- File Operations ---
-    fun storeFile(file: File, callback: (Result<String>) -> Unit)
-    fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit)
+    fun storeFile(file: File, recipients:List<RecipientEntry>) 
+    suspend fun retrieveFile(fileId: String): ByteArray? 
     fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit)
     fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit)
     fun getAllMeshFiles(): List<MeshFile>
@@ -145,7 +151,7 @@ interface MeshrabiyaApi {
 
     // --- Event Registration ---
     fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit)
-    fun setOnFileStored(handler: (fileId: String, file: File) -> Unit)
+    fun setOnFileStored(handler: (fileId: String, file: File, result: Result<String>) -> Unit)
     fun setOnPermissionUpdated(handler: (fileId: String, success: Boolean) -> Unit)
     fun setOnOperationFailed(handler: (operation: String, error: Throwable) -> Unit)
     

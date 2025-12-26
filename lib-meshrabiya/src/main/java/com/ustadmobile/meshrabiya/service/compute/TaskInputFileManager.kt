@@ -9,6 +9,7 @@ import com.ustadmobile.meshrabiya.beta.LogLevel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 
 /**
  * TaskInputFileManager
@@ -36,7 +37,7 @@ class TaskInputFileManager(
     /**
      * Track expected input files for task.
      */
-    fun trackExpectedFiles(taskId: String, inputManifest: List<com.ustadmobile.meshrabiya.service.compute.model.FileReference>) {
+    fun trackExpectedFiles(taskId: String, inputManifest: List<FileReference>) {
         val fileIds = inputManifest.map { it.fileId }.toMutableSet()
         expectedFiles[taskId] = fileIds
         receivedFiles.getOrPut(taskId) { mutableSetOf() }
@@ -56,13 +57,13 @@ class TaskInputFileManager(
             betaLogger?.log(LogLevel.DEBUG, TAG, "Retrieving file \$fileId for task \${task.taskId}")
             
             // Retrieve file from distributed storage
-            val fileReference = FileReference(
-                id = fileId,
-                path = fileId,
-                size = 0L
-            )
+            // val fileReference = FileReference(
+            //     fileId = fileId,
+            //     path = fileId,
+            //     sizeBytes = 0L
+            // )
             
-            val fileBytes = distributedStorageClient.retrieveFile(fileReference)
+            val fileBytes = MeshrabiyaApiImpl.getInstance().retrieveFile(fileId)
             
             if (fileBytes != null) {
                 // Write to sandbox inputs directory

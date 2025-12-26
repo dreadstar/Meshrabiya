@@ -18,6 +18,14 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import com.ustadmobile.meshrabiya.storage.DropFolderItem
+import java.lang.IllegalStateException
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
+import kotlin.math.min
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Section 7: Drop Folder Service
@@ -52,6 +60,8 @@ class MeshDropFolderService : Service() {
     private val uploadQueue = ConcurrentLinkedQueue<File>()
     private val uploadExecutor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
+    private val allItems = ConcurrentHashMap<String, DropFolderItem>()
+
     
     companion object {
         private const val TAG = "MeshDropFolderService"
@@ -86,11 +96,38 @@ class MeshDropFolderService : Service() {
             dropFolder.mkdirs()
             Log.d(TAG, "Created drop folder: ${dropFolder.absolutePath}")
         }
-        
+
+        initializeAllItems()
         // Create FileObserver
         initializeFileObserver()
         
         Log.i(TAG, "MeshDropFolderService started, monitoring: ${dropFolder.absolutePath}")
+    }
+
+    private fun initializeAllItems() {
+        allItems.clear()
+        scanDropFolder(dropFolder, "")
+    }
+
+    private fun scanDropFolder(folder: File, parentRelativePath: String) {
+        folder.listFiles()?.forEach { file ->
+            val relativePath = if (parentRelativePath.isEmpty()) file.name else "$parentRelativePath/${file.name}"
+            val parentItem = allItems[parentRelativePath]
+            val item = DropFolderItem(
+                itemRelativePath = relativePath,
+                isFolder = file.isDirectory,
+                parent = parentItem,
+                children = emptyList()
+            )
+            allItems[relativePath] = item
+            parentItem?.let {
+                val updatedChildren = it.children + item
+                allItems[parentRelativePath] = it.copy(children = updatedChildren)
+            }
+            if (file.isDirectory) {
+                scanDropFolder(file, relativePath)
+            }
+        }
     }
     
     private fun initializeFileObserver() {
@@ -139,12 +176,27 @@ class MeshDropFolderService : Service() {
     
     private fun handleFileCreated(path: String) {
         Log.d(TAG, "File created in drop folder: $path")
+        val file = File(dropFolder, path)
+        if (!isInSharedSubfolder(file)) {
+            val item = DropFolderItem(
+                itemRelativePath = path,
+                isFolder = file.isDirectory,
+                parent = findParentDropFolderItemByPath(path)
+                // parent = ... // find parent DropFolderItem
+            )
+            allItems[path] = item
+            item.parent?.let {
+                val updatedChildren = it.children + item
+                allItems[it.itemRelativePath] = it.copy(children = updatedChildren)
+            }
+            MeshrabiyaApiImpl.getInstance().notifyDropFolderUpdate(listOf(item))
+        }
         // Don't upload yet - wait for CLOSE_WRITE
     }
     
     private fun handleFileModified(path: String) {
         Log.d(TAG, "File modified in drop folder: $path")
-        // Remove from processed set to allow re-upload after modification complete
+        // will have to trigger mesh delete of old file  and Remove from processed set to allow re-upload after modification complete 
         val file = File(dropFolder, path)
         processedFiles.remove(file.absolutePath)
     }
@@ -171,11 +223,11 @@ class MeshDropFolderService : Service() {
         }
         
         // Check file size limit
-        if (file.length() > MAX_FILE_SIZE) {
-            Log.w(TAG, "File too large for auto-upload: $path (${file.length()} bytes)")
-            showNotification("File too large", "Please upload ${file.name} manually")
-            return
-        }
+        // if (file.length() > MAX_FILE_SIZE) {
+        //     Log.w(TAG, "File too large for auto-upload: $path (${file.length()} bytes)")
+        //     showNotification("File too large", "Please upload ${file.name} manually")
+        //     return
+        // }
         
         Log.i(TAG, "File ready for upload: $path (${file.length()} bytes)")
         
@@ -187,15 +239,62 @@ class MeshDropFolderService : Service() {
             processUploadQueue()
         }
     }
+
+    fun findParentDropFolderItem(
+        item: DropFolderItem,
+    ): DropFolderItem? {
+        val parentPath = File(item.itemRelativePath).parent ?: return null
+        return allItems[parentPath]
+    }
+
+    fun findParentDropFolderItemByPath(itemPath: String): DropFolderItem? {
+        val itemFile = File(itemPath)
+        val dropFolderPath = dropFolder.absolutePath
+        val absItemPath = itemFile.absolutePath
+        if (!absItemPath.startsWith(dropFolderPath)) {
+            return null
+        }
+        val parentPath = itemFile.parent ?: return null
+        // Compute relative path for lookup in allItems
+        val relativeParentPath = if (parentPath.startsWith(dropFolderPath)) {
+            parentPath.removePrefix(dropFolderPath).trimStart(File.separatorChar)
+        } else {
+            parentPath
+        }
+        return allItems[relativeParentPath]
+    }
     
     private fun handleFileDeleted(path: String) {
-        val file = File(dropFolder, path)
-        processedFiles.remove(file.absolutePath)
-        Log.d(TAG, "File deleted from drop folder: $path")
+        // val file = File(dropFolder, path)
+        // processedFiles.remove(file.absolutePath)
+        // Log.d(TAG, "File deleted from drop folder: $path")
+        // val item = DropFolderItem(
+        //     item = file,
+        //     isFolder = file.isDirectory,
+        //     // parent = ... // find parent DropFolderItem
+        // )
+        // MeshrabiyaApiImpl.getInstance().notifyDropFolderUpdate(listOf(item))
+        val parentRelativePath = File(path).parent ?: ""
+        val parentItem = allItems[parentRelativePath]
+        val item = allItems.remove(path)
+        parentItem?.let {
+            val updatedChildren = it.children.filter { child -> child.itemRelativePath != path }
+            allItems[parentRelativePath] = it.copy(children = updatedChildren)
+        }
+        item?.let { MeshrabiyaApiImpl.getInstance().notifyDropFolderUpdate(listOf(it)) }
     }
     
     private fun handleFileMovedIn(path: String) {
         Log.d(TAG, "File moved into drop folder: $path")
+        val file = File(dropFolder, path)
+        if (!isInSharedSubfolder(file)) {
+            val item = DropFolderItem(
+                itemRelativePath = path,
+                isFolder = file.isDirectory,
+                parent = findParentDropFolderItemByPath(path)
+            )
+            MeshrabiyaApiImpl.getInstance().notifyDropFolderUpdate(listOf(item))
+        }
         // Will be uploaded on next CLOSE_WRITE
     }
     
@@ -203,6 +302,12 @@ class MeshDropFolderService : Service() {
         val file = File(dropFolder, path)
         processedFiles.remove(file.absolutePath)
         Log.d(TAG, "File moved out of drop folder: $path")
+        val item = DropFolderItem(
+            itemRelativePath = path,
+            isFolder = file.isDirectory,
+            parent = findParentDropFolderItemByPath(path)
+        )
+        MeshrabiyaApiImpl.getInstance().notifyDropFolderUpdate(listOf(item))
     }
     
     // ========== Upload Logic ==========
@@ -220,48 +325,72 @@ class MeshDropFolderService : Service() {
             Thread.sleep(UPLOAD_RATE_LIMIT_MS)
         }
     }
+
+    fun getInheritedRecipientsForFile(file: File, recursive: Boolean): List<RecipientEntry> {
+        val recipients = mutableSetOf<RecipientEntry>()
+        var currentFolder = file.parentFile
+        val dropFolderPath = MeshrabiyaConstants.getDropFolderPath()
+        while (currentFolder != null) {
+            recipients.addAll(getRecipientsForFolder(currentFolder))
+            if (!recursive || currentFolder.absolutePath == dropFolderPath) {
+                break
+            }
+            currentFolder = currentFolder.parentFile
+        }
+        return recipients.toList()
+    }
+    
+    fun getRecipientsForFolder(folder: File): List<RecipientEntry> {
+        // Compute the relative path from the drop folder root
+        val dropFolderPath = dropFolder.absolutePath
+        val folderPath = folder.absolutePath
+        val relativePath = if (folderPath.startsWith(dropFolderPath)) {
+            folderPath.removePrefix(dropFolderPath).trimStart(File.separatorChar)
+        } else {
+            folderPath
+        }
+        val item = allItems[relativePath]
+        return item?.trigger?.recipients ?: emptyList()
+    }
     
     private fun uploadToMesh(file: File) {
         val api = MeshrabiyaApiImpl.getInstance()
         
         Log.i(TAG, "Uploading file to mesh: ${file.name}")
         
-        // Upload via MeshrabiyaApi (metadata auto-generated internally)
-        api.storeFile(file) { result ->
-            result.fold(
-                onSuccess = { fileId ->
-                    Log.i(TAG, "Drop folder file uploaded successfully: ${file.name} -> $fileId")
-                    processedFiles.add(file.absolutePath)
+        // Upload via MeshrabiyaApi (metadata auto-generated internally) (file: File, recipients:List<RecipientEntry>,callback: (Result<String>) -> Unit)
+        api.storeFile(file, getInheritedRecipientsForFile(file, true)) 
+        // { result ->
+        //     result.fold(
+        //         onSuccess = { fileId ->
+        //             Log.i(TAG, "Drop folder file uploaded successfully: ${file.name} -> $fileId")
+        //             processedFiles.add(file.absolutePath)
                     
-                    // Optional: Delete original file after successful upload
-                    if (shouldDeleteAfterUpload()) {
-                        file.delete()
-                        Log.d(TAG, "Deleted original file after upload: ${file.name}")
-                    }
-                },
-                onFailure = { error ->
-                    Log.e(TAG, "Drop folder upload failed: ${file.name}", error)
                     
-                    // Remove from processed set to allow retry
-                    processedFiles.remove(file.absolutePath)
+        //         },
+        //         onFailure = { error ->
+        //             Log.e(TAG, "Drop folder upload failed: ${file.name}", error)
                     
-                    // Schedule retry based on error type
-                    when (error) {
-                        is IOException -> {
-                            Log.d(TAG, "Network error, scheduling retry in ${RETRY_DELAY_NETWORK_ERROR}ms")
-                            scheduleRetry(file, RETRY_DELAY_NETWORK_ERROR)
-                        }
-                        is IllegalStateException -> {
-                            Log.d(TAG, "Service not ready, scheduling retry in ${RETRY_DELAY_SERVICE_ERROR}ms")
-                            scheduleRetry(file, RETRY_DELAY_SERVICE_ERROR)
-                        }
-                        else -> {
-                            Log.e(TAG, "Permanent upload failure for ${file.name}, no retry")
-                        }
-                    }
-                }
-            )
-        }
+        //             // Remove from processed set to allow retry
+        //             processedFiles.remove(file.absolutePath)
+                    
+        //             // Schedule retry based on error type
+        //             when (error) {
+        //                 is IOException -> {
+        //                     Log.d(TAG, "Network error, scheduling retry in ${RETRY_DELAY_NETWORK_ERROR}ms")
+        //                     scheduleRetry(file, RETRY_DELAY_NETWORK_ERROR)
+        //                 }
+        //                 is IllegalStateException -> {
+        //                     Log.d(TAG, "Service not ready, scheduling retry in ${RETRY_DELAY_SERVICE_ERROR}ms")
+        //                     scheduleRetry(file, RETRY_DELAY_SERVICE_ERROR)
+        //                 }
+        //                 else -> {
+        //                     Log.e(TAG, "Permanent upload failure for ${file.name}, no retry")
+        //                 }
+        //             }
+        //         }
+        //     )
+        // }
     }
     
     private fun scheduleRetry(file: File, delayMs: Long) {

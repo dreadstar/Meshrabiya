@@ -1,3 +1,4 @@
+
 package com.ustadmobile.meshrabiya
 
 import java.util.UUID
@@ -5,8 +6,14 @@ import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.ustadmobile.meshrabiya.storage.StorageAllocation
 
 object MeshrabiyaConstants {
+        /**
+     * Returns the default (fixed) replica count for all files/chunks.
+     */
+    fun getDefaultReplicaCount(): Int = 4
     private const val DEFAULT_BROADCAST_TTL_MS = 60_000L
     fun getBroadcastTtlMs(): Long {
         return prefs?.getLong("broadcast_ttl_ms", DEFAULT_BROADCAST_TTL_MS) ?: DEFAULT_BROADCAST_TTL_MS
@@ -20,6 +27,7 @@ object MeshrabiyaConstants {
 
     // --- Settings logic migrated from MeshSettings ---
     private var prefs: SharedPreferences? = null
+    private const val KEY_DROP_FOLDER_PATH = "drop_folder_path"
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("mesh_settings", Context.MODE_PRIVATE)
@@ -87,6 +95,13 @@ object MeshrabiyaConstants {
 
     fun setConnectionPoolSize(size: Int) {
         prefs?.edit()?.putInt("connection_pool_size", size)?.apply()
+    }
+    fun setDropFolderPath(path: String) {
+        prefs?.edit()?.putString(KEY_DROP_FOLDER_PATH, path)?.apply()
+    }
+
+    fun getDropFolderPath(): String {
+        return prefs?.getString(KEY_DROP_FOLDER_PATH, "") ?: ""
     }
 
     // Phase 1: Task completion retry constants
@@ -175,6 +190,23 @@ object MeshrabiyaConstants {
      */
     fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
         prefs?.edit()?.putBoolean(COMPUTE_LAYER_ENABLED_KEY, enabled)?.apply()
+    }
+
+    private const val STORAGE_ALLOCATIONS_KEY = "storage_allocations"
+
+    fun setStorageAllocations(allocations: List<StorageAllocation>) {
+        val json = Gson().toJson(allocations)
+        prefs?.edit()?.putString(STORAGE_ALLOCATIONS_KEY, json)?.apply()
+    }
+
+    fun getStorageAllocations(): List<StorageAllocation> {
+        val json = prefs?.getString(STORAGE_ALLOCATIONS_KEY, null) ?: return emptyList()
+        return try {
+            val type = object : com.google.gson.reflect.TypeToken<List<StorageAllocation>>() {}.type
+            Gson().fromJson(json, type)
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
     
 }

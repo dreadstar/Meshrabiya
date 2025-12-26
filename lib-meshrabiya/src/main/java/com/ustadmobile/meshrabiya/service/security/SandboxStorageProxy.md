@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import com.ustadmobile.meshrabiya.service.compute.model.AccessScope
+import com.ustadmobile.meshrabiya.storage.FileReference
 
 /**
  * SANDBOX-SAFE STORAGE ACCESS LAYER
@@ -289,7 +290,7 @@ class SandboxStorageProxy(
                 return StorageResponse.StoreResponse(
                     requestId = request.requestId,
                     success = true,
-                    fileId = fileReference.id
+                    fileId = fileReference.fileId
                 )
             } else {
                 return StorageResponse.StoreResponse(
@@ -336,14 +337,14 @@ class SandboxStorageProxy(
             }
             
             // Create file reference for retrieval
-            val fileReference = com.ustadmobile.meshrabiya.storage.FileReference(
-                id = generateFileId(namespacedFileName),
+            val fileReference = FileReference(
+                fileId = generateFileId(namespacedFileName),
                 path = namespacedFileName,
-                size = 0L // Size will be determined during retrieval
+                sizeBytes = 0L // Size will be determined during retrieval
             )
             
             // Retrieve from distributed storage
-            val data = distributedStorageManager.retrieveFile(fileReference)
+            val data = distributedStorageManager.retrieveFile(fileReference.fileId)
             
             if (data != null) {
                 val encodedData = java.util.Base64.getEncoder().encodeToString(data)

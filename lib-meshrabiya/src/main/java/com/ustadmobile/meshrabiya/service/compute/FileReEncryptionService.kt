@@ -53,7 +53,7 @@ object FileReEncryptionService {
             publicKey = taskPublicKey,
             recipientType = RecipientType.TASK,
             expiresAt = expiresAt,
-            taskId = taskId
+            recipientId = taskId
         )
         
         try {
@@ -64,7 +64,7 @@ object FileReEncryptionService {
                     addRecipients = listOf(taskRecipient),
                     removeRecipients = emptyList()
                 )
-                
+                    
                 if (!success) {
                     // Rollback previous files
                     rollbackFileAccess(context, fileIds.take(fileIds.indexOf(fileId)), taskPublicKey)

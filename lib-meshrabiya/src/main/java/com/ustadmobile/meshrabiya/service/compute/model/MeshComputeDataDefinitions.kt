@@ -1,6 +1,8 @@
 package com.ustadmobile.meshrabiya.service.compute.model
 import kotlinx.serialization.Serializable
 import java.util.UUID
+import com.ustadmobile.meshrabiya.storage.FileReference
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
 /**
  * MESH COMPUTE DATA DEFINITIONS
  * 
@@ -19,13 +21,15 @@ import java.util.UUID
 data class TaskExecutionContext(
     val taskId: String,
     val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
-    val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc. (deprecated enums removed)
+    // val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc. (deprecated enums removed)
     val codeBundle: ByteArray,           // Language-agnostic archive
     val inputManifest: List<FileReference>, // References to input files in DistributedStorage
     // val resourceLimits: ResourceLimits, // Deprecated and removed
     // val deadlineMs: Long,
-    val requesterNodeId: String,         // Task owner (for result permissions and completion callback)
-    val accessScope: AccessScope = AccessScope.TASK_ISOLATED
+    val requesterNodeId: Int,         // Task owner (for result permissions and completion callback)
+    val accessScope: AccessScope = AccessScope.TASK_ISOLATED,
+    val owner: RecipientEntry,
+    val recipients: List<RecipientEntry> = emptyList()
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -36,18 +40,6 @@ data class TaskExecutionContext(
     override fun hashCode(): Int = taskId.hashCode()
 }
 
-/**
- * FILE REFERENCE
- * 
- * Reference to a file in DistributedStorage (not the actual file data)
- */
-@Serializable
-data class FileReference(
-    val fileId: String,        // SHA-256 hash of file
-    val fileName: String,      // Original filename
-    val sizeBytes: Long,
-    val mimeType: String? = null
-)
 
 /**
  * RESOURCE LIMITS

@@ -3,7 +3,7 @@ package com.ustadmobile.meshrabiya.service.compute.executor
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
-import com.ustadmobile.meshrabiya.service.compute.model.FileReference
+import com.ustadmobile.meshrabiya.storage.FileReference
 import com.ustadmobile.meshrabiya.service.compute.security.RestrictedJVMPolicy
 import java.io.File
 import java.net.URLClassLoader
@@ -239,6 +239,7 @@ class JVMExecutor : TaskExecutor {
             if (file.isFile) {
                 FileReference(
                     fileId = calculateSha256Hash(file),
+                    path = file.relativeTo(outputsDir).path,
                     fileName = file.name,
                     sizeBytes = file.length()
                 )

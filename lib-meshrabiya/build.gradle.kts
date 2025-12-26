@@ -81,6 +81,7 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.75")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.75")
     implementation("org.bouncycastle:bcpg-jdk18on:1.75")
+    implementation("com.google.code.gson:gson:2.10.1")
 
     // Test dependencies
     testImplementation("junit:junit:4.13.2")

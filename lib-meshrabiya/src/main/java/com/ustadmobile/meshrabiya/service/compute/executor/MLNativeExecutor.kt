@@ -4,7 +4,7 @@ import android.content.Context
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
-import com.ustadmobile.meshrabiya.service.compute.model.FileReference
+import com.ustadmobile.meshrabiya.storage.FileReference
 import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.nio.ByteBuffer
@@ -173,6 +173,7 @@ class MLNativeExecutor(private val context: Context) : TaskExecutor {
                 FileReference(
                     fileId = calculateSha256Hash(file),
                     fileName = file.name,
+                    path = file.relativeTo(outputsDir).path,
                     sizeBytes = file.length()
                 )
             } else null

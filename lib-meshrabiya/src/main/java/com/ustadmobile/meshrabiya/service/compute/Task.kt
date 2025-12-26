@@ -29,7 +29,7 @@ data class Task(
     val executionContext: TaskExecutionContext,
     val serviceId: String,
     val inputParams: Map<String, Any>,
-    val requesterNodeId: String,
+    val requesterNodeId: Int,
     val recipients: List<RecipientEntry>,
     var state: TaskState,
     val publicKey: String,

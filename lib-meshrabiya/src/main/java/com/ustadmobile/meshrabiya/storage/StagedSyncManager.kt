@@ -236,9 +236,10 @@ class StagedSyncManager(
     /**
      * Updates mesh node IDs storing this file's chunks.
      */
-    fun updateMeshNodeIds(filePath: String, nodeIds: List<String>) {
+    fun updateMeshNodeIds(filePath: String, nodeIds: List<Int>) {
         syncedFiles[filePath]?.let { file ->
-            syncedFiles[filePath] = file.copy(meshNodeIds = nodeIds)
+            val updatedFile = file.copy(meshNodeIds = nodeIds)
+            syncedFiles[filePath] = updatedFile
             persistMetadata()
         }
     }
@@ -598,7 +599,7 @@ data class SyncedFile(
     val checksum: String? = null,       // Optional integrity check (SHA-256)
     val metadata: Map<String, String> = emptyMap(),
     val lastAccessed: Long = System.currentTimeMillis(),  // For LRU eviction
-    val meshNodeIds: List<String> = emptyList(),          // Nodes storing this file
+    val meshNodeIds: List<Int> = emptyList(),          // Nodes storing this file
     val chunkIds: List<String> = emptyList()              // Chunk IDs for reconstruction
 )
 
