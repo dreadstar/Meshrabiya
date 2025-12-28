@@ -45,7 +45,7 @@ object FileReEncryptionService {
         taskPublicKey: String,
         taskLifetimeMs: Long = 24 * 60 * 60 * 1000L // 24 hours default
     ): Boolean = withContext(Dispatchers.IO) {
-        val storageManager = DistributedStorageManager.getInstance(context)
+        val storageManager = DistributedStorageManager.getInstance()
         val expiresAt = System.currentTimeMillis() + taskLifetimeMs
         
         // Create task recipient entry
@@ -53,7 +53,7 @@ object FileReEncryptionService {
             publicKey = taskPublicKey,
             recipientType = RecipientType.TASK,
             expiresAt = expiresAt,
-            taskId = taskId
+            recipientId = taskId
         )
         
         try {
@@ -64,7 +64,7 @@ object FileReEncryptionService {
                     addRecipients = listOf(taskRecipient),
                     removeRecipients = emptyList()
                 )
-                
+                    
                 if (!success) {
                     // Rollback previous files
                     rollbackFileAccess(context, fileIds.take(fileIds.indexOf(fileId)), taskPublicKey)
@@ -92,7 +92,7 @@ object FileReEncryptionService {
         fileIds: List<String>,
         taskPublicKey: String
     ) {
-        val storageManager = DistributedStorageManager.getInstance(context)
+        val storageManager = DistributedStorageManager.getInstance()
         
         for (fileId in fileIds) {
             try {
@@ -119,7 +119,7 @@ object FileReEncryptionService {
         fileIds: List<String>,
         taskPublicKey: String
     ) {
-        val storageManager = DistributedStorageManager.getInstance(context)
+        val storageManager = DistributedStorageManager.getInstance()
         
         for (fileId in fileIds) {
             try {
@@ -147,7 +147,7 @@ object FileReEncryptionService {
         fileIds: List<String>,
         taskId: String
     ): Boolean = withContext(Dispatchers.IO) {
-        val storageManager = DistributedStorageManager.getInstance(context)
+        val storageManager = DistributedStorageManager.getInstance()
         
         fileIds.all { fileId ->
             val metadata = storageManager.getFileMetadata(fileId)

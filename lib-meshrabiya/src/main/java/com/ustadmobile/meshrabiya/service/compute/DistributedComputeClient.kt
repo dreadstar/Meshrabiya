@@ -9,6 +9,14 @@ import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.service.compute.model.LocalComputeTaskRequest
 import com.ustadmobile.meshrabiya.service.compute.model.ComputeNodeResponse
 import java.util.concurrent.ConcurrentHashMap
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
+
+import com.ustadmobile.meshrabiya.service.TaskAssignmentMessage
+import com.ustadmobile.meshrabiya.service.TaskAcceptanceMessage
+import com.ustadmobile.meshrabiya.service.TaskCompletedMessage
+import com.ustadmobile.meshrabiya.service.TaskCompletionAckMessage
+import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
 
 /**
  * Client-side distributed compute service.
@@ -155,16 +163,18 @@ class DistributedComputeClient(
         // Create assignment message
         val assignmentMessage = TaskAssignmentMessage(
             taskId = taskId,
-            executorNodeId = node.nodeAddress.toString(),
-            requesterNodeId = virtualNode.addressAsInt.toString(),
-            callbackAddress = virtualNode.addressAsInt.toString(),  // Callback to requester
+            executorNodeId = node.nodeAddress,
+            requesterNodeId = virtualNode.addressAsInt,
+            // callbackAddress = virtualNode.addressAsInt.toString(),  // Callback to requester
             executorType = tracked.request.taskType,  // LocalComputeTaskRequest.taskType (executor class name)
-            jobType = "compute",
+            // jobType = "compute",
             executionContext = emptyMap(),  // Will be properly implemented in Part 2
-            resourceLimits = emptyMap(),
+            // resourceLimits = emptyMap(),
             inputFiles = emptyList(),
-            outputRequirements = emptyMap(),
-            assignedAt = System.currentTimeMillis()
+            // outputRequirements = emptyMap(),
+            assignedAt = System.currentTimeMillis(),
+            owner = MeshrabiyaApiImpl.getInstance().getUserInfo().entry,
+            recipients = tracked.recipients
         )
         
         // Send direct message to selected node
@@ -268,7 +278,8 @@ class DistributedComputeClient(
         val candidateNodes: MutableList<ComputeNodeResponse> = mutableListOf(),
         var selectedNodeAddress: String? = null,
         var taskPublicKey: String? = null,
-        var completionMessage: TaskCompletedMessage? = null
+        var completionMessage: TaskCompletedMessage? = null,
+        var recipients: List<RecipientEntry> = emptyList()
     )
 
     /**

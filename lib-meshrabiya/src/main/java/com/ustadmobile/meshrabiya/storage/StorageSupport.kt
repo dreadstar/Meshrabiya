@@ -11,6 +11,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentHashMap
+import java.security.PublicKey
+import java.security.KeyFactory
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
 
 /**
  * Storage quota management with Android-aware storage calculations
@@ -23,7 +27,7 @@ class StorageQuotaManager(
 
     fun updateConfiguration(config: DistributedStorageManager.StorageParticipationConfig) {
         for (directory in config.allowedDirectories) {
-            directoryQuotas[directory] = calculateDirectoryQuota(directory, config.totalQuota)
+            directoryQuotas[directory] = calculateDirectoryQuota( config.totalQuota)
         }
     }
 
@@ -39,7 +43,7 @@ class StorageQuotaManager(
         return QuotaInfo(totalQuota, usedQuota)
     }
 
-    private fun calculateDirectoryQuota(directory: String, totalQuota: Long): Long {
+    private fun calculateDirectoryQuota( totalQuota: Long): Long {
         return totalQuota / directoryQuotas.size.coerceAtLeast(1)
     }
 
@@ -141,31 +145,22 @@ class StorageEncryptionManager {
         }
     }
 
+    // (Obsolete docstring removed)
     /**
-     * Hybrid encryption with per-recipient key encryption
-     * 
-     * Implements the encryption design from STORAGE_ENCRYPTION+PLAN.md:
-     * 1. Generate random symmetric key (chunk key) for this file
-     * 2. Encrypt file data with chunk key using AES-256
-     * 3. Encrypt chunk key for each recipient using their derived key
-     * 4. Bundle: [encrypted data length][encrypted data][recipient count][per-recipient encrypted keys]
-     * 
-     * Ref: TASK_EXECUTION_LAYER_IMPLEMENTATION_PLAN.md Section 2.3
-     * 
+     * Hybrid encryption with per-recipient key encryption (returns encrypted data and sessionKeys map).
+     *
      * @param data Raw file data to encrypt
-     * @param owner Task requester node ID
-     * @param recipients List of authorized node IDs
-     * @return Bundled encrypted data with per-recipient keys
+     * @param recipientPublicKeys Map of recipientKeyId to recipient public key (java.security.PublicKey)
+     * @return Pair<encryptedData: ByteArray, sessionKeys: Map<Long, ByteArray>>
      */
     fun encryptWithRecipients(
         data: ByteArray,
-        owner: String,
-        recipients: List<String>
-    ): ByteArray {
+        recipientPublicKeys: Map<String, String>
+    ): Pair<ByteArray, Map<String, ByteArray>> {
         // 1. Generate random symmetric key for this chunk
         val chunkKey = ByteArray(AES_KEY_SIZE)
         SecureRandom().nextBytes(chunkKey)
-        
+
         // 2. Encrypt data with chunk key
         val cipher = Cipher.getInstance(AES_TRANSFORMATION)
         val iv = ByteArray(IV_SIZE)
@@ -173,41 +168,18 @@ class StorageEncryptionManager {
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(chunkKey, "AES"), IvParameterSpec(iv))
         val encryptedData = cipher.doFinal(data)
         val encryptedDataWithIv = iv + encryptedData
-        
-        // 3. Encrypt chunk key for each recipient (using deterministic key derivation)
-        val encryptedKeys = recipients.map { recipientId ->
-            val recipientKeyId = recipientId.hashCode().toLong()
-            val recipientKey = deriveKeyForRecipient(recipientKeyId)
-            val keyIv = ByteArray(IV_SIZE)
-            SecureRandom().nextBytes(keyIv)
-            val keyCipher = Cipher.getInstance(AES_TRANSFORMATION)
-            keyCipher.init(Cipher.ENCRYPT_MODE, recipientKey, IvParameterSpec(keyIv))
-            val encryptedKey = keyCipher.doFinal(chunkKey)
-            keyIv + encryptedKey
+
+        // 3. Encrypt chunk key for each recipient using their public key (RSA)
+        val sessionKeys = mutableMapOf<String, ByteArray>()
+        for ((keyId, publicKey) in recipientPublicKeys) {
+            val rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+            rsaCipher.init(Cipher.ENCRYPT_MODE, decodePublicKey(publicKey))
+            val encryptedChunkKey = rsaCipher.doFinal(chunkKey)
+            sessionKeys[keyId] = encryptedChunkKey
         }
-        
-        // 4. Bundle: [encrypted data length (4 bytes)][encrypted data][recipient count (4 bytes)][recipient ID length][recipient ID][encrypted key]...
-        val buffer = java.nio.ByteBuffer.allocate(
-            4 + encryptedDataWithIv.size + 
-            4 + recipients.sumOf { 4 + it.toByteArray().size + encryptedKeys[recipients.indexOf(it)].size }
-        )
-        
-        // Write encrypted data
-        buffer.putInt(encryptedDataWithIv.size)
-        buffer.put(encryptedDataWithIv)
-        
-        // Write recipient count
-        buffer.putInt(recipients.size)
-        
-        // Write per-recipient encrypted keys
-        recipients.forEachIndexed { index, recipientId ->
-            val recipientIdBytes = recipientId.toByteArray()
-            buffer.putInt(recipientIdBytes.size)
-            buffer.put(recipientIdBytes)
-            buffer.put(encryptedKeys[index])
-        }
-        
-        return buffer.array()
+
+        // 4. Return encrypted data and sessionKeys map
+        return Pair(encryptedDataWithIv, sessionKeys)
     }
 
     private fun generateSecretKey(): SecretKey {
@@ -224,6 +196,11 @@ class StorageEncryptionManager {
         return SecretKeySpec(keyBytes, "AES")
     }
     
+    fun decodePublicKey(base64PublicKey: String): PublicKey {
+        val keyBytes = Base64.getDecoder().decode(base64PublicKey)
+        val keySpec = X509EncodedKeySpec(keyBytes)
+        return KeyFactory.getInstance("RSA").generatePublic(keySpec)
+    }
     // ========== Phase 4.7: Multi-Recipient PGP Encryption ==========
     // Ref: TASK_KEYPAIR_ENHANCEMENT_PLAN_PART2.md Section 8
     

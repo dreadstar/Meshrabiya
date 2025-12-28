@@ -1,5 +1,6 @@
 package com.ustadmobile.meshrabiya.api
-
+// import com.ustadmobile.meshrabiya.model.toHash
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -41,6 +42,15 @@ import com.ustadmobile.meshrabiya.service.ComputeTaskRequestMessage
 import com.ustadmobile.meshrabiya.service.TorStatusMonitor
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.storage.FileReference
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+import com.ustadmobile.meshrabiya.storage.DropFolderItem
+import com.ustadmobile.meshrabiya.storage.StoreFileTrigger
+import com.ustadmobile.meshrabiya.storage.RecipientType
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import com.ustadmobile.meshrabiya.util.toHash
+import com.ustadmobile.meshrabiya.storage.StorageDeviceType
+import com.ustadmobile.meshrabiya.model.User
+
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -267,7 +277,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             clearnetGateways = clearnetGateways,
         )
     }
-    
+    override fun getNodeId(): Int {
+        val node = myNode ?: return 0
+        return node.addressAsInt
+    }
+
     override fun getNodeInfo(nodeId: String): NodeInfo {
         val node = myNode ?: return NodeInfo()
         
@@ -404,7 +418,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         
         try {
             // Get current config and update participation flag
-            val currentStats = storageManager.storageStats.value
             val config = com.ustadmobile.meshrabiya.storage.DistributedStorageManager.StorageParticipationConfig(
                 participationEnabled = enabled,
                 totalQuota = storageManager.storageConfig.defaultQuota,
@@ -422,22 +435,31 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         val storageManager = myNode?.distributedStorageManager ?: return false
         return storageManager.participationEnabled.value
     }
-    override fun getAvailableStorageDevices(): List<StorageDevice> {
+    override fun getAvailableStorageDevices(): List<StorageDeviceDto> {
         // Storage device enumeration not yet implemented in DistributedStorageManager
         // Return empty list until backend implementation available
         return emptyList()
     }
     
-    override fun setStorageAllocation(deviceId: String, allocatedMB: Long, callback: (Result<Unit>) -> Unit) {
-        // Storage allocation not yet implemented in DistributedStorageManager
-        // Accept request but take no action until backend implementation available
-        callback(Result.success(Unit))
+    override fun setStorageAllocation(deviceId: String,
+    path: String, allocatedMB: Long, ) {
+        try {
+            val current = MeshrabiyaConstants.getStorageAllocations().toMutableList()
+            val idx = current.indexOfFirst { it.path == path }
+            if (idx >= 0) {
+                current[idx] = StorageAllocation(path, allocatedMB,deviceId,)
+            } else {
+                current.add(StorageAllocation(path, allocatedMB,deviceId,))
+            }
+            MeshrabiyaConstants.setStorageAllocations(current)
+            // callback(Result.success(Unit))
+        } catch (e: Exception) {
+            // callback(Result.failure(e))
+        }
     }
-    
+
     override fun getStorageAllocations(): List<StorageAllocation> {
-        // Storage allocation retrieval not yet implemented in DistributedStorageManager
-        // Return empty list until backend implementation available
-        return emptyList()
+        return MeshrabiyaConstants.getStorageAllocations()
     }
     
     override fun enableDistributedStorage() {
@@ -457,9 +479,32 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             storageManager.unregisterFromEcosystemListener(listener)
         }
     }
+
+    private var onDropFolderUpdateHandler: ((List<DropFolderItemDto>) -> Unit)? = null
+
+    override fun setOnDropFolderUpdate(handler: (List<DropFolderItemDto>) -> Unit) {
+        onDropFolderUpdateHandler = handler
+    }
+
+    internal fun notifyDropFolderUpdate(changes: List<DropFolderItem>) {
+        val dtos = changes.map { it.toDto() }
+        onDropFolderUpdateHandler?.invoke(dtos)
+    }
+
+    override fun setDropFolderPath(path: String) {
+        MeshrabiyaConstants.setDropFolderPath(path)
+    }
+
+    override fun getDropFolderPath(): String {
+        return MeshrabiyaConstants.getDropFolderPath()
+    }
     // TODO: Reimplement using TaskManager from canonical workflows (2025-12-04)
     override fun isComputeLayerParticipating(): Boolean {
-        return false // distributedStorageManager?.participationEnabled?.value ?: false
+        return MeshrabiyaConstants.isComputeLayerParticipating()
+    }
+
+    override fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
+        MeshrabiyaConstants.setComputeLayerParticipatingEnabled(enabled)
     }
 
     // --- Drop Folder Management ---
@@ -481,78 +526,57 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // All file operations below are refactored to match canonical workflow requirements.
     // Each method includes explicit TODOs, error handling, and implementation notes.
     // Remove TODOs and update implementation when DistributedStorageManager supports each operation.
-    override fun storeFile(file: File, callback: (Result<String>) -> Unit) {
+    override fun storeFile(file: File, recipients:List<RecipientEntryDto>
+    ) {
         val storageManager = myNode?.distributedStorageManager
         if (storageManager == null) {
-            callback(Result.failure(IllegalStateException("Storage manager not initialized")))
+            getOnOperationFailed()?.invoke("storeFile", IllegalStateException("Storage manager not initialized"))
             return
         }
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val fileBytes = file.readBytes()
-                val owner = myNode?.address?.hostAddress
+                val senderId = myNode?.address?.hostAddress
+                val recipientEntryList: List<RecipientEntry> = recipients.map { it.toInternal() }
                 val fileRef = storageManager.storeFile(
                     path = file.absolutePath,
                     data = fileBytes,
-                    owner = owner
+                    recipients = recipientEntryList, // TODO: Specify recipients if needed
                 )
                 if (fileRef != null) {
-                    callback(Result.success(fileRef.id))
-                    onFileStored?.invoke(fileRef.id, file)
+                    // callback(Result.success(fileRef.id))
+                    onFileStored?.invoke(fileRef.fileId, file, Result.success(fileRef.fileId))
                 } else {
-                    callback(Result.failure(Exception("Failed to store file")))
+                    // callback(Result.failure(Exception("Failed to store file")))
+                     getOnOperationFailed()?.invoke("storeFile",  Exception("Failed to store file"))
                 }
             } catch (e: Exception) {
-                callback(Result.failure(e))
-                onOperationFailed?.invoke("storeFile", e)
+                // callback(Result.failure(e))
+                getOnOperationFailed()?.invoke("storeFile", Exception("Failed to store file"))
             }
         }
     }
 
-    override fun retrieveFile(fileId: String, callback: (Result<File>) -> Unit) {
+    override suspend fun retrieveFile(fileId: String): ByteArray? {
         if (fileId.isBlank()) {
-            callback(Result.failure(IllegalArgumentException("File ID cannot be blank")))
-            return
+            getOnOperationFailed()?.invoke("retrieveFile", IllegalArgumentException("File ID cannot be blank"))
+            return null
         }
         val storageManager = myNode?.distributedStorageManager
         if (storageManager == null) {
-            callback(Result.failure(IllegalStateException("Storage manager not initialized")))
-            return
+            getOnOperationFailed()?.invoke("retrieveFile", IllegalStateException("Storage manager not initialized"))
+            return null
         }
         val metadata = storageManager.getFileMetadata(fileId)
         if (metadata == null) {
-            callback(Result.failure(java.io.FileNotFoundException("File not found: $fileId")))
-            return
+            getOnOperationFailed()?.invoke("retrieveFile", java.io.FileNotFoundException("File not found: $fileId"))
+            return null
         }
-        val context = appContext
-        if (context == null) {
-            callback(Result.failure(IllegalStateException("Context not available")))
-            return
-        }
-        val receivedDir = File(context.getExternalFilesDir(null), "MeshrabiyaFiles/received")
-        if (!receivedDir.exists()) {
-            receivedDir.mkdirs()
-        }
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val fileRef = FileReference(
-                    id = fileId,
-                    path = metadata.path,
-                    size = metadata.sizeBytes
-                )
-                val fileData = storageManager.retrieveFile(fileRef)
-                if (fileData != null) {
-                    val targetFile = File(receivedDir, File(metadata.path).name)
-                    targetFile.writeBytes(fileData)
-                    callback(Result.success(targetFile))
-                    onFileRetrieved?.invoke(fileId, targetFile)
-                } else {
-                    callback(Result.failure(java.io.FileNotFoundException("File data not found: $fileId")))
-                }
-            } catch (e: Exception) {
-                callback(Result.failure(e))
-                onOperationFailed?.invoke("retrieveFile", e)
-            }
+        return try {
+            storageManager.retrieveFile(fileId)
+        } catch (e: Exception) {
+            getOnOperationFailed()?.invoke("retrieveFile", e)
+            null
         }
     }
 
@@ -596,8 +620,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 MeshFile(
                     fileId = metadata.fileId,
                     fileName = File(metadata.path).name,  // Extract filename from path
-                    fileSize = metadata.sizeBytes,
-                    storedAt = metadata.createdAt
+                    owner = metadata.owner,
+                    recipients = metadata.recipients,
+                    sizeBytes = metadata.sizeBytes,
+                    createdAt = metadata.createdAt,
+                    relativePath = metadata.relativePath,
+                    path = metadata.path
                 )
             }
         } catch (e: Exception) {
@@ -686,7 +714,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // override fun getTaskStatus(taskId: String): ExecutionPlan? = intelligentDistributedComputeService?.getTaskStatus(taskId)
     // override fun getAllTasks(): List<ComputeTask> = intelligentDistributedComputeService?.getAllTasks() ?: emptyList()
     private var onFileRetrieved: ((fileId: String, file: File) -> Unit)? = null
-    private var onFileStored: ((fileId: String, file: File) -> Unit)? = null
+    private var onFileStored: ((fileId: String, file: File, result: Result<String>) -> Unit)? = null
     private var onPermissionUpdated: ((fileId: String, success: Boolean) -> Unit)? = null
     private var onOperationFailed: ((operation: String, error: Throwable) -> Unit)? = null
     // UNUSED SCHEDULER API - Commented 2025-12-04
@@ -697,14 +725,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit) {
         onFileRetrieved = handler
     }
-    override fun setOnFileStored(handler: (fileId: String, file: File) -> Unit) {
+    override fun setOnFileStored(handler: (fileId: String, file: File, result: Result<String>) -> Unit) {
         onFileStored = handler
+    }
+    fun getOnFileStored(): ((fileId: String, file: File, result: Result<String>) -> Unit)? {
+        return onFileStored
     }
     override fun setOnPermissionUpdated(handler: (fileId: String, success: Boolean) -> Unit) {
         onPermissionUpdated = handler
     }
     override fun setOnOperationFailed(handler: (operation: String, error: Throwable) -> Unit) {
         onOperationFailed = handler
+    }
+
+    fun getOnOperationFailed(): ((operation: String, error: Throwable) -> Unit)? {
+        return onOperationFailed
     }
     
     // UNUSED SCHEDULER API - Commented 2025-11-12
@@ -809,4 +844,175 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     fun triggerTaskStatusUpdate(taskId: String, status: String) {
         onTaskStatusUpdate?.invoke(taskId, status)
     }
+
+    // --- TaskType enablement API ---
+    override fun isTaskTypeEnabled(taskType: TaskType): Boolean {
+        return MeshrabiyaConstants.isTaskTypeEnabled(taskType)
+    }
+
+    override fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean) {
+        MeshrabiyaConstants.setTaskTypeEnabled(taskType, enabled)
+    }
+
+    override fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
+        return MeshrabiyaConstants.getAllTaskTypeEnabled()
+    }
+
+
+    // --- User Identity API Implementation ---
+    // Allow provider to be injected for JVM testability; default to AndroidKeyStore
+    private var keyProvider: String =
+        if (System.getProperty("java.vendor")?.contains("Android") == true) "AndroidKeyStore" else "BC"
+
+    fun setKeyProviderForTest(provider: String) {
+        keyProvider = provider
+    }
+
+    override fun getUserInfo(): com.ustadmobile.meshrabiya.model.User {
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keyProvider='$keyProvider'")
+        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.getKeypair(provider = keyProvider)
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keypair=$keypair")
+        if (keypair == null) throw IllegalStateException("User keypair not initialized (provider='$keyProvider')")
+        val publicKey = keypair.public
+        val userId = publicKey.toHash()
+        val nickname = MeshrabiyaConstants.getNickname() ?: ""
+        println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: userId='$userId', nickname='$nickname'")
+        val userEntry = RecipientEntry(
+            publicKey = java.util.Base64.getEncoder().encodeToString(publicKey.encoded),
+            recipientType = RecipientType.USER,
+            recipientId = userId
+        )
+        return com.ustadmobile.meshrabiya.model.User(userId, publicKey, nickname, keypair, userEntry)
+    }
+
+    override fun setUserNickname(nickname: String) {
+        println("[DEBUG] MeshrabiyaApiImpl.setUserNickname: nickname='$nickname'")
+        MeshrabiyaConstants.setNickname(nickname)
+    }
+
+    override fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User {
+        val context = getAppContext() ?: throw IllegalStateException("App context not set")
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keyProvider='$keyProvider'")
+        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.rotateKeypair(context, provider = keyProvider)
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keypair=$keypair")
+        val publicKey = keypair.public
+        val userId = publicKey.toHash()
+        println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: new userId='$userId'")
+        MeshrabiyaConstants.setUserId(userId)
+        MeshrabiyaConstants.setUserPublicKey(android.util.Base64.encodeToString(publicKey.encoded, android.util.Base64.DEFAULT))
+         val userEntry = RecipientEntry(
+            publicKey = java.util.Base64.getEncoder().encodeToString(publicKey.encoded),
+            recipientType = RecipientType.USER,
+            recipientId = userId
+        )
+        return User(userId, publicKey, MeshrabiyaConstants.getNickname() ?: "", keypair, userEntry)
+    }
+
+    /**
+     * Initialize user info on first run: generate keypair, set nickname, store userId and nickname.
+     * Should be called during app startup or mesh initialization.
+     */
+    fun initializeUser(context: Context, nicknameProvider: (() -> String)? = null) {
+        // Check if userId is already set
+        val userId = MeshrabiyaConstants.getUserId()
+        println("[DEBUG] MeshrabiyaApiImpl.initializeUser: userId='$userId', keyProvider='$keyProvider'")
+        if (userId.isNullOrEmpty()) {
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generating keypair")
+            val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.generateKeypair(context, provider = keyProvider)
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generated keypair: $keypair")
+            val publicKey = keypair.public
+            val newUserId = publicKey.toHash()
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: newUserId='$newUserId'")
+            MeshrabiyaConstants.setUserId(newUserId)
+            // Prompt for nickname or set default
+            val nickname = nicknameProvider?.invoke() ?: "MeshUser"
+            println("[DEBUG] MeshrabiyaApiImpl.initializeUser: nickname='$nickname'")
+            MeshrabiyaConstants.setNickname(nickname)
+        }
+    }
+
+
 }
+
+// In DropFolderItem.kt (internal model)
+fun DropFolderItem.toDto(): DropFolderItemDto = DropFolderItemDto(
+    itemRelativePath = itemRelativePath,
+    isFolder = isFolder,
+    trigger = trigger?.toDto()
+)
+
+fun DropFolderItemDto.toInternal(): DropFolderItem = DropFolderItem(
+    itemRelativePath = itemRelativePath,
+    isFolder = isFolder,
+    trigger = trigger?.toInternal()
+)
+
+// In StoreFileTrigger.kt
+fun StoreFileTrigger.toDto(): StoreFileTriggerDto = StoreFileTriggerDto(
+    id=id,
+    subPath = subPath,
+    recipients = recipients.map { it.toDto() },
+
+)
+
+fun StoreFileTriggerDto.toInternal(): StoreFileTrigger = StoreFileTrigger(
+    id=id,
+    subPath = subPath,
+    recipients = recipients.map { it.toInternal() },
+    
+)
+
+// In RecipientEntry.kt
+fun RecipientEntry.toDto(): RecipientEntryDto = RecipientEntryDto(
+    publicKey = publicKey,
+    recipientType = RecipientTypeDto.valueOf(recipientType.name),
+    recipientId = recipientId,
+    expiresAt = expiresAt
+)
+
+fun RecipientEntryDto.toInternal(): RecipientEntry = RecipientEntry(
+    publicKey = publicKey,
+    recipientType = RecipientType.valueOf(recipientType.name),
+    recipientId = recipientId,
+    expiresAt = expiresAt
+)
+
+fun StorageAllocation.toDto(): StorageAllocationDto = StorageAllocationDto(
+    path = path,
+    allocatedMB = allocatedMB,
+    deviceId = deviceId
+    // enabled = enabled
+)
+
+fun StorageAllocationDto.toInternal(): StorageAllocation = StorageAllocation(
+    path = path,
+    allocatedMB = allocatedMB,
+    deviceId = deviceId
+    // enabled = enabled
+)
+
+fun StorageDeviceTypeDto.toInternal(): StorageDeviceType =
+    StorageDeviceType.valueOf(this.name)
+
+fun StorageDeviceDto.toInternal(): StorageDevice =
+StorageDevice(
+    id = id,
+    name = name,
+    path = path,
+    availableSpaceGB = availableSpaceGB,
+    totalSpaceGB = totalSpaceGB,
+    type = type.toInternal()
+)
+
+fun StorageDeviceType.toDto(): StorageDeviceTypeDto =
+    StorageDeviceTypeDto.valueOf(this.name)
+
+fun StorageDevice.toDto(): StorageDeviceDto =
+StorageDeviceDto(
+    id = id,
+    name = name,
+    path = path,
+    availableSpaceGB = availableSpaceGB,
+    totalSpaceGB = totalSpaceGB,
+    type = type.toDto()
+)

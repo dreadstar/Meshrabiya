@@ -1,4 +1,8 @@
 package com.ustadmobile.meshrabiya.vnet
+import com.ustadmobile.meshrabiya.storage.FileReference
+import java.io.File
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
+
 
 /**
  * Represents a chunk of a file stored in the mesh network.
@@ -14,18 +18,36 @@ data class MeshChunk(
     val relativePath: String,
     val hash: String,
     val storedAt: Long = System.currentTimeMillis(),
-    // Permission-related fields
-    val recipientKeyIds: List<Long> = emptyList(), // PGPPublicKey.keyID values
-    val sessionKeys: Map<Long, ByteArray> = emptyMap(), // keyID -> encrypted session key
-    // Replication tracking - CRITICAL for daisy-chain replication
-    var replicaCount: Int = 0  // Which replica this is (1st, 2nd, 3rd, etc.)
+    // val recipients: List<com.ustadmobile.meshrabiya.storage.RecipientEntry> = emptyList(),
+    val sessionKeys: Map<String, ByteArray> = emptyMap(),
+    // val owner: com.ustadmobile.meshrabiya.storage.RecipientEntry,
+    /**
+     * The number of times this chunk has been replicated. The canonical maximum is always
+     * MeshrabiyaConstants.getReplicaCount().
+     */
+    var replicaCount: Int = 0,
+    // val fileReference: FileReference,
+    val serverPath: String
 )
 
+// data class MeshFile(
+//     val fileId: String,
+//     val fileName: String,
+//     val fileSize: Long,
+//     val storedAt: Long = System.currentTimeMillis(),
+//     val owner: RecipientEntry,
+//     val recipients: List<RecipientEntry> = emptyList(),
+//     val relativePath: String = ""
+// )
 data class MeshFile(
     val fileId: String,
     val fileName: String,
-    val fileSize: Long,
-    val storedAt: Long = System.currentTimeMillis()
+    val path: String,
+    val sizeBytes: Long,
+    val owner: RecipientEntry,
+    val recipients: List<RecipientEntry>,
+    val createdAt: Long,
+    val relativePath: String
 )
 
 

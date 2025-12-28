@@ -4,6 +4,7 @@ import com.ustadmobile.meshrabiya.service.compute.model.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Contextual
 import java.util.UUID
+import com.ustadmobile.meshrabiya.storage.FileReference
 /**
  * Sealed class representing a compute task in the distributed mesh system.
  * Subclasses represent specific task types and their properties.

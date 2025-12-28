@@ -105,6 +105,7 @@ dependencies {
     testImplementation "org.jetbrains.kotlin:kotlin-test:1.9.0"
     implementation 'org.msgpack:msgpack-core:0.8.22'
     implementation 'org.tensorflow:tensorflow-lite:2.13.0'
+    implementation 'com.google.code.gson:gson:2.10.1'
     // implementation "androidx.room:room-runtime:2.6.1"
     // kapt "androidx.room:room-compiler:2.6.1" // <-- Room annotation processor
 }

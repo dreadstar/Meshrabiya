@@ -2,6 +2,8 @@ package com.ustadmobile.meshrabiya.storage
 
 import kotlinx.serialization.Serializable
 
+// import java.security.PublicKey
+
 /**
  * Recipient type for file access control.
  * 
@@ -40,17 +42,22 @@ enum class RecipientType {
 data class RecipientEntry(
     val publicKey: String,
     val recipientType: RecipientType,
-    val expiresAt: Long? = null,
-    val taskId: String? = null
+    val recipientId: String, // Used for both USER and TASK
+    val expiresAt: Long? = null
 ) {
     init {
-        // Validation: TASK recipients must have expiration and taskId
+        // Validation: TASK recipients must have expiration and recipientId
         if (recipientType == RecipientType.TASK) {
             require(expiresAt != null) { "TASK recipients must have expiration time" }
-            require(taskId != null) { "TASK recipients must have taskId" }
+            require(recipientId.isNotBlank()) { "TASK recipients must have recipientId" }
+        }
+        // USER recipients must have recipientId (userId)
+        if (recipientType == RecipientType.USER) {
+            require(recipientId.isNotBlank()) { "USER recipients must have recipientId (userId)" }
         }
     }
-    
+
+   
     /**
      * Checks if this recipient is expired.
      * USER recipients never expire (returns false).
@@ -61,4 +68,8 @@ data class RecipientEntry(
         val expiry = expiresAt ?: return false
         return System.currentTimeMillis() > expiry
     }
+  
+
+     
 }
+

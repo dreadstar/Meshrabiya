@@ -12,6 +12,12 @@ import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import com.ustadmobile.meshrabiya.vnet.MeshChunk
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.service.ChunkTransferMessage
+import java.security.PublicKey
+import com.ustadmobile.meshrabiya.util.toHash
+import com.ustadmobile.meshrabiya.util.toPublicKey
+import java.util.Base64
+import com.ustadmobile.meshrabiya.service.ChunkRetrievalQuery
+import  com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 /**
 
  * DistributedStorageServer: Server-side workflows for distributed storage.
@@ -46,7 +52,7 @@ class DistributedStorageServer(
                     LogLevel.DEBUG,
                     TAG,
                     "Receiving chunk ${chunkTransfer.chunkId} from node $senderId " +
-                    "(replica ${chunkTransfer.replicaCount}/${chunkTransfer.desiredReplicas ?: "?"})"
+                    "(replica ${chunkTransfer.replicaCount}/${MeshrabiyaConstants.getReplicaCount()})"
                 )
                 
                 // Step 1: Decrypt chunk using storage node's service private key
@@ -72,13 +78,14 @@ class DistributedStorageServer(
                 )
                 
                 // Step 3: Write chunk to filesystem
+                // TODO integrate storage participation folder selection(s)
                 val sharedStorageDir = File(
                     context.filesDir,
                     "shared_storage/${chunkTransfer.fileId}/${chunkTransfer.relativePath}"
                 )
                 if (!sharedStorageDir.exists()) sharedStorageDir.mkdirs()
                 
-                val chunkFile = File(sharedStorageDir, "${chunkTransfer.chunkId}.chunk")
+               val chunkFile = File(sharedStorageDir, "${chunkTransfer.chunkId}.chunk")
                 FileOutputStream(chunkFile).use { it.write(decryptedChunkBytes) }
                 
                 manager.betaLogger.log(
@@ -98,9 +105,10 @@ class DistributedStorageServer(
                     relativePath = chunkTransfer.relativePath,
                     hash = chunkTransfer.hash,
                     storedAt = System.currentTimeMillis(),
-                    recipientKeyIds = chunkTransfer.recipientKeyIds,
                     sessionKeys = chunkTransfer.sessionKeys,
-                    replicaCount = newReplicaCount
+                    replicaCount = newReplicaCount,
+                    
+                    serverPath = chunkFile.absolutePath // <-- NEW FIELD
                 )
                 
                 manager.addMeshChunk(meshChunk)
@@ -115,21 +123,21 @@ class DistributedStorageServer(
                 // TODO: Implement completion notification
                 
                 // Step 6: Initiate daisy-chain replication if needed
-                val desiredReplicas = chunkTransfer.desiredReplicas
-                if (desiredReplicas != null && newReplicaCount < desiredReplicas) {
+                val canonicalReplicaCount = MeshrabiyaConstants.getReplicaCount()
+                if (newReplicaCount < canonicalReplicaCount) {
                     manager.betaLogger.log(
                         LogLevel.DEBUG,
                         TAG,
                         "Initiating daisy-chain replication for chunk ${chunkTransfer.chunkId} " +
-                        "(${newReplicaCount}/${desiredReplicas})"
+                        "(${newReplicaCount}/${canonicalReplicaCount})"
                     )
-                    initiateChunkReplication(meshChunk, chunkTransfer, desiredReplicas)
+                    initiateChunkReplication(meshChunk, chunkTransfer, canonicalReplicaCount)
                 } else {
                     manager.betaLogger.log(
                         LogLevel.DEBUG,
                         TAG,
                         "Chunk ${chunkTransfer.chunkId} replication complete " +
-                        "(${newReplicaCount}/${desiredReplicas ?: newReplicaCount})"
+                        "(${newReplicaCount}/${canonicalReplicaCount})"
                     )
                 }
                 
@@ -152,21 +160,20 @@ class DistributedStorageServer(
     private suspend fun initiateChunkReplication(
         meshChunk: MeshChunk,
         originalTransfer: ChunkTransferMessage,
-        desiredReplicas: Int
+        totalReplicas: Int
     ) {
         try {
             manager.betaLogger.log(
                 LogLevel.DEBUG,
                 TAG,
                 "Beginning daisy-chain replication for chunk ${meshChunk.chunkId} " +
-                "(current: ${meshChunk.replicaCount}, target: $desiredReplicas)"
+                "(current: ${meshChunk.replicaCount}, target: $totalReplicas)"
             )
             
             // Step 1: Broadcast to discover available storage nodes
             val responses = broadcastStorageNodeRequest(
                 chunk = meshChunk,
-                fileId = meshChunk.fileId,
-                desiredReplicas = desiredReplicas
+                fileId = meshChunk.fileId
             )
             
             if (responses.isEmpty()) {
@@ -222,22 +229,21 @@ class DistributedStorageServer(
             val chunkBytes = chunkFile.readBytes()
             
             // Step 4: Re-encrypt chunk for next storage node
+            // Add the next node as a recipient
+            val publicKeyBytes = selectedNode.servicePublicKey
+            val publicKeyObj = publicKeyBytes.toPublicKey()
             val nextNodeRecipient = RecipientEntry(
-                publicKey = selectedNode.servicePublicKey.toString(Charsets.ISO_8859_1),
+                recipientId = publicKeyObj.toHash(),
+                publicKey = Base64.getEncoder().encodeToString(publicKeyBytes),
                 recipientType = RecipientType.USER
             )
-            
-            val allRecipients = originalTransfer.recipientKeyIds.map { keyId ->
-                RecipientEntry(
-                    publicKey = keyId.toString(),
-                    recipientType = RecipientType.USER
-                )
-            } + nextNodeRecipient
-            
-            val encryptedChunkBytes = manager.encryptionManager.encryptWithRecipients(
+            val updatedRecipients: List<RecipientEntry> = originalTransfer.recipients + nextNodeRecipient + originalTransfer.owner
+
+            // Create a map of <recipientId, publicKey>
+            val recipientMap: Map<String, String> = updatedRecipients.associate { it.recipientId to it.publicKey }
+            val (encryptedChunkBytes, sessionKeys) = manager.encryptionManager.encryptWithRecipients(
                 data = chunkBytes,
-                owner = virtualNode.addressAsInt.toString(),
-                recipients = allRecipients.map { it.publicKey }
+                recipientPublicKeys = recipientMap
             )
             
             manager.betaLogger.log(
@@ -257,9 +263,9 @@ class DistributedStorageServer(
                 relativePath = meshChunk.relativePath,
                 hash = meshChunk.hash,
                 replicaCount = meshChunk.replicaCount,
-                recipientKeyIds = allRecipients.map { it.publicKey.hashCode().toLong() },
+                recipients = updatedRecipients,
                 sessionKeys = originalTransfer.sessionKeys,
-                desiredReplicas = desiredReplicas
+                owner = originalTransfer.owner
             )
             
             manager.betaLogger.log(
@@ -297,8 +303,7 @@ class DistributedStorageServer(
     
     private suspend fun broadcastStorageNodeRequest(
         chunk: MeshChunk,
-        fileId: String,
-        desiredReplicas: Int
+        fileId: String
     ): List<StorageNodeResponse> = coroutineScope {
         val requestId = "${fileId}_${chunk.chunkIndex}_${System.currentTimeMillis()}"
         val request = com.ustadmobile.meshrabiya.service.StorageNodeRequest(
@@ -306,37 +311,28 @@ class DistributedStorageServer(
             chunkId = chunk.chunkId,
             chunkIndex = chunk.chunkIndex,
             fileId = fileId,
-            desiredReplicas = desiredReplicas,
             chunkSizeBytes = chunk.chunkSize,
             replicaCount = chunk.replicaCount,
             requiredSpace = chunk.chunkSize,
             fileName = chunk.fileName,
-            senderId = virtualNode.addressAsInt.toString()
+            senderId = virtualNode.addressAsInt
         )
-        
-        // Create temporary response collection
+        // ...existing code...
         val responses = mutableListOf<StorageNodeResponse>()
-        
-        // Broadcast via CoreGossipBroadcastService
-        // Note: Response collection would happen via the client's handleStorageNodeResponse
-        // For server-initiated broadcasts, we need a separate mechanism
-        // TODO: Implement server-side response collection
-        
+        // ...existing code...
         manager.betaLogger.log(
             LogLevel.DEBUG,
             TAG,
             "Broadcasted StorageNodeRequest for replication of chunk ${chunk.chunkId} (requestId=$requestId)"
         )
-        
-        // Wait for responses
+        // ...existing code...
         delay(RESPONSE_TIMEOUT_MS)
-        
+        // ...existing code...
         manager.betaLogger.log(
             LogLevel.DEBUG,
             TAG,
             "Received ${responses.size} StorageNodeResponses for chunk ${chunk.chunkId} replication"
         )
-        
         responses.toList()
     }
     
@@ -405,7 +401,7 @@ class DistributedStorageServer(
                 
                 // Send response
                 val response = StorageNodeResponse(
-                    nodeId = virtualNode.addressAsInt.toString(),
+                    nodeId = virtualNode.addressAsInt,
                     availableSpace = availableSpace,
                     totalStorageAllocated = manager.storageStats.value.currentlyUsed,
                     systemState = if (isHealthy) "HEALTHY" else "DEGRADED",
@@ -448,7 +444,7 @@ class DistributedStorageServer(
      * Called when this node receives a broadcast looking for nodes that have chunks.
      * Checks if this node has the requested chunks and responds with metadata.
      */
-    fun respondToChunkRetrievalQuery(query: com.ustadmobile.meshrabiya.service.ChunkRetrievalQuery) {
+    fun respondToChunkRetrievalQuery(query: ChunkRetrievalQuery) {
         manager.scope.launch {
             try {
                 val fileId = query.fileId
@@ -486,10 +482,11 @@ class DistributedStorageServer(
                         fileId = chunk.fileId,
                         chunkIndex = chunk.chunkIndex,
                         totalChunks = chunk.totalChunks,
-                        nodeId = virtualNode.addressAsInt.toString(),
+                        nodeId = virtualNode.addressAsInt,
                         fileName = chunk.fileName,
                         relativePath = chunk.relativePath,
-                        chunkSize = chunk.chunkSize
+                        chunkSize = chunk.chunkSize,
+                        requestId = query.requestId
                     )
                     
                     // Send response as direct message to requester
@@ -530,7 +527,7 @@ class DistributedStorageServer(
     fun handleChunkTransferRequest(
         requesterNodeId: Int,
         chunkId: String,
-        connectionPool: com.ustadmobile.meshrabiya.vnet.MeshConnectionPool = com.ustadmobile.meshrabiya.vnet.MeshConnectionPool.getInstance()
+        connectionPool: MeshConnectionPool=MeshConnectionPool.getInstance()
     ) {
         manager.scope.launch {
             try {
@@ -550,7 +547,15 @@ class DistributedStorageServer(
                     )
                     return@launch
                 }
-                
+                val meshFile = manager.storageDataStore.getMeshFile(chunk.fileId)
+                if (meshFile == null) {
+                    manager.betaLogger.log(
+                        LogLevel.WARN,
+                        TAG,
+                        "Mesh file not found for fileId: ${chunk.fileId} (cannot request chunk data)"
+                    )
+                    return@launch 
+                }
                 // Read chunk from filesystem
                 val sharedStorageDir = File(
                     context.filesDir,
@@ -584,9 +589,9 @@ class DistributedStorageServer(
                     chunkBytes = encryptedChunkBytes,
                     hash = chunk.hash,
                     replicaCount = chunk.replicaCount,
-                    recipientKeyIds = chunk.recipientKeyIds,
+                    recipients = meshFile.recipients,
                     sessionKeys = chunk.sessionKeys,
-                    desiredReplicas = null // Not relevant for retrieval
+                    owner = meshFile.owner
                 )
                 
                 // Acquire connection and send chunk

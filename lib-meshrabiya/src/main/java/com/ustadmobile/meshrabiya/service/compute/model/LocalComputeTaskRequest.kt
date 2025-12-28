@@ -1,4 +1,5 @@
 package com.ustadmobile.meshrabiya.service.compute.model
+import com.ustadmobile.meshrabiya.storage.RecipientEntry
 
 /**
  * Represents a compute task request initiated by this local node.
@@ -9,8 +10,11 @@ data class LocalComputeTaskRequest(
     val taskId: String,
     val taskType: String,  // "ml-kit-native", "ml-kit-custom", etc.
     // val requiredMLFeatures: List<String> = emptyList(),  // Required ML Kit features
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val recipients: List<RecipientEntry> = emptyList()
 ) {
     // Placeholder for actual MMCP message (will be properly implemented in future)
-    val mmcpRequest: String = "$taskType:$taskId"
+     val mmcpRequest: String
+        get() = "$taskType:$taskId"
+    
 }

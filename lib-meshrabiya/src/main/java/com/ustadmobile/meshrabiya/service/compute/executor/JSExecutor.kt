@@ -3,7 +3,7 @@ package com.ustadmobile.meshrabiya.service.compute.executor
 import com.ustadmobile.meshrabiya.service.compute.model.TaskExecutionContext
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionResult
 import com.ustadmobile.meshrabiya.service.compute.model.ExecutionErrorType
-import com.ustadmobile.meshrabiya.service.compute.model.FileReference
+import com.ustadmobile.meshrabiya.storage.FileReference
 import java.io.File
 import java.util.zip.ZipInputStream
 import java.io.ByteArrayInputStream
@@ -207,6 +207,8 @@ class JSExecutor : TaskExecutor {
             if (file.isFile) {
                 FileReference(
                     fileId = calculateSha256Hash(file),
+                    // TODO  verify the path should not be truncated and just use a filename in the process folder
+                    path = file.relativeTo(outputsDir).path,
                     fileName = file.name,
                     sizeBytes = file.length()
                 )

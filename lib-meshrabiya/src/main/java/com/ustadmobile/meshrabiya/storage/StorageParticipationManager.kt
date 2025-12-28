@@ -82,20 +82,20 @@ class StorageParticipationManager(
     /**
      * Update storage allocation for a specific device
      */
-    suspend fun updateStorageAllocation(deviceId: String, allocatedMB: Long) {
+    // TODO strip out device logic in storage allocation and participation (2025-12-24)
+    suspend fun updateStorageAllocation(path: String, allocatedMB: Long) {
         val currentAllocations = _storageAllocations.value.toMutableList()
-        val existingIndex = currentAllocations.indexOfFirst { it.deviceId == deviceId }
+        val existingIndex = currentAllocations.indexOfFirst { it.path == path }
         
-        val device = _availableStorageDevices.value.find { it.id == deviceId } ?: return
+        val device = _availableStorageDevices.value.find { it.path == path } ?: return
         val maxAllowedMB = (device.availableSpaceGB * 1024 * 0.9).toLong() // Max 90% of available
         val clampedAllocation = allocatedMB.coerceIn(0L, maxAllowedMB)
         
         val allocation = StorageAllocation(
-            deviceId = deviceId,
-            deviceName = device.name,
-            devicePath = device.path,
+            deviceId = device.id,
+            path = device.path,
             allocatedMB = clampedAllocation,
-            enabled = clampedAllocation > 0
+            // enabled = clampedAllocation > 0
         )
         
         if (existingIndex >= 0) {
@@ -118,13 +118,13 @@ class StorageParticipationManager(
     /**
      * Enable/disable storage allocation for a specific device
      */
-    suspend fun setDeviceEnabled(deviceId: String, enabled: Boolean) {
+    suspend fun setDeviceEnabled(path: String, enabled: Boolean) {
         val currentAllocations = _storageAllocations.value.toMutableList()
-        val existingIndex = currentAllocations.indexOfFirst { it.deviceId == deviceId }
+        val existingIndex = currentAllocations.indexOfFirst { it.path == path }
         
         if (existingIndex >= 0) {
             val existing = currentAllocations[existingIndex]
-            currentAllocations[existingIndex] = existing.copy(enabled = enabled)
+            // currentAllocations[existingIndex] = existing.copy(enabled = enabled)
             _storageAllocations.value = currentAllocations
             
             // Update distributed storage configuration
@@ -149,7 +149,6 @@ class StorageParticipationManager(
      */
     fun getTotalAllocatedMB(): Long {
         return _storageAllocations.value
-            .filter { it.enabled }
             .sumOf { it.allocatedMB }
     }
     
@@ -226,10 +225,9 @@ class StorageParticipationManager(
             
             StorageAllocation(
                 deviceId = device.id,
-                deviceName = device.name,
-                devicePath = device.path,
+                path = device.path,
                 allocatedMB = defaultMB,
-                enabled = false // Disabled by default
+                // enabled = false // Disabled by default
             )
         }
         
@@ -237,9 +235,9 @@ class StorageParticipationManager(
     }
     
     private fun createStorageConfig(): DistributedStorageManager.StorageParticipationConfig {
-        val enabledAllocations = _storageAllocations.value.filter { it.enabled }
-        val totalQuota = enabledAllocations.sumOf { it.allocatedMB } * 1024 * 1024 // Convert to bytes
-        val allowedDirectories = enabledAllocations.map { it.devicePath }
+        val enabledAllocations = _storageAllocations.value
+        val totalQuota = enabledAllocations.sumOf { allocation -> allocation.allocatedMB } * 1024 * 1024 // Convert to bytes
+        val allowedDirectories = enabledAllocations.map { it.path }
         
         return DistributedStorageManager.StorageParticipationConfig(
             participationEnabled = _participationEnabled.value,
@@ -280,11 +278,10 @@ data class StorageDevice(
 )
 
 data class StorageAllocation(
-    val deviceId: String,
-    val deviceName: String,
-    val devicePath: String,
+    val path: String,
     val allocatedMB: Long,
-    val enabled: Boolean
+    val deviceId: String,
+    // val enabled: Boolean
 )
 
 enum class StorageDeviceType {

@@ -1,11 +1,19 @@
+
 package com.ustadmobile.meshrabiya
 
 import java.util.UUID
+import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.ustadmobile.meshrabiya.storage.StorageAllocation
 
 object MeshrabiyaConstants {
+        /**
+     * Returns the default (fixed) replica count for all files/chunks.
+     */
+    fun getDefaultReplicaCount(): Int = 4
     private const val DEFAULT_BROADCAST_TTL_MS = 60_000L
     fun getBroadcastTtlMs(): Long {
         return prefs?.getLong("broadcast_ttl_ms", DEFAULT_BROADCAST_TTL_MS) ?: DEFAULT_BROADCAST_TTL_MS
@@ -19,6 +27,7 @@ object MeshrabiyaConstants {
 
     // --- Settings logic migrated from MeshSettings ---
     private var prefs: SharedPreferences? = null
+    private const val KEY_DROP_FOLDER_PATH = "drop_folder_path"
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("mesh_settings", Context.MODE_PRIVATE)
@@ -87,8 +96,117 @@ object MeshrabiyaConstants {
     fun setConnectionPoolSize(size: Int) {
         prefs?.edit()?.putInt("connection_pool_size", size)?.apply()
     }
+    fun setDropFolderPath(path: String) {
+        prefs?.edit()?.putString(KEY_DROP_FOLDER_PATH, path)?.apply()
+    }
+
+    fun getDropFolderPath(): String {
+        return prefs?.getString(KEY_DROP_FOLDER_PATH, "") ?: ""
+    }
 
     // Phase 1: Task completion retry constants
     const val TASK_COMPLETION_RETRY_PERIOD_MS = 30000L  // 30 seconds
     const val TASK_COMPLETION_RETRY_INTERVAL_MS = 5000L // 5 seconds
+
+    // --- TaskType enablement persistence ---
+    private const val ENABLED_TASK_TYPES_KEY = "enabled_task_types"
+
+    /**
+     * Returns whether the given TaskType is enabled (default: true if not set).
+     */
+    fun isTaskTypeEnabled(taskType: TaskType): Boolean {
+        val enabledMap = getAllTaskTypeEnabled()
+        return enabledMap[taskType] ?: true
+    }
+
+    /**
+     * Sets enabled status for a TaskType and persists the map.
+     */
+    fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean) {
+        val enabledMap = getAllTaskTypeEnabled().toMutableMap()
+        enabledMap[taskType] = enabled
+        saveTaskTypeEnabledMap(enabledMap)
+    }
+
+    /**
+     * Returns a map of TaskType to enabled status, auto-adapting to enum changes.
+     */
+    fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
+        val raw = prefs?.getString(ENABLED_TASK_TYPES_KEY, null)
+        val result = mutableMapOf<TaskType, Boolean>()
+        val allTypes = TaskType.values()
+        if (raw != null) {
+            raw.split(",").forEach { entry ->
+                val parts = entry.split(":")
+                if (parts.size == 2) {
+                    val type = allTypes.find { it.name == parts[0] }
+                    if (type != null) {
+                        result[type] = parts[1] == "1"
+                    }
+                }
+            }
+        }
+        // Add any new TaskTypes (default enabled)
+        allTypes.forEach { type ->
+            if (!result.containsKey(type)) result[type] = true
+        }
+        return result
+    }
+
+    /**
+     * Persists the TaskType enabled map as a comma-separated string.
+     */
+    private fun saveTaskTypeEnabledMap(map: Map<TaskType, Boolean>) {
+        val encoded = map.entries.joinToString(",") { "${it.key.name}:${if (it.value) "1" else "0"}" }
+        prefs?.edit()?.putString(ENABLED_TASK_TYPES_KEY, encoded)?.apply()
+    }
+
+    // --- Compute Layer Participation (Global Enable/Disable) ---
+    private const val COMPUTE_LAYER_ENABLED_KEY = "compute_layer_enabled"
+
+    // --- User Identity Persistence ---
+    private const val USER_ID_KEY = "user_id"
+    private const val USER_PUBLIC_KEY_KEY = "user_public_key"
+    private const val USER_NICKNAME_KEY = "nickname"
+
+    fun getUserId(): String? = prefs?.getString(USER_ID_KEY, null)
+    fun setUserId(id: String) { prefs?.edit()?.putString(USER_ID_KEY, id)?.apply() }
+
+    fun getUserPublicKey(): String? = prefs?.getString(USER_PUBLIC_KEY_KEY, null)
+    fun setUserPublicKey(pubKey: String) { prefs?.edit()?.putString(USER_PUBLIC_KEY_KEY, pubKey)?.apply() }
+
+    fun getNickname(): String? = prefs?.getString(USER_NICKNAME_KEY, null)
+    fun setNickname(nickname: String) { prefs?.edit()?.putString(USER_NICKNAME_KEY, nickname)?.apply() }
+
+    /**
+     * Returns whether the compute layer is enabled (default: true if not set).
+     */
+    fun isComputeLayerParticipating(): Boolean {
+        return prefs?.getBoolean(COMPUTE_LAYER_ENABLED_KEY, true) ?: true
+    }
+
+    /**
+     * Sets whether the compute layer is enabled (persistently).
+     */
+    fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(COMPUTE_LAYER_ENABLED_KEY, enabled)?.apply()
+    }
+
+    private const val STORAGE_ALLOCATIONS_KEY = "storage_allocations"
+
+    fun setStorageAllocations(allocations: List<StorageAllocation>) {
+        val json = Gson().toJson(allocations)
+        prefs?.edit()?.putString(STORAGE_ALLOCATIONS_KEY, json)?.apply()
+    }
+
+    fun getStorageAllocations(): List<StorageAllocation> {
+        val json = prefs?.getString(STORAGE_ALLOCATIONS_KEY, null) ?: return emptyList()
+        return try {
+            val type = object : com.google.gson.reflect.TypeToken<List<StorageAllocation>>() {}.type
+            Gson().fromJson(json, type)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+    
 }

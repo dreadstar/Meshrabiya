@@ -40,16 +40,16 @@ class ReplicationManager(
      */
     fun replicateFile(fileId: String, file: File) {
         CoroutineScope(Dispatchers.IO).launch {
-            val desiredReplicas = MeshrabiyaConstants.getReplicaCount()
+            val replicaTarget = MeshrabiyaConstants.getReplicaCount()
             val chunks = dataStore.getChunksForFile(fileId)
             for (chunk in chunks) {
                 meshGossipService.queryFileReplicas(chunk.chunkId, timeoutMs = 3000) { replicaNodes ->
                     val currentReplicas = replicaNodes.size
-                    if (currentReplicas >= desiredReplicas) return@queryFileReplicas
+                    if (currentReplicas >= replicaTarget) return@queryFileReplicas
 
                     val request = StorageNodeRequest(chunk.chunkSize, chunk.fileName, chunk.fileId)
                     meshGossipService.broadcastStorageNodeRequest(request, timeoutMs = 5000) { candidates ->
-                        val replicasNeeded = desiredReplicas - currentReplicas
+                        val replicasNeeded = replicaTarget - currentReplicas
                         val selectedNodes = candidates
                             .filter { it.availableSpace >= chunk.chunkSize }
                             .sortedWith(compareBy({ -it.availableSpace }, { it.latency }))

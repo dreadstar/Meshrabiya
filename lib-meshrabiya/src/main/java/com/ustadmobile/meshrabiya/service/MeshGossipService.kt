@@ -270,6 +270,9 @@ class MeshGossipService(
         pendingRequests.values.forEach { it.cancel() }
         pendingRequests.clear()
     }
+    fun getNodeAddressAsInt(): Int {
+        return virtualNode.addressAsInt
+    }
 }
 
 // Helper extension if needed

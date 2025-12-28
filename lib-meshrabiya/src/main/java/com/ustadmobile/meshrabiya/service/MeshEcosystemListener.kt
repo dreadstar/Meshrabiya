@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
+import com.ustadmobile.meshrabiya.storage.DistributedStorageClient
 
 /**
  * MeshEcosystemListener: Global listener and router for ALL Distributed Storage & Compute messages.
@@ -62,7 +63,8 @@ import com.ustadmobile.meshrabiya.vnet.MeshConnectionPool
 
 class MeshEcosystemListener(
     private val virtualNode: VirtualNode,
-    connectionPoolSize: Int = MeshrabiyaConstants.getConnectionPoolSize()
+    connectionPoolSize: Int = MeshrabiyaConstants.getConnectionPoolSize(),
+    
 ) {
     // Deduplication cache for broadcast messages
     private val seenBroadcasts = mutableSetOf<String>()
@@ -159,7 +161,25 @@ class MeshEcosystemListener(
                     }
                 }
             }
-
+            is ChunkRetrievalQueryMessage -> storageManager?.onChunkRetrievalQuery(senderId, message.query)
+            is ChunkTransferMessage -> {
+                if (message.chunkBytes.isEmpty()) {
+                    storageManager?.onChunkDataRequest(senderId, message)
+                } else {
+                    storageManager?.handleIncomingChunkTransfer(message)
+                }
+            }
+            // is ChunkTransferMessage -> {
+            //     storageManager?.handleIncomingChunkTransfer(message)
+            // }
+            is ChunkRetrievalResponse -> {
+                storageManager?.handleChunkRetrievalResponse(
+                    requestId = message.requestId,
+                    
+                    senderId = message.nodeId,
+                    response = message
+                )
+            }
             is ChunkRetrievalResponseMessage -> {
                 if (currentRoles.contains(MeshRole.STORAGE_NODE) && isStorageParticipationEnabled) {
                     message.requestId?.let { requestId ->
@@ -167,6 +187,7 @@ class MeshEcosystemListener(
                     }
                 }
             }
+            
 
             is ReplicaResponseMessage -> {
                 if (currentRoles.contains(MeshRole.STORAGE_NODE) && isStorageParticipationEnabled) {
@@ -243,6 +264,7 @@ class MeshEcosystemListener(
 
             // === DATA TRANSFERS ===
             is ChunkTransferMessage -> {
+                // Now expects recipients and owner fields in message
                 if (currentRoles.contains(MeshRole.STORAGE_NODE) && isStorageParticipationEnabled) {
                     onChunkTransfer(senderId, message)
                 }
@@ -334,6 +356,7 @@ class MeshEcosystemListener(
             if (connection != null) {
                 try {
                     if (isStorageParticipationEnabled) {
+                        // Now expects recipients and owner fields in chunk
                         storageManager?.handleIncomingChunkTransfer(senderId, chunk)
                     }
                 } finally {

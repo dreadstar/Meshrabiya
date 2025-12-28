@@ -205,7 +205,7 @@ class DistributedStorageManager(
 
     // Removed: distributedFiles - now using StagedSyncManager.syncedFiles
     // Removed: replicationTracker - DEPRECATED, not needed for canonical workflows
-    private val chunkReplicaTracker = ConcurrentHashMap<String, MutableSet<String>>()
+    private val chunkReplicaTracker = ConcurrentHashMap<String, MutableSet<Int>>()
     private val storageDataStore: StorageDataStore = StorageDataStore.getInstance(context)
 
     // Ecosystem listener integration
@@ -224,7 +224,6 @@ class DistributedStorageManager(
         val request: StorageNodeRequest,
         val chunk: MeshChunk,
         val fileId: String,
-        val desiredReplicas: Int,
         val responses: MutableList<StorageNodeResponse> = mutableListOf(),
         var retries: Int = 0,
         val completion: CompletableDeferred<List<StorageNodeResponse>> = CompletableDeferred()
@@ -342,7 +341,7 @@ class DistributedStorageManager(
                     LogLevel.DEBUG,
                     TAG,
                     "Receiving chunk ${chunkTransfer.chunkId} from node $senderId " +
-                    "(replica ${chunkTransfer.replicaCount}/${chunkTransfer.desiredReplicas ?: "?"})"
+                    "(replica ${chunkTransfer.replicaCount})"
                 )
                 
                 // Step 1: Decrypt chunk using storage node's service private key
@@ -412,24 +411,12 @@ class DistributedStorageManager(
                 // TODO: Implement completion notification
                 
                 // Step 6: Initiate daisy-chain replication if needed (Phase 2.3)
-                val desiredReplicas = chunkTransfer.desiredReplicas
-                if (desiredReplicas != null && newReplicaCount < desiredReplicas) {
-                    betaLogger.log(
-                        LogLevel.DEBUG,
-                        TAG,
-                        "Initiating daisy-chain replication for chunk ${chunkTransfer.chunkId} " +
-                        "(${newReplicaCount}/${desiredReplicas})"
-                    )
-                    // Will be implemented in Phase 2.3
-                    initiateChunkReplication(meshChunk, chunkTransfer, desiredReplicas)
-                } else {
-                    betaLogger.log(
-                        LogLevel.DEBUG,
-                        TAG,
-                        "Chunk ${chunkTransfer.chunkId} replication complete " +
-                        "(${newReplicaCount}/${desiredReplicas ?: newReplicaCount})"
-                    )
-                }
+                // desiredReplicas logic removed; use canonical config or workflow if needed
+                betaLogger.log(
+                    LogLevel.DEBUG,
+                    TAG,
+                    "Chunk ${chunkTransfer.chunkId} replication complete (replica $newReplicaCount)"
+                )
                 
             } catch (e: Exception) {
                 betaLogger.log(
@@ -461,22 +448,20 @@ class DistributedStorageManager(
      */
     private suspend fun initiateChunkReplication(
         meshChunk: MeshChunk,
-        originalTransfer: ChunkTransferMessage,
-        desiredReplicas: Int
+        originalTransfer: ChunkTransferMessage
     ) {
         try {
             betaLogger.log(
                 LogLevel.DEBUG,
                 TAG,
-                "Beginning daisy-chain replication for chunk ${meshChunk.chunkId} " +
-                "(current: ${meshChunk.replicaCount}, target: $desiredReplicas)"
+                "Beginning daisy-chain replication for chunk ${meshChunk.chunkId} (current: ${meshChunk.replicaCount})"
             )
             
             // Step 1: Broadcast to discover available storage nodes
             val responses = broadcastStorageNodeRequest(
                 chunk = meshChunk,
-                fileId = meshChunk.fileId,
-                desiredReplicas = desiredReplicas
+                fileId = meshChunk.fileId
+                // desiredReplicas removed
             )
             
             if (responses.isEmpty()) {
@@ -687,8 +672,7 @@ class DistributedStorageManager(
      */
     private suspend fun broadcastStorageNodeRequest(
         chunk: MeshChunk,
-        fileId: String,
-        desiredReplicas: Int
+        fileId: String
     ): List<StorageNodeResponse> = coroutineScope {
         val requestId = "${fileId}_${chunk.chunkIndex}_${System.currentTimeMillis()}"
         val request = StorageNodeRequest(
@@ -696,7 +680,7 @@ class DistributedStorageManager(
             chunkId = chunk.chunkId,
             chunkIndex = chunk.chunkIndex,
             fileId = fileId,
-            desiredReplicas = desiredReplicas,
+            // desiredReplicas removed
             chunkSizeBytes = chunk.chunkSize,
             replicaCount = 0, // Always 0 for initial request
             requiredSpace = chunk.chunkSize, // Legacy field
@@ -708,8 +692,7 @@ class DistributedStorageManager(
         val pending = PendingStorageNodeRequest(
             request = request,
             chunk = chunk,
-            fileId = fileId,
-            desiredReplicas = desiredReplicas
+            fileId = fileId
         )
         pendingStorageNodeRequests.add(pending)
         
@@ -745,9 +728,8 @@ class DistributedStorageManager(
     // Internal wrapper so implementations moved to client/server files can call
     internal suspend fun broadcastStorageNodeRequestInternal(
         chunk: MeshChunk,
-        fileId: String,
-        desiredReplicas: Int
-    ): List<StorageNodeResponse> = broadcastStorageNodeRequest(chunk, fileId, desiredReplicas)
+        fileId: String
+    ): List<StorageNodeResponse> = broadcastStorageNodeRequest(chunk, fileId)
     
     /**
      * Select the single best storage node from available responses.

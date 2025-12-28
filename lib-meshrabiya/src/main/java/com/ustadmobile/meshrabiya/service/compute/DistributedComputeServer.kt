@@ -19,7 +19,7 @@ import kotlinx.coroutines.*
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-
+import com.ustadmobile.meshrabiya.storage.FileReference
 /**
  * DistributedComputeServer
  * 
@@ -153,17 +153,21 @@ class DistributedComputeServer(
             val executionContext = TaskExecutionContext(
                 taskId = assignment.taskId,
                 executorType = assignment.executorType,  // TaskAssignmentMessage.executorType
-                jobType = assignment.jobType,    // Already a String in TaskAssignmentMessage
+                // jobType = assignment.jobType,    // Already a String in TaskAssignmentMessage
                 codeBundle = assignment.codeBundle ?: ByteArray(0),
                 inputManifest = assignment.inputFiles.map { fileMap ->
                     FileReference(
                         fileId = fileMap["fileId"] ?: "",
+                        path = fileMap["path"] ?: "",
                         fileName = fileMap["fileName"] ?: "",
-                        sizeBytes = fileMap["sizeBytes"]?.toLongOrNull() ?: 0L
+                        sizeBytes = fileMap["sizeBytes"]?.toLongOrNull() ?: 0L,
+                        mimeType = fileMap["mimeType"] ?: null,
                     )
                 },
                 requesterNodeId = assignment.requesterNodeId,  // Already stores callback info
-                accessScope = AccessScope.TASK_ISOLATED
+                accessScope = AccessScope.TASK_ISOLATED,
+                owner = assignment.owner,
+                recipients = assignment.recipients
             )
             
             // Add task via TaskManager
@@ -286,7 +290,7 @@ class DistributedComputeServer(
             // Create completion message
             val completionMessage = TaskCompletedMessage(
                 taskId = task.taskId,
-                executorNodeId = virtualNode.addressAsInt.toString(),
+                executorNodeId = virtualNode.addressAsInt,
                 status = if (task.state == TaskState.COMPLETED) "SUCCESS" else "FAILED",
                 executionStats = TaskCompletedMessage.ExecutionStats(
                     executionTimeMs = (task.completedAt ?: System.currentTimeMillis()) - (task.startedAt ?: task.createdAt),
@@ -302,7 +306,7 @@ class DistributedComputeServer(
                         errorCode = 1
                     )
                 } else null,
-                resultStorageRefs = outputManifest.map { it.id }
+                resultStorageRefs = outputManifest.map { it.fileId }
             )
             
             // Send completion message
@@ -321,39 +325,29 @@ class DistributedComputeServer(
      * Returns list of FileReferences for output manifest.
      */
     private suspend fun collectAndStoreOutputFiles(task: Task): List<com.ustadmobile.meshrabiya.storage.FileReference> {
-        val outputFiles = mutableListOf<com.ustadmobile.meshrabiya.storage.FileReference>()
+        val outputFiles = mutableListOf<FileReference>()
         
         try {
             val outputsDir = File(task.sandboxDir, "outputs")
             if (!outputsDir.exists()) return emptyList()
-            
+
             outputsDir.listFiles()?.forEach { file ->
                 if (file.isFile) {
                     // Store file to distributed storage with task permissions
                     val fileRef = distributedStorageClient.storeFile(
-                        path = file.name,
+                        path = file.absolutePath,
                         data = file.readBytes(),
-                        owner = task.executionContext.requesterNodeId,
-                        recipients = listOf(
-                            RecipientEntry(
-                                publicKey = task.executionContext.requesterNodeId,
-                                recipientType = RecipientType.USER
-                            ),
-                            RecipientEntry(
-                                publicKey = task.publicKey,
-                                recipientType = RecipientType.TASK,
-                                taskId = task.taskId
-                            )
-                        )
+                        
+                        recipients = task.executionContext.recipients
                     )
                     
                     if (fileRef != null) {
                         outputFiles.add(fileRef)
-                        betaLogger?.log(LogLevel.DEBUG, TAG, "Stored output file: ${file.name} -> ${fileRef.id}")
+                        betaLogger?.log(LogLevel.DEBUG, TAG, "Stored output file: ${file.name} -> ${fileRef.fileId}")
                     }
                 }
             }
-            
+
         } catch (e: Exception) {
             betaLogger?.log(LogLevel.ERROR, TAG, "Error collecting output files: ${e.message}")
         }
