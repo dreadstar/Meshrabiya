@@ -55,9 +55,9 @@ class DistributedStorageManager(
         @Volatile
         private var instance: DistributedStorageManager? = null
         
-        fun getInstance(context: Context): DistributedStorageManager {
+        fun getInstance(): DistributedStorageManager {
             return instance ?: throw IllegalStateException(
-                "DistributedStorageManager not initialized. Must be initialized through VirtualNode or explicitly via initialize()."
+                "DistributedStorageManager not initialized. Call initialize(...) first."
             )
         }
         

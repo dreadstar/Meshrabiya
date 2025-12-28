@@ -26,7 +26,14 @@ import kotlin.math.min
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.storage.RecipientEntry
 import java.util.concurrent.ConcurrentHashMap
-
+import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
 /**
  * Section 7: Drop Folder Service
  * 
@@ -61,6 +68,7 @@ class MeshDropFolderService : Service() {
     private val uploadExecutor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private val allItems = ConcurrentHashMap<String, DropFolderItem>()
+    private val distributedStorageManager = DistributedStorageManager.getInstance()
 
     
     companion object {
@@ -80,7 +88,11 @@ class MeshDropFolderService : Service() {
                                       FileObserver.MOVED_TO or 
                                       FileObserver.MOVED_FROM
     }
-    
+
+    // override fun onBind(intent: Intent?): IBinder? {
+    //     return null
+    // }
+
     override fun onCreate() {
         super.onCreate()
         
@@ -359,7 +371,30 @@ class MeshDropFolderService : Service() {
         Log.i(TAG, "Uploading file to mesh: ${file.name}")
         
         // Upload via MeshrabiyaApi (metadata auto-generated internally) (file: File, recipients:List<RecipientEntry>,callback: (Result<String>) -> Unit)
-        api.storeFile(file, getInheritedRecipientsForFile(file, true)) 
+        // distributedStorageManager.storeFile(file, getInheritedRecipientsForFile(file.path, true)) 
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val fileBytes = file.readBytes()
+                val senderId = api.getNodeId()
+                
+                val fileRef = distributedStorageManager.storeFile(
+                    path = file.absolutePath,
+                    data = fileBytes,
+                    recipients = getInheritedRecipientsForFile(file, true), 
+                )
+                if (fileRef != null) {
+                    // callback(Result.success(fileRef.id))
+                    api.getOnFileStored()?.invoke(fileRef.fileId, file, Result.success(fileRef.fileId))
+                } else {
+                    // callback(Result.failure(Exception("Failed to store file")))
+                     api.getOnOperationFailed()?.invoke("storeFile",  Exception("Failed to store file"))
+                }
+            } catch (e: Exception) {
+                // callback(Result.failure(e))
+                api.getOnOperationFailed()?.invoke("storeFile", Exception("Failed to store file"))
+            }
+        }
         // { result ->
         //     result.fold(
         //         onSuccess = { fileId ->
@@ -405,7 +440,7 @@ class MeshDropFolderService : Service() {
         }, delayMs)
     }
     
-    private fun isInSharedSubfolder(file: File): Boolean {
+    fun isInSharedSubfolder(file: File): Boolean {
         var parent = file.parentFile
         
         // Walk up directory tree

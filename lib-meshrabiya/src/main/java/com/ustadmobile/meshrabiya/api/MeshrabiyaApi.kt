@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
+import kotlinx.serialization.Serializable
 // UNUSED SCHEDULER IMPORTS - Commented 2025-11-12
 // Scheduler infrastructure not used in Phase 3-4 ML-capable compute implementation
 // Phase 3-4 uses direct broadcast-response pattern (processTaskRequest → node selection)
@@ -59,7 +60,7 @@ interface MeshrabiyaApi {
     fun getPeerCount(): Int
     fun getNetworkInfo(): NetworkInfo
     fun getNodeInfo(nodeId: String): NodeInfo
-
+    fun getNodeId(): Int
     // --- Proxy Controls ---
     fun setProxy(host: String, port: Int)
     fun setProxyActive(active: Boolean)
@@ -101,8 +102,10 @@ interface MeshrabiyaApi {
     // --- Storage Participation ---
     fun setStorageParticipationEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit)
     fun getStorageParticipationStatus(): Boolean
-    fun getAvailableStorageDevices(): List<StorageDevice>
-    fun setStorageAllocation(deviceId: String, allocatedMB: Long, callback: (Result<Unit>) -> Unit)
+    fun getAvailableStorageDevices(): List<StorageDeviceDto>
+    fun setStorageAllocation(deviceId: String, 
+    path: String,
+    allocatedMB: Long, )
     fun getStorageAllocations(): List<StorageAllocation>
     fun enableDistributedStorage()
     fun disableDistributedStorage()
@@ -119,10 +122,10 @@ interface MeshrabiyaApi {
     fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
     fun getDropFolder(): File?
     fun getDropFolderFiles(): List<File>
-    fun setOnDropFolderUpdate(handler: (List<DropFolderItem>) -> Unit)
+    fun setOnDropFolderUpdate(handler: (List<DropFolderItemDto>) -> Unit)
 
     // --- File Operations ---
-    fun storeFile(file: File, recipients:List<RecipientEntry>) 
+    fun storeFile(file: File, recipients:List<RecipientEntryDto>) 
     suspend fun retrieveFile(fileId: String): ByteArray? 
     fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit)
     fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit)
@@ -216,4 +219,79 @@ interface MeshrabiyaApi {
      * Rotates the user's keypair and updates userId/publicKey.
      */
     fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User
+}
+
+
+data class DropFolderItemDto(
+    val itemRelativePath: String,
+    val isFolder: Boolean,
+    // val children: List<DropFolderItemDto> = emptyList(),
+    val trigger: StoreFileTriggerDto? = null
+)
+
+
+
+
+
+@Serializable
+data class RecipientEntryDto(
+    val publicKey: String,
+    val recipientType: RecipientTypeDto, // Use String for enum in DTO
+    val recipientId: String,
+    val expiresAt: Long? = null
+)
+
+@Serializable
+enum class RecipientTypeDto {
+    /**
+     * Long-lived user/node keypairs.
+     * Used for persistent node identities and user accounts.
+     * Never expires automatically.
+     */
+    USER,
+    
+    /**
+     * Ephemeral task keypairs.
+     * Generated per-task, expires after task completion or timeout.
+     * Provides task-level data isolation from compute node operators.
+     */
+    TASK
+}
+
+@Serializable
+data class StoreFileTriggerDto(
+    val id: Int,
+    val subPath: String, 
+    val recipients: List<RecipientEntryDto>,
+    
+)
+
+data class StorageAllocationDto(
+    val deviceId: String,
+    val path: String,
+    val allocatedMB: Long,
+    
+    // val enabled: Boolean
+)
+
+enum class StorageDeviceTypeDto{
+    INTERNAL,
+    EXTERNAL,
+    USB
+}
+
+data class StorageDeviceDto(
+    val id: String,
+    val name: String,
+    val path: String,
+    val availableSpaceGB: Float,
+    val totalSpaceGB: Float,
+    val type: StorageDeviceTypeDto
+)
+fun StorageDeviceDto.getFormattedAvailableSpace(): String {
+    return when {
+        availableSpaceGB >= 1024 -> "${(availableSpaceGB / 1024).toInt()} TB"
+        availableSpaceGB >= 1 -> "${availableSpaceGB.toInt()} GB"
+        else -> "${(availableSpaceGB * 1024).toInt()} MB"
+    }
 }

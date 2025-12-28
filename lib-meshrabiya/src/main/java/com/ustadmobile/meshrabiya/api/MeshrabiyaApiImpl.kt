@@ -48,6 +48,8 @@ import com.ustadmobile.meshrabiya.storage.StoreFileTrigger
 import com.ustadmobile.meshrabiya.storage.RecipientType
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.util.toHash
+import com.ustadmobile.meshrabiya.storage.StorageDeviceType
+import com.ustadmobile.meshrabiya.model.User
 
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
@@ -275,7 +277,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             clearnetGateways = clearnetGateways,
         )
     }
-    
+    override fun getNodeId(): Int {
+        val node = myNode ?: return 0
+        return node.addressAsInt
+    }
+
     override fun getNodeInfo(nodeId: String): NodeInfo {
         val node = myNode ?: return NodeInfo()
         
@@ -429,25 +435,26 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         val storageManager = myNode?.distributedStorageManager ?: return false
         return storageManager.participationEnabled.value
     }
-    override fun getAvailableStorageDevices(): List<StorageDevice> {
+    override fun getAvailableStorageDevices(): List<StorageDeviceDto> {
         // Storage device enumeration not yet implemented in DistributedStorageManager
         // Return empty list until backend implementation available
         return emptyList()
     }
     
-    override fun setStorageAllocation(path: String, allocatedMB: Long, callback: (Result<Unit>) -> Unit) {
+    override fun setStorageAllocation(deviceId: String,
+    path: String, allocatedMB: Long, ) {
         try {
             val current = MeshrabiyaConstants.getStorageAllocations().toMutableList()
             val idx = current.indexOfFirst { it.path == path }
             if (idx >= 0) {
-                current[idx] = StorageAllocation(path, allocatedMB)
+                current[idx] = StorageAllocation(path, allocatedMB,deviceId,)
             } else {
-                current.add(StorageAllocation(path, allocatedMB))
+                current.add(StorageAllocation(path, allocatedMB,deviceId,))
             }
             MeshrabiyaConstants.setStorageAllocations(current)
-            callback(Result.success(Unit))
+            // callback(Result.success(Unit))
         } catch (e: Exception) {
-            callback(Result.failure(e))
+            // callback(Result.failure(e))
         }
     }
 
@@ -473,14 +480,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
 
-    private var onDropFolderUpdateHandler: ((List<DropFolderItem>) -> Unit)? = null
+    private var onDropFolderUpdateHandler: ((List<DropFolderItemDto>) -> Unit)? = null
 
-    override fun setOnDropFolderUpdate(handler: (List<DropFolderItem>) -> Unit) {
+    override fun setOnDropFolderUpdate(handler: (List<DropFolderItemDto>) -> Unit) {
         onDropFolderUpdateHandler = handler
     }
 
     internal fun notifyDropFolderUpdate(changes: List<DropFolderItem>) {
-        onDropFolderUpdateHandler?.invoke(changes)
+        val dtos = changes.map { it.toDto() }
+        onDropFolderUpdateHandler?.invoke(dtos)
     }
 
     override fun setDropFolderPath(path: String) {
@@ -518,7 +526,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // All file operations below are refactored to match canonical workflow requirements.
     // Each method includes explicit TODOs, error handling, and implementation notes.
     // Remove TODOs and update implementation when DistributedStorageManager supports each operation.
-    override fun storeFile(file: File, recipients:List<RecipientEntry>
+    override fun storeFile(file: File, recipients:List<RecipientEntryDto>
     ) {
         val storageManager = myNode?.distributedStorageManager
         if (storageManager == null) {
@@ -529,10 +537,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             try {
                 val fileBytes = file.readBytes()
                 val senderId = myNode?.address?.hostAddress
+                val recipientEntryList: List<RecipientEntry> = recipients.map { it.toInternal() }
                 val fileRef = storageManager.storeFile(
                     path = file.absolutePath,
                     data = fileBytes,
-                    recipients = recipients, // TODO: Specify recipients if needed
+                    recipients = recipientEntryList, // TODO: Specify recipients if needed
                 )
                 if (fileRef != null) {
                     // callback(Result.success(fileRef.id))
@@ -896,7 +905,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             recipientType = RecipientType.USER,
             recipientId = userId
         )
-        return com.ustadmobile.meshrabiya.model.User(userId, publicKey, MeshrabiyaConstants.getNickname() ?: "", keypair, userEntry)
+        return User(userId, publicKey, MeshrabiyaConstants.getNickname() ?: "", keypair, userEntry)
     }
 
     /**
@@ -924,3 +933,86 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
 
 }
+
+// In DropFolderItem.kt (internal model)
+fun DropFolderItem.toDto(): DropFolderItemDto = DropFolderItemDto(
+    itemRelativePath = itemRelativePath,
+    isFolder = isFolder,
+    trigger = trigger?.toDto()
+)
+
+fun DropFolderItemDto.toInternal(): DropFolderItem = DropFolderItem(
+    itemRelativePath = itemRelativePath,
+    isFolder = isFolder,
+    trigger = trigger?.toInternal()
+)
+
+// In StoreFileTrigger.kt
+fun StoreFileTrigger.toDto(): StoreFileTriggerDto = StoreFileTriggerDto(
+    id=id,
+    subPath = subPath,
+    recipients = recipients.map { it.toDto() },
+
+)
+
+fun StoreFileTriggerDto.toInternal(): StoreFileTrigger = StoreFileTrigger(
+    id=id,
+    subPath = subPath,
+    recipients = recipients.map { it.toInternal() },
+    
+)
+
+// In RecipientEntry.kt
+fun RecipientEntry.toDto(): RecipientEntryDto = RecipientEntryDto(
+    publicKey = publicKey,
+    recipientType = RecipientTypeDto.valueOf(recipientType.name),
+    recipientId = recipientId,
+    expiresAt = expiresAt
+)
+
+fun RecipientEntryDto.toInternal(): RecipientEntry = RecipientEntry(
+    publicKey = publicKey,
+    recipientType = RecipientType.valueOf(recipientType.name),
+    recipientId = recipientId,
+    expiresAt = expiresAt
+)
+
+fun StorageAllocation.toDto(): StorageAllocationDto = StorageAllocationDto(
+    path = path,
+    allocatedMB = allocatedMB,
+    deviceId = deviceId
+    // enabled = enabled
+)
+
+fun StorageAllocationDto.toInternal(): StorageAllocation = StorageAllocation(
+    path = path,
+    allocatedMB = allocatedMB,
+    deviceId = deviceId
+    // enabled = enabled
+)
+
+fun StorageDeviceTypeDto.toInternal(): StorageDeviceType =
+    StorageDeviceType.valueOf(this.name)
+
+fun StorageDeviceDto.toInternal(): StorageDevice =
+StorageDevice(
+    id = id,
+    name = name,
+    path = path,
+    availableSpaceGB = availableSpaceGB,
+    totalSpaceGB = totalSpaceGB,
+    type = type.toInternal()
+)
+
+fun StorageDeviceType.toDto(): StorageDeviceTypeDto =
+    StorageDeviceTypeDto.valueOf(this.name)
+
+fun StorageDevice.toDto(): StorageDeviceDto =
+StorageDeviceDto(
+    id = id,
+    name = name,
+    path = path,
+    availableSpaceGB = availableSpaceGB,
+    totalSpaceGB = totalSpaceGB,
+    type = type.toDto()
+)

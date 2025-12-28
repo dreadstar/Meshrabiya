@@ -92,6 +92,7 @@ class StorageParticipationManager(
         val clampedAllocation = allocatedMB.coerceIn(0L, maxAllowedMB)
         
         val allocation = StorageAllocation(
+            deviceId = device.id,
             path = device.path,
             allocatedMB = clampedAllocation,
             // enabled = clampedAllocation > 0
@@ -223,7 +224,7 @@ class StorageParticipationManager(
                 .coerceIn(100L, 2048L)
             
             StorageAllocation(
-
+                deviceId = device.id,
                 path = device.path,
                 allocatedMB = defaultMB,
                 // enabled = false // Disabled by default
@@ -279,6 +280,7 @@ data class StorageDevice(
 data class StorageAllocation(
     val path: String,
     val allocatedMB: Long,
+    val deviceId: String,
     // val enabled: Boolean
 )
 
