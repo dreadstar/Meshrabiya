@@ -44,7 +44,8 @@ interface MeshrabiyaApi {
     fun initMesh(context: Context)
 
     // --- Mesh State & Network Info ---
-    fun getNodeRole(): Byte
+    // fun getNodeRole(): Byte
+    fun getNodeRoleNames(): List<String>
     fun getFitnessScore(): Float
     fun getConnectionUri(): String
     fun getLocalNodeState(): LocalNodeState

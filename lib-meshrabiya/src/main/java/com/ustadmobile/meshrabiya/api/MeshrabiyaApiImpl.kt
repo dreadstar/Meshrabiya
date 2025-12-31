@@ -190,7 +190,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- Mesh State & Network Info ---
-    override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
+    // override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
+
+    override fun getNodeRoleNames(): List<String> =
+        emergentRoleManager?.getCurrentMeshRoles()?.map { it.name } ?: emptyList()
 
     override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
     

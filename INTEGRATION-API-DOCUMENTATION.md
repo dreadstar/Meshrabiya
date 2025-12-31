@@ -26,8 +26,8 @@ The `MeshrabiyaApi` interface exposes all key operations, state, and event regis
     - `context`: Android `Context` object.
 
 #### Mesh State & Network Info
-- **`getNodeRole(): Byte`**
-  - **Purpose:** Returns the current mesh node role as a byte value.
+- **`getNodeRoles(): List<String>`**
+  - **Purpose:** Returns the current mesh node roles as a list of strings.
 
 - **`getFitnessScore(): Float`**
   - **Purpose:** Returns the node's fitness score (float).
