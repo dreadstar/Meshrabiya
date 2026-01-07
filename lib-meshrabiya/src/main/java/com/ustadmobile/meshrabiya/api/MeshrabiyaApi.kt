@@ -22,6 +22,7 @@ import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.storage.RecipientEntry
 import com.ustadmobile.meshrabiya.storage.DropFolderItem
 import com.ustadmobile.meshrabiya.storage.StoreFileTrigger
+import com.ustadmobile.meshrabiya.api.model.*
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -48,8 +49,8 @@ interface MeshrabiyaApi {
     fun getNodeRoleNames(): List<String>
     fun getFitnessScore(): Float
     fun getConnectionUri(): String
-    fun getLocalNodeState(): LocalNodeState
-    fun getNeighbors(): List<Int>
+    fun getLocalNodeState(): LocalNodeStateDto
+    fun getNeighbors(): List<NeighborInfoDto> 
     fun getHopCountToNode(nodeId: Int): Int?
     fun getConnectLink(): String?
     fun getConnectLinkFlow(): Flow<String?>
@@ -57,10 +58,10 @@ interface MeshrabiyaApi {
     // --- Mesh Network Controls ---
     fun startMesh(callback: (Result<Unit>) -> Unit)
     fun stopMesh(callback: (Result<Unit>) -> Unit)
-    fun getMeshStatus(): MeshState
+    fun getMeshStatus(): MeshStateDto
     fun getPeerCount(): Int
-    fun getNetworkInfo(): NetworkInfo
-    fun getNodeInfo(nodeId: String): NodeInfo
+    fun getNetworkInfo(): NetworkInfoDto?
+    fun getNodeInfo(nodeId: String): NodeInfoDto?
     fun getNodeId(): Int
     // --- Proxy Controls ---
     fun setProxy(host: String, port: Int)
@@ -107,7 +108,7 @@ interface MeshrabiyaApi {
     fun setStorageAllocation(deviceId: String, 
     path: String,
     allocatedMB: Long, )
-    fun getStorageAllocations(): List<StorageAllocation>
+    fun getStorageAllocations(): List<StorageAllocationDto>
     fun enableDistributedStorage()
     fun disableDistributedStorage()
     fun isComputeLayerParticipating(): Boolean
@@ -130,7 +131,7 @@ interface MeshrabiyaApi {
     suspend fun retrieveFile(fileId: String): ByteArray? 
     fun streamFile(fileId: String, callback: (Result<Unit>) -> Unit)
     fun deleteFile(fileId: String, callback: (Result<Unit>) -> Unit)
-    fun getAllMeshFiles(): List<MeshFile>
+    fun getAllMeshFiles(): List<MeshFileDto>
 
     // --- Distributed Service Layer ---
     fun setServiceParticipationEnabled(serviceId: String, enabled: Boolean, callback: (Result<Unit>) -> Unit)
@@ -138,8 +139,8 @@ interface MeshrabiyaApi {
     fun getServiceParticipationStatus(serviceId: String): Boolean
 
     // --- Compute/Task Operations ---
-    fun addTask(requestParams: Map<String, Any>): ApiResult
-    fun startTask(taskId: String, callback: (Result<Unit>) -> Unit)
+    fun addTask(serviceId: String,requestParams: Map<String, Any>, recipients: List<RecipientEntryDto>): Any?
+    // fun startTask(taskId: String, callback: (Result<Unit>) -> Unit)
     fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit)
     
     // UNUSED SCHEDULER API - Commented 2025-11-12
@@ -177,7 +178,7 @@ interface MeshrabiyaApi {
     fun getMeshTrafficRouterStatus(): String
 
     // --- Event/Callback Integration ---
-    fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit)
+    fun setOnMeshStateChanged(handler: (newState: MeshStateDto) -> Unit)
     fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit)
     // fun setOnServiceBundleReceived(handler: (serviceId: String, bundle: ByteArray) -> Unit)
     // fun setOnServiceAnnounced(handler: (serviceId: String, announcement: ServiceAnnouncement) -> Unit)
@@ -194,22 +195,22 @@ interface MeshrabiyaApi {
     /**
      * Returns whether the given TaskType is enabled for compute participation.
      */
-    fun isTaskTypeEnabled(taskType: TaskType): Boolean
+    fun isTaskTypeEnabled(taskType: TaskTypeDto): Boolean
 
     /**
      * Sets enabled status for a TaskType (persistently).
      */
-    fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean)
+    fun setTaskTypeEnabled(taskType: TaskTypeDto, enabled: Boolean)
 
     /**
      * Returns a map of all TaskTypes and their enabled status.
      */
-    fun getAllTaskTypeEnabled(): Map<TaskType, Boolean>
+    fun getAllTaskTypeEnabled(): Map<TaskTypeDto, Boolean>
     // --- User Identity API ---
     /**
      * Returns current user info (userId, publicKey, nickname).
      */
-    fun getUserInfo(): com.ustadmobile.meshrabiya.model.User
+    fun getUserInfo(): User
 
     /**
      * Sets the user's nickname (persistent).
@@ -219,80 +220,7 @@ interface MeshrabiyaApi {
     /**
      * Rotates the user's keypair and updates userId/publicKey.
      */
-    fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User
+    fun rotateUserKey(): User
 }
 
 
-data class DropFolderItemDto(
-    val itemRelativePath: String,
-    val isFolder: Boolean,
-    // val children: List<DropFolderItemDto> = emptyList(),
-    val trigger: StoreFileTriggerDto? = null
-)
-
-
-
-
-
-@Serializable
-data class RecipientEntryDto(
-    val publicKey: String,
-    val recipientType: RecipientTypeDto, // Use String for enum in DTO
-    val recipientId: String,
-    val expiresAt: Long? = null
-)
-
-@Serializable
-enum class RecipientTypeDto {
-    /**
-     * Long-lived user/node keypairs.
-     * Used for persistent node identities and user accounts.
-     * Never expires automatically.
-     */
-    USER,
-    
-    /**
-     * Ephemeral task keypairs.
-     * Generated per-task, expires after task completion or timeout.
-     * Provides task-level data isolation from compute node operators.
-     */
-    TASK
-}
-
-@Serializable
-data class StoreFileTriggerDto(
-    val id: Int,
-    val subPath: String, 
-    val recipients: List<RecipientEntryDto>,
-    
-)
-
-data class StorageAllocationDto(
-    val deviceId: String,
-    val path: String,
-    val allocatedMB: Long,
-    
-    // val enabled: Boolean
-)
-
-enum class StorageDeviceTypeDto{
-    INTERNAL,
-    EXTERNAL,
-    USB
-}
-
-data class StorageDeviceDto(
-    val id: String,
-    val name: String,
-    val path: String,
-    val availableSpaceGB: Float,
-    val totalSpaceGB: Float,
-    val type: StorageDeviceTypeDto
-)
-fun StorageDeviceDto.getFormattedAvailableSpace(): String {
-    return when {
-        availableSpaceGB >= 1024 -> "${(availableSpaceGB / 1024).toInt()} TB"
-        availableSpaceGB >= 1 -> "${availableSpaceGB.toInt()} GB"
-        else -> "${(availableSpaceGB * 1024).toInt()} MB"
-    }
-}

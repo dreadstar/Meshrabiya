@@ -175,6 +175,13 @@ enum class GatewayPreference {
                 EITHER -> "Prefer Tor, Fallback to Direct"
             }
         }
+        fun toString(preference: GatewayPreference): String {
+            return when (preference) {
+                TOR_ONLY -> "TOR_ONLY"
+                CLEARNET_ONLY -> "CLEARNET_ONLY"
+                EITHER -> "EITHER"
+            }
+        }
 
         /**
          * Get detailed description for user education.

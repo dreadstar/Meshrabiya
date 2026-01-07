@@ -54,11 +54,12 @@ class DistributedComputeClient(
         // Broadcast compute task request
         val message = ComputeTaskRequestMessage(
             taskId = request.taskId,
-            serviceId = request.taskType,  // Use taskType as serviceId
-            inputParams = emptyMap(),  // Will be properly implemented in Part 2
+            serviceId = request.serviceId,  
+            inputParams = request.inputs,  // Will be properly implemented in Part 2
             metadata = mapOf(
                 "requestId" to request.requestId
-            )
+            ),
+            recipients = request.recipients
         )
         
         virtualNode.coreGossipBroadcastService.sendBroadcast(message)
@@ -166,7 +167,7 @@ class DistributedComputeClient(
             executorNodeId = node.nodeAddress,
             requesterNodeId = virtualNode.addressAsInt,
             // callbackAddress = virtualNode.addressAsInt.toString(),  // Callback to requester
-            executorType = tracked.request.taskType,  // LocalComputeTaskRequest.taskType (executor class name)
+            // executorType = tracked.request.taskType,  // LocalComputeTaskRequest.taskType (executor class name)
             // jobType = "compute",
             executionContext = emptyMap(),  // Will be properly implemented in Part 2
             // resourceLimits = emptyMap(),

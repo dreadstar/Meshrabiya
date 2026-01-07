@@ -4,7 +4,7 @@ import java.security.KeyPairGenerator
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.ustadmobile.meshrabiya.model.UserKeyManager
-import com.ustadmobile.meshrabiya.model.User
+import com.ustadmobile.meshrabiya.api.model.User
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 import org.junit.BeforeClass

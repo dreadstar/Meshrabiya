@@ -1,4 +1,4 @@
-package com.ustadmobile.meshrabiya.model
+package com.ustadmobile.meshrabiya.api.model
 
 import java.security.KeyPair
 import java.security.PublicKey
