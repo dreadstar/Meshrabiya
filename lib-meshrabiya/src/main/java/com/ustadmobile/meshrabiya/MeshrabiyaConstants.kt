@@ -25,6 +25,12 @@ object MeshrabiyaConstants {
     const val VERSION = "0.1d11"
     val UUID_BUSY = UUID(0, 0)
 
+    // DataStore preference keys for gateway settings and participation
+    const val KEY_TOR_GATEWAY_ENABLED = "tor_gateway_enabled"
+    const val KEY_CLEARNET_GATEWAY_ENABLED = "clearnet_gateway_enabled"
+    const val KEY_STORAGE_PARTICIPATION_ENABLED = "storage_participation_enabled"
+    const val KEY_SERVICE_PARTICIPATION_ENABLED = "service_participation_enabled"
+
     // --- Settings logic migrated from MeshSettings ---
     private var prefs: SharedPreferences? = null
     private const val KEY_DROP_FOLDER_PATH = "drop_folder_path"

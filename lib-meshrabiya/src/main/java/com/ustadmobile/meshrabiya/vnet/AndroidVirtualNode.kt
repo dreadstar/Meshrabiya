@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 
 class AndroidVirtualNode(
-    val appContext: Context,
+    appContext: Context,
     port: Int = 0,
     json: Json = Json,
     logger: MNetLogger = MNetLoggerStdout(),
@@ -41,12 +41,16 @@ class AndroidVirtualNode(
     address = address,
     json = json,
     config = config,
+    appContext = appContext,
 ) {
     
     /**
      * Provides context for service initialization (EmergentRoleManager, IntelligentDistributedComputeService).
      */
-    override fun getContext(): Context = appContext
+    override fun getContext(): Context  {
+        Log.d("AndroidVirtualNode", "getContext() called, returning: $appContext")
+        return appContext
+    }
 
     private val bluetoothManager: BluetoothManager by lazy {
         appContext.getSystemService(BluetoothManager::class.java)
@@ -111,6 +115,10 @@ class AndroidVirtualNode(
     private val receiverRegistered = AtomicBoolean(false)
 
     init {
+        Log.d("AndroidVirtualNode", "Constructed with appContext: $appContext")
+        if (appContext == null) {
+            Log.e("AndroidVirtualNode", "appContext is NULL in constructor!")
+        }
         appContext.registerReceiver(
             bluetoothStateBroadcastReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         )

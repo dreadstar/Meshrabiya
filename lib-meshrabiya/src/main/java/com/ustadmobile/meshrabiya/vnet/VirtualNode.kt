@@ -54,6 +54,7 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use hardware pa
 
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import android.content.Context
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
@@ -86,6 +87,7 @@ abstract class VirtualNode(
     final override val address: InetAddress = randomApipaInetAddr(),
     override val networkPrefixLength: Int = 16,
     val config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
+    val appContext: Context
 ): VirtualRouter, Closeable, HasNodeState {
 
     val addressAsInt: Int = address.requireAddressAsInt()
@@ -205,16 +207,12 @@ abstract class VirtualNode(
     }
 
     // === STEP 1: Create EmergentRoleManager with topology callback ===
-    open val emergentRoleManager: EmergentRoleManager = run {
-        val context = getContext() 
-            ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
-        EmergentRoleManager(
-            virtualNode = this,
-            context = context,
-            getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
-            getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
-        )
-    }
+    open val emergentRoleManager: EmergentRoleManager = EmergentRoleManager(
+        virtualNode = this,
+        context = appContext,
+        getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
+        getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
+    )
 
     // === STEP 2: Create OriginatingMessageManager with EmergentRoleManager callbacks ===
     open val originatingMessageManager = OriginatingMessageManager(
@@ -328,12 +326,12 @@ abstract class VirtualNode(
     // TaskManager: Orchestrates compute task lifecycle on compute node
     protected val taskManager: TaskManager by lazy {
         TaskManager(
-            context = getContext() ?: throw IllegalStateException("Context required for TaskManager"),
+            context = appContext ?: throw IllegalStateException("Context required for TaskManager"),
             virtualNode = this,
             distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
                 ?: throw IllegalStateException("DistributedStorageClient required for TaskManager"),
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }
@@ -341,10 +339,10 @@ abstract class VirtualNode(
     // DistributedComputeClient: Client-side distributed compute service
     protected val distributedComputeClient: DistributedComputeClient by lazy {
         DistributedComputeClient(
-            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeClient"),
+            context = appContext ?: throw IllegalStateException("Context required for DistributedComputeClient"),
             virtualNode = this,
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }
@@ -364,14 +362,14 @@ abstract class VirtualNode(
     // DistributedComputeServer: Server-side distributed compute service
     protected val distributedComputeServer: DistributedComputeServer by lazy {
         DistributedComputeServer(
-            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeServer"),
+            context = appContext ?: throw IllegalStateException("Context required for DistributedComputeServer"),
             virtualNode = this,
             emergentRoleManager = emergentRoleManager,
             taskManager = taskManager,
             distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
                 ?: throw IllegalStateException("DistributedStorageClient required for DistributedComputeServer"),
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }

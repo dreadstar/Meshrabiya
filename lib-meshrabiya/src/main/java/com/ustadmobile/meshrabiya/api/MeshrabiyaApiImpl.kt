@@ -3,10 +3,12 @@ package com.ustadmobile.meshrabiya.api
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import kotlinx.coroutines.flow.first
 import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
@@ -28,6 +30,7 @@ import com.ustadmobile.meshrabiya.model.ApiResult
 import com.ustadmobile.meshrabiya.vnet.AndroidVirtualNode
 import com.ustadmobile.meshrabiya.vnet.EmergentRoleManager
 import com.ustadmobile.meshrabiya.vnet.MeshRole
+import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
 import kotlinx.coroutines.flow.Flow
@@ -73,6 +76,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     companion object {
+        private const val TAG = "MeshrabiyaApiImpl"
+        
         @Volatile
         private var instance: MeshrabiyaApiImpl? = null
 
@@ -108,6 +113,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var currentGatewayPreference: GatewayPreference = GatewayPreference.DEFAULT
     @Volatile
     private var isTorRunning: Boolean = false
+    @Volatile
+    private var isMeshHotspotActive: Boolean = false
     private val torStatusMonitor = TorStatusMonitor()
 
      // --- Proxy Controls ---
@@ -123,30 +130,46 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private val Context.dataStore by preferencesDataStore(name = "meshr_settings")
     
     override fun initMesh(context: Context) {
-        val dataStore = context.dataStore
-
-        myNode = AndroidVirtualNode(
-            appContext = context.applicationContext,
-            dataStore = dataStore
-        )
-
-        emergentRoleManager = myNode?.emergentRoleManager
-        distributedStorageManager = myNode?.distributedStorageManager
-        // distributedComputeClient accessed via myNode.getDistributedComputeClient() when needed
-        // DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
-        // intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
-        
-        // V3: Load gateway preference from storage
-        runBlocking {
-            loadGatewayPreference(context)
+        // Guard against double initialization
+        if (myNode != null) {
+            Log.w("MeshInit", "initMesh called but mesh already initialized, skipping")
+            return
         }
         
-        // V3: Register Tor status monitor
-        torStatusMonitor.register(context)
-        torStatusMonitor.requestStatusUpdate(context)  // Get initial status
-        
-        // Section 6: Start monitoring for state and peer count changes
-        startEventMonitoring()
+        Log.d("MeshInit", "initMesh called with context: $context")
+        try {
+            val dataStore = context.dataStore
+             Log.d("MeshInit", "dataStore resolved: $dataStore")
+
+            myNode = AndroidVirtualNode(
+                appContext = context.applicationContext,
+                dataStore = dataStore
+            )
+            Log.d("MeshInit", "AndroidVirtualNode created: $myNode")
+
+            emergentRoleManager = myNode?.emergentRoleManager
+            Log.d("MeshInit", "emergentRoleManager assigned: $emergentRoleManager")
+
+            distributedStorageManager = myNode?.distributedStorageManager
+            // distributedComputeClient accessed via myNode.getDistributedComputeClient() when needed
+            // DEPRECATED: IntelligentDistributedComputeService removed (2025-12-04)
+            // intelligentDistributedComputeService = myNode?.getIntelligentDistributedComputeService()
+            
+            // V3: Load gateway preference from storage
+            runBlocking {
+                loadGatewayPreference(context)
+            }
+            
+            // V3: Register Tor status monitor
+            torStatusMonitor.register(context)
+            torStatusMonitor.requestStatusUpdate(context)  // Get initial status
+            
+            // Section 6: Start monitoring for state and peer count changes
+            startEventMonitoring()
+        } catch (e: Exception) {
+            Log.e("MeshInit", "Exception during initMesh", e)
+            throw e
+        }
     }
     
     /**
@@ -196,6 +219,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     override fun getNodeRoleNames(): List<String> =
         emergentRoleManager?.getCurrentMeshRoles()?.map { it.name } ?: emptyList()
+    
+    /**
+     * Expose currentMeshRoles StateFlow for UI observation
+     */
+    val currentMeshRolesFlow: kotlinx.coroutines.flow.StateFlow<Set<MeshRole>>?
+        get() = emergentRoleManager?.currentMeshRoles
 
     override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
     
@@ -209,46 +238,93 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Mesh Network Controls ---
     override fun startMesh(callback: (Result<Unit>) -> Unit) {
-        try {
-            runBlocking {
+        Log.d("MeshrabiyaApiImpl", "startMesh() called")
+        Log.d("MeshrabiyaApiImpl", "myNode is null: ${myNode == null}")
+        
+        if (myNode == null) {
+            Log.e("MeshrabiyaApiImpl", "startMesh called but myNode is null - mesh not initialized!")
+            callback(Result.failure(IllegalStateException("Mesh not initialized - call initMesh() first")))
+            return
+        }
+        
+        Log.d("MeshrabiyaApiImpl", "Launching coroutine for startMesh")
+        eventMonitoringScope.launch {
+            try {
+                Log.d("MeshrabiyaApiImpl", "Coroutine started, calling setWifiHotspotEnabled(enabled=true)")
                 myNode?.setWifiHotspotEnabled(
                     enabled = true,
                     preferredBand = ConnectBand.BAND_5GHZ,
                     hotspotType = HotspotType.AUTO
                 )
+                Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
+                isMeshHotspotActive = true
+                
+                // Load persisted role preferences and apply them to EmergentRoleManager
+                loadAndApplyPersistedRolePreferences()
+                
+                callback(Result.success(Unit))
+                Log.d("MeshrabiyaApiImpl", "startMesh callback invoked with success")
+            } catch (e: Exception) {
+                Log.e("MeshrabiyaApiImpl", "startMesh failed with exception", e)
+                callback(Result.failure(e))
+                Log.d("MeshrabiyaApiImpl", "startMesh callback invoked with failure")
             }
-            callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
         }
+        Log.d("MeshrabiyaApiImpl", "startMesh() returning (coroutine launched)")
     }
 
     override fun stopMesh(callback: (Result<Unit>) -> Unit) {
-        try {
-            runBlocking {
+        Log.d("MeshrabiyaApiImpl", "stopMesh() called")
+        Log.d("MeshrabiyaApiImpl", "myNode is null: ${myNode == null}")
+        
+        if (myNode == null) {
+            Log.e("MeshrabiyaApiImpl", "stopMesh called but myNode is null - mesh not initialized!")
+            callback(Result.failure(IllegalStateException("Mesh not initialized - call initMesh() first")))
+            return
+        }
+        
+        Log.d("MeshrabiyaApiImpl", "Launching coroutine for stopMesh")
+        eventMonitoringScope.launch {
+            try {
+                Log.d("MeshrabiyaApiImpl", "Coroutine started, calling setWifiHotspotEnabled(enabled=false)")
                 myNode?.setWifiHotspotEnabled(
                     enabled = false,
                     preferredBand = ConnectBand.BAND_5GHZ,
                     hotspotType = HotspotType.AUTO
                 )
+                Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
+                isMeshHotspotActive = false
+                callback(Result.success(Unit))
+                Log.d("MeshrabiyaApiImpl", "stopMesh callback invoked with success")
+            } catch (e: Exception) {
+                Log.e("MeshrabiyaApiImpl", "stopMesh failed with exception", e)
+                callback(Result.failure(e))
+                Log.d("MeshrabiyaApiImpl", "stopMesh callback invoked with failure")
             }
-            callback(Result.success(Unit))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
         }
+        Log.d("MeshrabiyaApiImpl", "stopMesh() returning (coroutine launched)")
     }
 
     override fun getMeshStatus(): MeshStateDto {
-        val node = myNode ?: return MeshStateDto.DISCONNECTED
+        Log.d("MeshrabiyaApiImpl", "getMeshStatus() called - myNode is null: ${myNode == null}")
+        val node = myNode ?: run {
+            Log.d("MeshrabiyaApiImpl", "getMeshStatus() returning DISCONNECTED (myNode is null)")
+            return MeshStateDto.DISCONNECTED
+        }
         
-        // Determine state based on neighbors and network connectivity
+        // Determine state based on hotspot active state and neighbors
         val neighborCount = node.neighbors().size
+        Log.d("MeshrabiyaApiImpl", "getMeshStatus() - isMeshHotspotActive=$isMeshHotspotActive, neighborCount=$neighborCount")
         
-        return when {
-            neighborCount == 0 -> MeshStateDto.DISCONNECTED
+        val status = when {
+            !isMeshHotspotActive -> MeshStateDto.DISCONNECTED
             neighborCount > 0 -> MeshStateDto.CONNECTED
+            neighborCount == 0 -> MeshStateDto.CONNECTING  // Hotspot active but no peers yet
             else -> MeshStateDto.UNKNOWN
         }
+        
+        Log.d("MeshrabiyaApiImpl", "getMeshStatus() returning: $status")
+        return status
     }
     override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
     
@@ -279,7 +355,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return NetworkInfoDto(
             bssid = "",
             ssid = "",
-            ipAddress = "",
+            ipAddress = node.addressAsInt.addressToDotNotation(),
             isConnected = true,
             connectedPeers = connectedNeighbors,
             torGateways = torGateways,
@@ -315,6 +391,59 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Gateway Controls ---
     // TODO: Reimplement using GatewaySelector from canonical workflows (2025-12-04)
+    
+    /**
+     * Load persisted role preferences from dataStore and apply to EmergentRoleManager
+     * Called when mesh starts to restore user's role preferences
+     */
+    private suspend fun loadAndApplyPersistedRolePreferences() {
+        val roleManager = myNode?.emergentRoleManager ?: return
+        val context = appContext ?: return
+        
+        try {
+            val preferredRoles = mutableSetOf<MeshRole>()
+            val prefs = context.dataStore.data.first()
+            
+            // Load gateway preferences
+            val torGatewayEnabled = prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_TOR_GATEWAY_ENABLED)] ?: false
+            Log.i(TAG, "[INIT] Loaded Tor Gateway preference: $torGatewayEnabled")
+            if (torGatewayEnabled) {
+                preferredRoles.add(MeshRole.TOR_GATEWAY)
+            }
+            
+            val clearnetGatewayEnabled = prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_CLEARNET_GATEWAY_ENABLED)] ?: false
+            Log.i(TAG, "[INIT] Loaded Internet Gateway preference: $clearnetGatewayEnabled")
+            if (clearnetGatewayEnabled) {
+                preferredRoles.add(MeshRole.CLEARNET_GATEWAY)
+            }
+            
+            // Load storage participation preference
+            val storageEnabled = prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_STORAGE_PARTICIPATION_ENABLED)] ?: false
+            Log.i(TAG, "[INIT] Loaded Storage participation preference: $storageEnabled")
+            if (storageEnabled) {
+                preferredRoles.add(MeshRole.STORAGE_NODE)
+            }
+            
+            // Load service participation preference
+            val serviceEnabled = prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_SERVICE_PARTICIPATION_ENABLED)] ?: false
+            Log.i(TAG, "[INIT] Loaded Service participation preference: $serviceEnabled")
+            if (serviceEnabled) {
+                preferredRoles.add(MeshRole.COMPUTE_NODE)
+            }
+            
+            // Apply to role manager
+            roleManager.setPreferredRoles(preferredRoles)
+            Log.i(TAG, "[INIT] Loaded and applied persisted preferred roles: $preferredRoles")
+            
+            // Trigger initial role calculation
+            roleManager.updateRoles()
+            val actualRoles = roleManager.getCurrentMeshRoles()
+            Log.i(TAG, "[INIT] Current mesh roles AFTER updateRoles(): $actualRoles")
+        } catch (e: Exception) {
+            Log.e(TAG, "[INIT] Error loading persisted role preferences: ${e.message}", e)
+        }
+    }
+    
     override fun setTorGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         val roleManager = myNode?.emergentRoleManager
         if (roleManager == null) {
@@ -323,23 +452,50 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
         
         try {
-            val currentRoles = roleManager.getCurrentMeshRoles().toMutableSet()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Setting Tor Gateway to: $enabled")
+            
+            // Persist preference to dataStore
+            val context = appContext ?: throw IllegalStateException("App context not provided")
+            runBlocking {
+                context.dataStore.edit { prefs ->
+                    prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_TOR_GATEWAY_ENABLED)] = enabled
+                }
+            }
+            
+            // Update preferred roles
+            val currentRoles = roleManager.getPreferredRoles().toMutableSet()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Preferred roles BEFORE: $currentRoles")
             
             if (enabled) {
                 currentRoles.add(MeshRole.TOR_GATEWAY)
+                Log.i(TAG, "[GATEWAY_TOGGLE] Added TOR_GATEWAY to preferred roles")
             } else {
                 currentRoles.remove(MeshRole.TOR_GATEWAY)
+                Log.i(TAG, "[GATEWAY_TOGGLE] Removed TOR_GATEWAY from preferred roles")
             }
             
             roleManager.setPreferredRoles(currentRoles)
+            Log.i(TAG, "[GATEWAY_TOGGLE] Preferred roles AFTER: $currentRoles")
+            
+            // Trigger role recalculation
+            Log.i(TAG, "[GATEWAY_TOGGLE] Triggering updateRoles()...")
+            roleManager.updateRoles(userInitiated = true)
+            
+            // Log the actual current mesh roles after update
+            val actualRoles = roleManager.getCurrentMeshRoles()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Current mesh roles AFTER updateRoles(): $actualRoles")
+            
             callback(Result.success(Unit))
         } catch (e: Exception) {
+            Log.e(TAG, "[GATEWAY_TOGGLE] Error setting Tor Gateway: ${e.message}", e)
             callback(Result.failure(e))
         }
     }
     override fun getTorGatewayStatus(): Boolean {
-        val roleManager = myNode?.emergentRoleManager ?: return false
-        return roleManager.getCurrentMeshRoles().contains(MeshRole.TOR_GATEWAY)
+        val context = appContext ?: return false
+        return runBlocking {
+            context.dataStore.data.first()[booleanPreferencesKey(MeshrabiyaConstants.KEY_TOR_GATEWAY_ENABLED)] ?: false
+        }
     }
     override fun setInternetGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         val roleManager = myNode?.emergentRoleManager
@@ -349,23 +505,50 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
         
         try {
-            val currentRoles = roleManager.getCurrentMeshRoles().toMutableSet()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Setting Internet Gateway to: $enabled")
+            
+            // Persist preference to dataStore
+            val context = appContext ?: throw IllegalStateException("App context not provided")
+            runBlocking {
+                context.dataStore.edit { prefs ->
+                    prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_CLEARNET_GATEWAY_ENABLED)] = enabled
+                }
+            }
+            
+            // Update preferred roles
+            val currentRoles = roleManager.getPreferredRoles().toMutableSet()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Preferred roles BEFORE: $currentRoles")
             
             if (enabled) {
                 currentRoles.add(MeshRole.CLEARNET_GATEWAY)
+                Log.i(TAG, "[GATEWAY_TOGGLE] Added CLEARNET_GATEWAY to preferred roles")
             } else {
                 currentRoles.remove(MeshRole.CLEARNET_GATEWAY)
+                Log.i(TAG, "[GATEWAY_TOGGLE] Removed CLEARNET_GATEWAY from preferred roles")
             }
             
             roleManager.setPreferredRoles(currentRoles)
+            Log.i(TAG, "[GATEWAY_TOGGLE] Preferred roles AFTER: $currentRoles")
+            
+            // Trigger role recalculation
+            Log.i(TAG, "[GATEWAY_TOGGLE] Triggering updateRoles()...")
+            roleManager.updateRoles(userInitiated = true)
+            
+            // Log the actual current mesh roles after update
+            val actualRoles = roleManager.getCurrentMeshRoles()
+            Log.i(TAG, "[GATEWAY_TOGGLE] Current mesh roles AFTER updateRoles(): $actualRoles")
+            
             callback(Result.success(Unit))
         } catch (e: Exception) {
+            Log.e(TAG, "[GATEWAY_TOGGLE] Error setting Internet Gateway: ${e.message}", e)
             callback(Result.failure(e))
         }
     }
     override fun getInternetGatewayStatus(): Boolean {
-        val roleManager = myNode?.emergentRoleManager ?: return false
-        return roleManager.getCurrentMeshRoles().contains(MeshRole.CLEARNET_GATEWAY)
+        val context = appContext ?: return false
+        return runBlocking {
+            context.dataStore.data.first()[booleanPreferencesKey(MeshrabiyaConstants.KEY_CLEARNET_GATEWAY_ENABLED)] ?: false
+        }
     }
     override fun getGatewayStatus(): Boolean {
         val roleManager = myNode?.emergentRoleManager ?: return false
@@ -419,30 +602,76 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // --- Storage Participation ---
     // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun setStorageParticipationEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        val storageManager = myNode?.distributedStorageManager
-        if (storageManager == null) {
-            callback(Result.failure(IllegalStateException("Storage manager not initialized")))
-            return
-        }
-        
         try {
-            // Get current config and update participation flag
-            val config = com.ustadmobile.meshrabiya.storage.DistributedStorageManager.StorageParticipationConfig(
-                participationEnabled = enabled,
-                totalQuota = storageManager.storageConfig.defaultQuota,
-                allowedDirectories = emptyList(),  // Use defaults
-                encryptionRequired = storageManager.storageConfig.encryptionEnabled
-            )
+            Log.i(TAG, "[STORAGE_TOGGLE] Setting Storage Participation to: $enabled (mesh started: ${myNode != null})")
             
-            storageManager.configureStorageParticipation(config)
+            // ALWAYS persist preference to dataStore first - this works even if mesh isn't started
+            val context = appContext ?: throw IllegalStateException("App context not provided")
+            runBlocking {
+                context.dataStore.edit { prefs ->
+                    prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_STORAGE_PARTICIPATION_ENABLED)] = enabled
+                }
+            }
+            Log.i(TAG, "[STORAGE_TOGGLE] Persisted to dataStore: $enabled")
+            
+            // If mesh is started, apply changes immediately to running managers
+            val roleManager = myNode?.emergentRoleManager
+            val storageManager = myNode?.distributedStorageManager
+            
+            if (roleManager != null) {
+                Log.i(TAG, "[STORAGE_TOGGLE] Mesh is running, updating roles")
+                
+                // Configure storage manager if available
+                if (storageManager != null) {
+                    Log.i(TAG, "[STORAGE_TOGGLE] Configuring storage manager")
+                    val config = com.ustadmobile.meshrabiya.storage.DistributedStorageManager.StorageParticipationConfig(
+                        participationEnabled = enabled,
+                        totalQuota = storageManager.storageConfig.defaultQuota,
+                        allowedDirectories = emptyList(),  // Use defaults
+                        encryptionRequired = storageManager.storageConfig.encryptionEnabled
+                    )
+                    storageManager.configureStorageParticipation(config)
+                } else {
+                    Log.i(TAG, "[STORAGE_TOGGLE] Storage manager not available, skipping storage config")
+                }
+                
+                // Update preferred roles
+                val currentRoles = roleManager.getPreferredRoles().toMutableSet()
+                Log.i(TAG, "[STORAGE_TOGGLE] Preferred roles BEFORE: $currentRoles")
+                
+                if (enabled) {
+                    currentRoles.add(MeshRole.STORAGE_NODE)
+                    Log.i(TAG, "[STORAGE_TOGGLE] Added STORAGE_NODE to preferred roles")
+                } else {
+                    currentRoles.remove(MeshRole.STORAGE_NODE)
+                    Log.i(TAG, "[STORAGE_TOGGLE] Removed STORAGE_NODE from preferred roles")
+                }
+                
+                roleManager.setPreferredRoles(currentRoles)
+                Log.i(TAG, "[STORAGE_TOGGLE] Preferred roles AFTER: $currentRoles")
+                
+                // Trigger role recalculation
+                Log.i(TAG, "[STORAGE_TOGGLE] Triggering updateRoles()...")
+                roleManager.updateRoles(userInitiated = true)
+                
+                // Debug: check if roles actually changed
+                val actualRoles = roleManager.getCurrentMeshRoles()
+                Log.i(TAG, "[STORAGE_TOGGLE] Current mesh roles AFTER updateRoles(): $actualRoles")
+            } else {
+                Log.i(TAG, "[STORAGE_TOGGLE] Mesh not started yet, preference saved for later application")
+            }
+            
             callback(Result.success(Unit))
         } catch (e: Exception) {
+            Log.e(TAG, "[STORAGE_TOGGLE] Error setting Storage Participation: ${e.message}", e)
             callback(Result.failure(e))
         }
     }
     override fun getStorageParticipationStatus(): Boolean {
-        val storageManager = myNode?.distributedStorageManager ?: return false
-        return storageManager.participationEnabled.value
+        val context = appContext ?: return false
+        return runBlocking {
+            context.dataStore.data.first()[booleanPreferencesKey(MeshrabiyaConstants.KEY_STORAGE_PARTICIPATION_ENABLED)] ?: false
+        }
     }
     override fun getAvailableStorageDevices(): List<StorageDeviceDto> {
         // TODO properly implement getAvailableStorageDevices()
@@ -650,15 +879,60 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // --- Distributed Service Layer ---
     // TODO: Reimplement using canonical workflows (2025-12-04)
     override fun setServiceParticipationEnabled(serviceId: String, enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        // try {
-        //     myNode?.setServiceParticipationEnabled(serviceId, enabled)
+        try {
+            Log.i(TAG, "[SERVICE_TOGGLE] Setting Service Participation ($serviceId) to: $enabled (mesh started: ${myNode != null})")
+            
+            // ALWAYS persist preference to dataStore (works even if mesh not started)
+            val context = appContext ?: throw IllegalStateException("App context not provided")
+            runBlocking {
+                context.dataStore.edit { prefs ->
+                    prefs[booleanPreferencesKey(MeshrabiyaConstants.KEY_SERVICE_PARTICIPATION_ENABLED)] = enabled
+                }
+            }
+            Log.i(TAG, "[SERVICE_TOGGLE] Persisted to dataStore: $enabled")
+            
+            // IF mesh is started, apply to runtime role manager
+            val roleManager = myNode?.emergentRoleManager
+            if (roleManager != null) {
+                // Update preferred roles
+                val currentRoles = roleManager.getPreferredRoles().toMutableSet()
+                Log.i(TAG, "[SERVICE_TOGGLE] Preferred roles BEFORE: $currentRoles")
+                
+                if (enabled) {
+                    currentRoles.add(MeshRole.COMPUTE_NODE)
+                    Log.i(TAG, "[SERVICE_TOGGLE] Added COMPUTE_NODE to preferred roles")
+                } else {
+                    currentRoles.remove(MeshRole.COMPUTE_NODE)
+                    Log.i(TAG, "[SERVICE_TOGGLE] Removed COMPUTE_NODE from preferred roles")
+                }
+                
+                roleManager.setPreferredRoles(currentRoles)
+                Log.i(TAG, "[SERVICE_TOGGLE] Preferred roles AFTER: $currentRoles")
+                
+                // Trigger role recalculation
+                Log.i(TAG, "[SERVICE_TOGGLE] Triggering updateRoles()...")
+                roleManager.updateRoles(userInitiated = true)
+                
+                // Debug: check if roles actually changed
+                val actualRoles = roleManager.getCurrentMeshRoles()
+                Log.i(TAG, "[SERVICE_TOGGLE] Current mesh roles AFTER updateRoles(): $actualRoles")
+            } else {
+                Log.i(TAG, "[SERVICE_TOGGLE] Mesh not started yet, preference saved for later application")
+            }
+            
             callback(Result.success(Unit))
-        // } catch (e: Exception) {
-        //     callback(Result.failure(e))
-        // }
+        } catch (e: Exception) {
+            Log.e(TAG, "[SERVICE_TOGGLE] Error setting Service Participation: ${e.message}", e)
+            callback(Result.failure(e))
+        }
     }
     override fun getAvailableServices(): List<String> = emptyList() // myNode?.getAvailableServices() ?: emptyList()
-    override fun getServiceParticipationStatus(serviceId: String): Boolean = false // myNode?.getServiceParticipationStatus(serviceId) ?: false
+    override fun getServiceParticipationStatus(serviceId: String): Boolean {
+        val context = appContext ?: return false
+        return runBlocking {
+            context.dataStore.data.first()[booleanPreferencesKey(MeshrabiyaConstants.KEY_SERVICE_PARTICIPATION_ENABLED)] ?: false
+        }
+    }
 
     // --- Compute/Task Operations ---
     /**
