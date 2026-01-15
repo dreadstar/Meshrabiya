@@ -20,6 +20,7 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import com.ustadmobile.meshrabiya.storage.FileReference
+// import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 /**
  * DistributedComputeServer
  * 
@@ -152,7 +153,7 @@ class DistributedComputeServer(
             // Create execution context from assignment
             val executionContext = TaskExecutionContext(
                 taskId = assignment.taskId,
-                executorType = assignment.executorType,  // TaskAssignmentMessage.executorType
+                executorType = "JAVASCRIPT",  // TODO service ID needs to be wired into TaskAssignmentMessage and used to get real executor Type from the service LIbrary entry.
                 // jobType = assignment.jobType,    // Already a String in TaskAssignmentMessage
                 codeBundle = assignment.codeBundle ?: ByteArray(0),
                 inputManifest = assignment.inputFiles.map { fileMap ->

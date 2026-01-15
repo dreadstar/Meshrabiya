@@ -8,13 +8,14 @@ import com.ustadmobile.meshrabiya.storage.RecipientEntry
 data class LocalComputeTaskRequest(
     val requestId: String,
     val taskId: String,
-    val taskType: String,  // "ml-kit-native", "ml-kit-custom", etc.
+    val serviceId: String,  // "ml-kit-native", "ml-kit-custom", etc.
     // val requiredMLFeatures: List<String> = emptyList(),  // Required ML Kit features
+    val inputs: Map<String, Any> = emptyMap(),  // Input parameters for the task
     val timestamp: Long = System.currentTimeMillis(),
     val recipients: List<RecipientEntry> = emptyList()
 ) {
     // Placeholder for actual MMCP message (will be properly implemented in future)
      val mmcpRequest: String
-        get() = "$taskType:$taskId"
+        get() = "$serviceId:$taskId"
     
 }

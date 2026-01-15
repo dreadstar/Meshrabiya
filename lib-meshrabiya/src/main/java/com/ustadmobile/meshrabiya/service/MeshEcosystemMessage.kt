@@ -804,7 +804,8 @@ data class ComputeTaskRequestMessage(
     val taskId: String,
     val serviceId: String,
     val inputParams: Map<String, Any>,
-    val metadata: Map<String, Any>
+    val metadata: Map<String, Any>,
+    val recipients: List<RecipientEntry> = emptyList()
 ) : MeshEcosystemMessage("ComputeTaskRequest") {
     override fun toBytes(): ByteArray {
         val packer = MessagePack.newDefaultBufferPacker()
@@ -814,6 +815,10 @@ data class ComputeTaskRequestMessage(
         // Serialize inputParams and metadata as JSON strings for simplicity
         packer.packString(Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), inputParams))
         packer.packString(Json.encodeToString(MapSerializer(String.serializer(), AnySerializer), metadata))
+        packer.packArrayHeader(recipients.size)
+        recipients.forEach { recipient ->
+            MessageType.packRecipientEntry(packer, recipient)
+        }
         packer.close()
         return packer.toByteArray()
     }
@@ -825,7 +830,10 @@ data class ComputeTaskRequestMessage(
             val metadataJson = unpacker.unpackString()
             val inputParams = Json.decodeFromString(MapSerializer(String.serializer(), AnySerializer), inputParamsJson)
             val metadata = Json.decodeFromString(MapSerializer(String.serializer(), AnySerializer), metadataJson)
-            return ComputeTaskRequestMessage(taskId, serviceId, inputParams, metadata)
+            val recipients = List(unpacker.unpackArrayHeader()) {
+                MessageType.unpackRecipientEntry(unpacker)
+            }
+            return ComputeTaskRequestMessage(taskId, serviceId, inputParams, metadata, recipients)
         }
     }
 }
@@ -1082,7 +1090,7 @@ data class TaskAssignmentMessage(
     val executorNodeId: Int,
     val requesterNodeId: Int,
     // val callbackAddress: String,
-    val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
+    // val executorType: String,  // Executor class name: JSExecutor, JVMExecutor, MLNativeExecutor
     // val jobType: String,       // IMAGE_PROCESSING, VIDEO_PROCESSING, DATA_ANALYSIS, etc.
     val codeBundle: ByteArray? = null,
     val executionContext: Map<String, Any>,  // Includes working directory, environment vars, etc.
@@ -1103,7 +1111,7 @@ data class TaskAssignmentMessage(
         packer.packInt(executorNodeId)
         packer.packInt(requesterNodeId)
         // packer.packString(callbackAddress)
-        packer.packString(executorType)
+        // packer.packString(executorType)
         // packer.packString(jobType)
         
         // Pack code bundle
@@ -1150,7 +1158,7 @@ data class TaskAssignmentMessage(
             val executorNodeId = unpacker.unpackInt()
             val requesterNodeId = unpacker.unpackInt()
             // val callbackAddress = unpacker.unpackString()
-            val executorType = unpacker.unpackString()
+            // val executorType = unpacker.unpackString()
             // val jobType = unpacker.unpackString()
             
             // Unpack code bundle
@@ -1197,7 +1205,8 @@ data class TaskAssignmentMessage(
                 MessageType.unpackRecipientEntry(unpacker)
             }
             return TaskAssignmentMessage(
-                taskId, executorNodeId, requesterNodeId,  executorType, 
+                taskId, executorNodeId, requesterNodeId, 
+                // executorType, 
                 codeBundle, executionContext,  inputFiles, 
                 assignedAt, owner,recipients
             )

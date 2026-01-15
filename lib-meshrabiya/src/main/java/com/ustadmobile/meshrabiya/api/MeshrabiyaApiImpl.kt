@@ -12,11 +12,13 @@ import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
+import com.ustadmobile.meshrabiya.model.UserKeyManager
 // UNUSED SCHEDULER IMPORTS - Commented 2025-11-12
 // Scheduler infrastructure not used in Phase 3-4 ML-capable compute implementation
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ComputeTask
 // import com.ustadmobile.meshrabiya.service.compute.scheduler.ExecutionPlan
 import com.ustadmobile.meshrabiya.service.compute.model.JobType
+import com.ustadmobile.meshrabiya.service.compute.model.LocalComputeTaskRequest
 // DEPRECATED: IntelligentDistributedComputeService replaced by canonical compute workflows (2025-12-04)
 // import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService
 import com.ustadmobile.meshrabiya.model.MeshState
@@ -49,8 +51,8 @@ import com.ustadmobile.meshrabiya.storage.RecipientType
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.util.toHash
 import com.ustadmobile.meshrabiya.storage.StorageDeviceType
-import com.ustadmobile.meshrabiya.model.User
-
+import com.ustadmobile.meshrabiya.api.model.User
+import com.ustadmobile.meshrabiya.api.model.*
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -198,8 +200,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
     
     override fun getConnectionUri(): String = myNode?.currentNodeState?.connectUri ?: ""
-    override fun getLocalNodeState(): com.ustadmobile.meshrabiya.vnet.LocalNodeState = myNode?.currentNodeState ?: throw IllegalStateException("Mesh not initialized")
-    override fun getNeighbors(): List<Int> = myNode?.neighbors()?.map { it.first } ?: emptyList()
+    override fun getLocalNodeState(): LocalNodeStateDto = myNode?.currentNodeState?.toDto() ?: throw IllegalStateException("Mesh not initialized")
+    override fun getNeighbors(): List<NeighborInfoDto> = myNode?.neighbors()?.map { NeighborInfoDto(it.first, it.second.toDto()) } ?: emptyList()
     override fun getHopCountToNode(nodeId: Int): Int? = myNode?.originatingMessageManager?.findOriginatingMessageFor(nodeId)?.hopCount?.toInt()
 
     override fun getConnectLink(): String? = myNode?.currentNodeState?.connectUri
@@ -236,16 +238,16 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
 
-    override fun getMeshStatus(): MeshState {
-        val node = myNode ?: return MeshState.DISCONNECTED
+    override fun getMeshStatus(): MeshStateDto {
+        val node = myNode ?: return MeshStateDto.DISCONNECTED
         
         // Determine state based on neighbors and network connectivity
         val neighborCount = node.neighbors().size
         
         return when {
-            neighborCount == 0 -> MeshState.DISCONNECTED
-            neighborCount > 0 -> MeshState.CONNECTED
-            else -> MeshState.UNKNOWN
+            neighborCount == 0 -> MeshStateDto.DISCONNECTED
+            neighborCount > 0 -> MeshStateDto.CONNECTED
+            else -> MeshStateDto.UNKNOWN
         }
     }
     override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
@@ -254,10 +256,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Phase 3B: Enhanced getNetworkInfo() with gateway statistics
      * Returns mesh network information including Tor and clearnet gateway counts
      */
-    override fun getNetworkInfo(): NetworkInfo {
+    override fun getNetworkInfo(): NetworkInfoDto? {
         val node = myNode
         if (node == null) {
-            return NetworkInfo() // Mesh not initialized
+            return null // Mesh not initialized
         }
         
         val topology = node.originatingMessageManager.getTopologyMapInfo()
@@ -265,16 +267,20 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         
         // Phase 3B: Count gateways by type
         val torGateways = topology.values.count { nodeInfo ->
-            nodeInfo.hasRole(com.ustadmobile.meshrabiya.vnet.MeshRole.TOR_GATEWAY) &&
+            nodeInfo.hasRole(MeshRole.TOR_GATEWAY) &&
             !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
         }
         
         val clearnetGateways = topology.values.count { nodeInfo ->
-            nodeInfo.hasRole(com.ustadmobile.meshrabiya.vnet.MeshRole.CLEARNET_GATEWAY) &&
+            nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) &&
             !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
         }
         
-        return NetworkInfo(
+        return NetworkInfoDto(
+            bssid = "",
+            ssid = "",
+            ipAddress = "",
+            isConnected = true,
             connectedPeers = connectedNeighbors,
             torGateways = torGateways,
             clearnetGateways = clearnetGateways,
@@ -285,20 +291,20 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return node.addressAsInt
     }
 
-    override fun getNodeInfo(nodeId: String): NodeInfo {
-        val node = myNode ?: return NodeInfo()
+    override fun getNodeInfo(nodeId: String): NodeInfoDto? {
+        val node = myNode ?: return null
         
         // Get topology information for the requested node
         val topology = node.originatingMessageManager.getTopologyMapInfo()
         
         // Try to parse nodeId as Int, return empty if invalid
-        val nodeAddress = nodeId.toIntOrNull() ?: return NodeInfo()
-        val nodeData = topology[nodeAddress] ?: return NodeInfo()
+        val nodeAddress = nodeId.toIntOrNull() ?: return null
+        val nodeData = topology[nodeAddress] ?: return null
         
         // Extract capabilities from meshRoles
         val capabilities = nodeData.meshRoles.map { role -> role.name }
         
-        return NodeInfo(
+        return NodeInfoDto(
             nodeId = nodeId,
             displayName = nodeId.substring(0, minOf(8, nodeId.length)), // Use first 8 chars as display name
             isOnline = !nodeData.isStale(GATEWAY_STALE_TIMEOUT_MS),
@@ -375,7 +381,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             val context = appContext ?: throw IllegalStateException("App context not provided")
             runBlocking {
                 context.dataStore.edit { prefs ->
-                    prefs[stringPreferencesKey(GatewayPreference.KEY_GATEWAY_PREFERENCE)] = preference.name
+                    prefs[stringPreferencesKey(GatewayPreference.KEY_GATEWAY_PREFERENCE)] = GatewayPreference.toString(preference )  
                 }
                 currentGatewayPreference = preference
             }
@@ -439,6 +445,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return storageManager.participationEnabled.value
     }
     override fun getAvailableStorageDevices(): List<StorageDeviceDto> {
+        // TODO properly implement getAvailableStorageDevices()
         // Storage device enumeration not yet implemented in DistributedStorageManager
         // Return empty list until backend implementation available
         return emptyList()
@@ -461,8 +468,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
 
-    override fun getStorageAllocations(): List<StorageAllocation> {
-        return MeshrabiyaConstants.getStorageAllocations()
+    override fun getStorageAllocations(): List<StorageAllocationDto> {
+        val storage =MeshrabiyaConstants.getStorageAllocations()
+        return storage.map {
+            it.toDto()
+        }
     }
     
     override fun enableDistributedStorage() {
@@ -559,7 +569,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             }
         }
     }
-
+    // TODO retreieveFile should not return anything. when files is retrieved, generic handler shpu;d be calles
     override suspend fun retrieveFile(fileId: String): ByteArray? {
         if (fileId.isBlank()) {
             getOnOperationFailed()?.invoke("retrieveFile", IllegalArgumentException("File ID cannot be blank"))
@@ -606,7 +616,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         // No deleteFile API in DistributedStorageManager; return error for now
         callback(Result.failure(NotImplementedError("deleteFile not implemented in DistributedStorageManager")))
     }
-    override fun getAllMeshFiles(): List<MeshFile> {
+    override fun getAllMeshFiles(): List<MeshFileDto> {
         // Check storage manager availability
         val storageManager = myNode?.distributedStorageManager ?: return emptyList()
         
@@ -620,11 +630,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             
             // Convert FileMetadata to MeshFile
             return fileMetadataMap.values.map { metadata ->
-                MeshFile(
+                MeshFileDto(
                     fileId = metadata.fileId,
                     fileName = File(metadata.path).name,  // Extract filename from path
-                    owner = metadata.owner,
-                    recipients = metadata.recipients,
+                    owner = metadata.owner.toDto(),
+                    recipients = metadata.recipients.map { it.toDto() },
                     sizeBytes = metadata.sizeBytes,
                     createdAt = metadata.createdAt,
                     relativePath = metadata.relativePath,
@@ -663,23 +673,24 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Note: JobType removed 2025-12-06 - no concept of "supported job types".
      * Use taskType to specify execution engine. Service discovery handles capability matching.
      */
-    override fun addTask(requestParams: Map<String, Any>): ApiResult {
+    override fun addTask(serviceId: String,requestParams: Map<String, Any>, recipients: List<RecipientEntryDto>): Any? {
         return try {
             // Extract parameters
             val taskId = requestParams["taskId"] as? String ?: java.util.UUID.randomUUID().toString()
-            val taskType = requestParams["taskType"] as? String 
-                ?: return ApiResult.Failure(IllegalArgumentException("taskType required (python, jvm, javascript, ml-native)"))
+            
             
             // Check compute client availability
             val computeClient = myNode?.obtainDistributedComputeClient() 
                 ?: return ApiResult.Failure(IllegalStateException("Compute client not initialized"))
-            
+            val recipientEntryList: List<RecipientEntry> = recipients.map { it.toInternal() }
             // Create LocalComputeTaskRequest
-            val request = com.ustadmobile.meshrabiya.service.compute.model.LocalComputeTaskRequest(
+            val request = LocalComputeTaskRequest(
                 requestId = java.util.UUID.randomUUID().toString(),
                 taskId = taskId,
-                taskType = taskType,  // Execution engine: python, jvm, javascript, ml-native
-                timestamp = System.currentTimeMillis()
+                serviceId = serviceId, 
+                inputs = requestParams,
+                timestamp = System.currentTimeMillis(),
+                recipients = recipientEntryList,
             )
             
             // Submit task asynchronously
@@ -691,16 +702,16 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
             }
             
-            ApiResult.Success  // Return immediately, status updates via callback
+            ApiResultDto.Success  // Return immediately, status updates via callback
         } catch (e: Exception) {
-            ApiResult.Failure(e)
+            onOperationFailed?.invoke("addTask", e)
         }
     }
 
-    override fun startTask(taskId: String, callback: (Result<Unit>) -> Unit) {
-        callback(Result.failure(NotImplementedError("startTask not yet implemented in canonical workflows")))
-        // intelligentDistributedComputeService?.startTask(taskId, callback)
-    }
+    // override fun startTask(taskId: String, callback: (Result<Unit>) -> Unit) {
+    //     callback(Result.failure(NotImplementedError("startTask not yet implemented in canonical workflows")))
+    //     // intelligentDistributedComputeService?.startTask(taskId, callback)
+    // }
 
     override fun cancelTask(taskId: String, callback: (Result<Unit>) -> Unit) {
         callback(Result.failure(NotImplementedError("cancelTask not yet implemented in canonical workflows")))
@@ -807,14 +818,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // }
 
     // --- Event/Callback Integration ---
-    private var onMeshStateChanged: ((MeshState) -> Unit)? = null
+    private var onMeshStateChanged: ((MeshStateDto) -> Unit)? = null
     private var onPeerCountChanged: ((Int) -> Unit)? = null
     // private var onServiceBundleReceived: ((String, ByteArray) -> Unit)? = null
     // private var onServiceAnnounced: ((String, ServiceAnnouncement) -> Unit)? = null
     private var onGossipMessage: ((Int, ByteArray) -> Unit)? = null
     private var onTaskStatusUpdate: ((String, String) -> Unit)? = null  // Section 9
 
-    override fun setOnMeshStateChanged(handler: (newState: MeshState) -> Unit) {
+    override fun setOnMeshStateChanged(handler: (newState: MeshStateDto) -> Unit) {
         onMeshStateChanged = handler
     }
     override fun setOnPeerCountChanged(handler: (newCount: Int) -> Unit) {
@@ -849,16 +860,24 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // --- TaskType enablement API ---
-    override fun isTaskTypeEnabled(taskType: TaskType): Boolean {
-        return MeshrabiyaConstants.isTaskTypeEnabled(taskType)
+    override fun isTaskTypeEnabled(taskType: TaskTypeDto): Boolean {
+        return MeshrabiyaConstants.isTaskTypeEnabled(taskType.toInternal())
     }
 
-    override fun setTaskTypeEnabled(taskType: TaskType, enabled: Boolean) {
-        MeshrabiyaConstants.setTaskTypeEnabled(taskType, enabled)
+    override fun setTaskTypeEnabled(taskType: TaskTypeDto, enabled: Boolean) {
+        MeshrabiyaConstants.setTaskTypeEnabled(taskType.toInternal(), enabled)
     }
 
-    override fun getAllTaskTypeEnabled(): Map<TaskType, Boolean> {
+    override fun getAllTaskTypeEnabled(): Map<TaskTypeDto, Boolean> {
         return MeshrabiyaConstants.getAllTaskTypeEnabled()
+            .mapNotNull { (key, value) ->
+                try {
+                    key.toDto() to value
+                } catch (e: IllegalArgumentException) {
+                    // Optionally log: println("TaskType $key not present in TaskTypeDto")
+                    null
+                }
+            }.toMap()
     }
 
 
@@ -871,9 +890,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         keyProvider = provider
     }
 
-    override fun getUserInfo(): com.ustadmobile.meshrabiya.model.User {
+    
+    override fun getUserInfo(): User {
         println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keyProvider='$keyProvider'")
-        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.getKeypair(provider = keyProvider)
+        val keypair = UserKeyManager.getKeypair(provider = keyProvider)
         println("[DEBUG] MeshrabiyaApiImpl.getUserInfo: keypair=$keypair")
         if (keypair == null) throw IllegalStateException("User keypair not initialized (provider='$keyProvider')")
         val publicKey = keypair.public
@@ -885,18 +905,20 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             recipientType = RecipientType.USER,
             recipientId = userId
         )
-        return com.ustadmobile.meshrabiya.model.User(userId, publicKey, nickname, keypair, userEntry)
+        return User(userId, publicKey, nickname, keypair, userEntry)
     }
 
+        // TODO update setUserNickname to update user object
     override fun setUserNickname(nickname: String) {
         println("[DEBUG] MeshrabiyaApiImpl.setUserNickname: nickname='$nickname'")
         MeshrabiyaConstants.setNickname(nickname)
     }
 
-    override fun rotateUserKey(): com.ustadmobile.meshrabiya.model.User {
+    // TODO update rotateUserKey to update user object
+    override fun rotateUserKey(): User  {
         val context = getAppContext() ?: throw IllegalStateException("App context not set")
         println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keyProvider='$keyProvider'")
-        val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.rotateKeypair(context, provider = keyProvider)
+        val keypair = UserKeyManager.rotateKeypair(context, provider = keyProvider)
         println("[DEBUG] MeshrabiyaApiImpl.rotateUserKey: keypair=$keypair")
         val publicKey = keypair.public
         val userId = publicKey.toHash()
@@ -921,7 +943,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         println("[DEBUG] MeshrabiyaApiImpl.initializeUser: userId='$userId', keyProvider='$keyProvider'")
         if (userId.isNullOrEmpty()) {
             println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generating keypair")
-            val keypair = com.ustadmobile.meshrabiya.model.UserKeyManager.generateKeypair(context, provider = keyProvider)
+            val keypair = UserKeyManager.generateKeypair(context, provider = keyProvider)
             println("[DEBUG] MeshrabiyaApiImpl.initializeUser: Generated keypair: $keypair")
             val publicKey = keypair.public
             val newUserId = publicKey.toHash()
@@ -937,85 +959,3 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
 }
 
-// In DropFolderItem.kt (internal model)
-fun DropFolderItem.toDto(): DropFolderItemDto = DropFolderItemDto(
-    itemRelativePath = itemRelativePath,
-    isFolder = isFolder,
-    trigger = trigger?.toDto()
-)
-
-fun DropFolderItemDto.toInternal(): DropFolderItem = DropFolderItem(
-    itemRelativePath = itemRelativePath,
-    isFolder = isFolder,
-    trigger = trigger?.toInternal()
-)
-
-// In StoreFileTrigger.kt
-fun StoreFileTrigger.toDto(): StoreFileTriggerDto = StoreFileTriggerDto(
-    id=id,
-    subPath = subPath,
-    recipients = recipients.map { it.toDto() },
-
-)
-
-fun StoreFileTriggerDto.toInternal(): StoreFileTrigger = StoreFileTrigger(
-    id=id,
-    subPath = subPath,
-    recipients = recipients.map { it.toInternal() },
-    
-)
-
-// In RecipientEntry.kt
-fun RecipientEntry.toDto(): RecipientEntryDto = RecipientEntryDto(
-    publicKey = publicKey,
-    recipientType = RecipientTypeDto.valueOf(recipientType.name),
-    recipientId = recipientId,
-    expiresAt = expiresAt
-)
-
-fun RecipientEntryDto.toInternal(): RecipientEntry = RecipientEntry(
-    publicKey = publicKey,
-    recipientType = RecipientType.valueOf(recipientType.name),
-    recipientId = recipientId,
-    expiresAt = expiresAt
-)
-
-fun StorageAllocation.toDto(): StorageAllocationDto = StorageAllocationDto(
-    path = path,
-    allocatedMB = allocatedMB,
-    deviceId = deviceId
-    // enabled = enabled
-)
-
-fun StorageAllocationDto.toInternal(): StorageAllocation = StorageAllocation(
-    path = path,
-    allocatedMB = allocatedMB,
-    deviceId = deviceId
-    // enabled = enabled
-)
-
-fun StorageDeviceTypeDto.toInternal(): StorageDeviceType =
-    StorageDeviceType.valueOf(this.name)
-
-fun StorageDeviceDto.toInternal(): StorageDevice =
-StorageDevice(
-    id = id,
-    name = name,
-    path = path,
-    availableSpaceGB = availableSpaceGB,
-    totalSpaceGB = totalSpaceGB,
-    type = type.toInternal()
-)
-
-fun StorageDeviceType.toDto(): StorageDeviceTypeDto =
-    StorageDeviceTypeDto.valueOf(this.name)
-
-fun StorageDevice.toDto(): StorageDeviceDto =
-StorageDeviceDto(
-    id = id,
-    name = name,
-    path = path,
-    availableSpaceGB = availableSpaceGB,
-    totalSpaceGB = totalSpaceGB,
-    type = type.toDto()
-)

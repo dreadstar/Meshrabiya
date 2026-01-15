@@ -22,7 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
-import com.ustadmobile.meshrabiya.model.User
+import com.ustadmobile.meshrabiya.api.model.User
 import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 
 /**
