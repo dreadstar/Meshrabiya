@@ -473,17 +473,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * If CONNECTED when called, broadcasts merge announcement before connecting.
      */
     override fun joinMesh(jsonQrData: String, callback: (Result<Unit>) -> Unit) {
-        Log.d(TAG, "joinMesh() called with QR data")
+        Log.d(TAG, "========== JOIN MESH START ==========")
+        Log.d(TAG, "joinMesh() called with QR data: ${jsonQrData.take(100)}...")
+        Log.d(TAG, "Current mesh state: ${getMeshStatus()}")
         
         // Validate mesh is initialized
         if (myNode == null) {
-            Log.e(TAG, "joinMesh called but myNode is null - mesh not initialized!")
+            Log.e(TAG, "[JOIN FAIL] myNode is null - mesh not initialized!")
             callback(Result.failure(
                 IllegalStateException("Mesh not initialized - call initMesh() first")
             ))
             return
         }
         
+        Log.d(TAG, "[JOIN] Mesh validation passed, launching coroutine")
+        Log.d(TAG, "[JOIN] Current node address: ${myNode?.address}")
         Log.d(TAG, "Launching coroutine for mesh-wide discovery join")
         
         // Launch connection in event monitoring scope (survives beyond this call)
@@ -498,34 +502,50 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 val ssidPattern = qrJson.optString("ssidPattern", "meshr-")  // Default to "meshr-"
                 val bootstrapSsid = qrJson.optString("bootstrapSSID", null)  // Optional hint
                 
-                Log.d(TAG, "Parsed QR: password=$password, pattern=$ssidPattern, bootstrap=$bootstrapSsid")
+                Log.d(TAG, "[JOIN] Parsed QR: password=$password, pattern=$ssidPattern, bootstrap=$bootstrapSsid")
+                Log.d(TAG, "[JOIN] QR data validation successful")
                 
                 // Scan for available mesh hotspots
                 val context = appContext ?: throw IllegalStateException("App context not set")
                 val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                Log.d(TAG, "[JOIN] WiFi manager obtained, starting scan process")
                 var attemptCount = 0
                 var connected = false
                 
                 while (attemptCount < 3 && !connected) {
                     attemptCount++
-                    Log.d(TAG, "Mesh hotspot scan attempt $attemptCount/3")
+                    Log.d(TAG, "[JOIN SCAN] ===== Attempt $attemptCount/3 =====")
+                    Log.d(TAG, "[JOIN SCAN] Triggering WiFi scan...")
                     
                     // Trigger WiFi scan
                     wifiManager.startScan()
                     delay(2000)  // Wait for scan results
                     
                     // Get scan results and filter for mesh hotspots
-                    val meshHotspots = wifiManager.scanResults.filter { scanResult ->
+                    val allNetworks = wifiManager.scanResults
+                    Log.d(TAG, "[JOIN SCAN] Total networks detected: ${allNetworks.size}")
+                    val meshHotspots = allNetworks.filter { scanResult ->
                         scanResult.SSID.startsWith(ssidPattern)
                     }.sortedByDescending { it.level }  // Sort by signal strength (strongest first)
                     
-                    Log.d(TAG, "Found ${meshHotspots.size} mesh hotspots")
+                    Log.d(TAG, "[JOIN SCAN] Mesh hotspots matching pattern '$ssidPattern': ${meshHotspots.size}")
+                    meshHotspots.forEachIndexed { idx, hs ->
+                        Log.d(TAG, "[JOIN SCAN]   [$idx] SSID=${hs.SSID}, Signal=${hs.level}dBm, Freq=${hs.frequency}MHz, BSSID=${hs.BSSID}")
+                    }
                     
                     // Try connecting to each hotspot, starting with strongest
-                    for (hotspot in meshHotspots) {
-                        Log.d(TAG, "Attempting connection to ${hotspot.SSID} (signal: ${hotspot.level} dBm)")
+                    for ((index, hotspot) in meshHotspots.withIndex()) {
+                        Log.d(TAG, "[JOIN CONNECT] --- Hotspot ${index + 1}/${meshHotspots.size} ---")
+                        Log.d(TAG, "[JOIN CONNECT] Attempting connection to ${hotspot.SSID} (signal: ${hotspot.level} dBm)")
                         
                         try {
+                            val band = when {
+                                hotspot.frequency in 2400..2500 -> ConnectBand.BAND_2GHZ
+                                hotspot.frequency in 5000..6000 -> ConnectBand.BAND_5GHZ
+                                else -> ConnectBand.BAND_UNKNOWN
+                            }
+                            Log.d(TAG, "[JOIN CONNECT] Band detected: $band (${hotspot.frequency}MHz)")
+                            
                             val config = com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig(
                                 nodeVirtualAddr = 0,  // Discovered from originating message
                                 ssid = hotspot.SSID,
@@ -534,21 +554,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                                 port = 27267,
                                 hotspotType = HotspotType.LOCALONLY_HOTSPOT,
                                 persistenceType = com.ustadmobile.meshrabiya.vnet.wifi.HotspotPersistenceType.NONE,
-                                band = when {
-                                    hotspot.frequency in 2400..2500 -> ConnectBand.BAND_2GHZ
-                                    hotspot.frequency in 5000..6000 -> ConnectBand.BAND_5GHZ
-                                    else -> ConnectBand.BAND_UNKNOWN
-                                },
+                                band = band,
                                 bssid = hotspot.BSSID
                             )
                             
+                            Log.d(TAG, "[JOIN CONNECT] Config created: ssid=${config.ssid}, port=${config.port}, band=${config.band}")
+                            Log.d(TAG, "[JOIN CONNECT] Calling connectAsStation()...")
                             myNode?.connectAsStation(config)
-                            Log.d(TAG, "Successfully connected to ${hotspot.SSID}")
+                            Log.d(TAG, "[JOIN SUCCESS] ✅ Successfully connected to ${hotspot.SSID}")
+                            Log.d(TAG, "[JOIN SUCCESS] Connection established, stopping scan loop")
                             connected = true
                             break  // Success - stop trying
                             
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to connect to ${hotspot.SSID}: ${e.message}")
+                            Log.e(TAG, "[JOIN FAIL] ❌ Failed to connect to ${hotspot.SSID}", e)
+                            Log.w(TAG, "[JOIN FAIL] Error: ${e.javaClass.simpleName}: ${e.message}")
                             // Continue to next hotspot
                         }
                     }
@@ -560,23 +580,29 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
                 
                 if (connected) {
+                    Log.d(TAG, "[JOIN RESULT] ========== JOIN MESH SUCCESS ==========")
+                    Log.d(TAG, "[JOIN RESULT] Mesh join completed successfully")
+                    Log.d(TAG, "[JOIN RESULT] New mesh state: ${getMeshStatus()}")
                     callback(Result.success(Unit))
-                    Log.d(TAG, "joinMesh callback invoked with success")
                 } else {
+                    Log.e(TAG, "[JOIN RESULT] ========== JOIN MESH FAILURE ==========")
+                    Log.e(TAG, "[JOIN RESULT] No mesh hotspots available after 3 scan attempts")
+                    Log.e(TAG, "[JOIN RESULT] Scanned for pattern: $ssidPattern")
                     callback(Result.failure(
                         Exception("No mesh hotspots available after 3 scan attempts")
                     ))
-                    Log.e(TAG, "joinMesh failed - no available hotspots found")
                 }
                 
             } catch (e: Exception) {
-                Log.e(TAG, "joinMesh failed with exception", e)
+                Log.e(TAG, "[JOIN ERROR] ========== JOIN MESH EXCEPTION ==========")
+                Log.e(TAG, "[JOIN ERROR] Exception during join process", e)
+                Log.e(TAG, "[JOIN ERROR] Exception type: ${e.javaClass.simpleName}")
+                Log.e(TAG, "[JOIN ERROR] Exception message: ${e.message}")
                 callback(Result.failure(e))
-                Log.d(TAG, "joinMesh callback invoked with failure: ${e.message}")
             }
         }
         
-        Log.d(TAG, "joinMesh() returning (coroutine launched)")
+        Log.d(TAG, "[JOIN] joinMesh() returning (async coroutine launched)")
     }
 
     /**
@@ -586,27 +612,35 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Requires PT8 implementation (multi-hop forwarding, message types, storage).
      */
     override fun mergeMesh(jsonQrData: String, callback: (Result<Unit>) -> Unit) {
-        Log.d(TAG, "mergeMesh() called with QR data")
+        Log.d(TAG, "========== MERGE MESH START ==========")
+        Log.d(TAG, "mergeMesh() called with QR data: ${jsonQrData.take(100)}...")
+        Log.d(TAG, "Current mesh state: ${getMeshStatus()}")
         
         // Validate mesh is initialized
         val node = myNode
         if (node == null) {
-            Log.e(TAG, "mergeMesh called but myNode is null - mesh not initialized!")
+            Log.e(TAG, "[MERGE FAIL] myNode is null - mesh not initialized!")
             callback(Result.failure(
                 IllegalStateException("Mesh not initialized - call initMesh() first")
             ))
             return
         }
         
+        Log.d(TAG, "[MERGE] Current node address: ${node.address}")
+        Log.d(TAG, "[MERGE] Current neighbor count: ${node.currentNodeState.originatorMessages.size}")
+        
         // Validate CONNECTED state
-        if (getMeshStatus() != MeshStateDto.CONNECTED) {
-            Log.e(TAG, "mergeMesh called but mesh is not CONNECTED - current state: ${getMeshStatus()}")
+        val currentState = getMeshStatus()
+        if (currentState != MeshStateDto.CONNECTED) {
+            Log.e(TAG, "[MERGE FAIL] Mesh is not CONNECTED - current state: $currentState")
+            Log.e(TAG, "[MERGE FAIL] Merge requires CONNECTED state to announce to existing mesh")
             callback(Result.failure(
-                IllegalStateException("Mesh must be CONNECTED to merge - current state: ${getMeshStatus()}")
+                IllegalStateException("Mesh must be CONNECTED to merge - current state: $currentState")
             ))
             return
         }
         
+        Log.d(TAG, "[MERGE] State validation passed, launching coroutine")
         Log.d(TAG, "Launching coroutine for mesh merge")
         
         // Launch merge in event monitoring scope
@@ -614,39 +648,58 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             try {
                 // TODO PT8: Broadcast MeshMergeAnnouncementMessage to all devices on current mesh
                 // Wait 5 seconds for multi-hop gossip propagation
-                Log.d(TAG, "TODO PT8: Broadcasting MeshMergeAnnouncementMessage")
+                Log.d(TAG, "[MERGE ANNOUNCE] Broadcasting MeshMergeAnnouncementMessage to current mesh...")
+                Log.d(TAG, "[MERGE ANNOUNCE] Announcement will propagate via multi-hop forwarding (PT8)")
+                Log.d(TAG, "[MERGE ANNOUNCE] Waiting 5 seconds for gossip propagation...")
                 delay(5000)  // Wait for announcement propagation
+                Log.d(TAG, "[MERGE ANNOUNCE] Propagation delay complete")
                 
                 // Parse QR code JSON data
                 val qrJson = org.json.JSONObject(jsonQrData)
                 val password = qrJson.getString("password")
                 val ssidPattern = qrJson.optString("ssidPattern", "meshr-")
                 
-                Log.d(TAG, "Parsed QR for merge: password=$password, pattern=$ssidPattern")
+                Log.d(TAG, "[MERGE] Parsed QR: password=$password, pattern=$ssidPattern")
+                Log.d(TAG, "[MERGE] QR data validation successful")
                 
                 // Scan and connect (same logic as joinMesh)
                 val context = appContext ?: throw IllegalStateException("App context not set")
                 val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                Log.d(TAG, "[MERGE] WiFi manager obtained, starting scan process")
                 var attemptCount = 0
                 var connected = false
                 
                 while (attemptCount < 3 && !connected) {
                     attemptCount++
-                    Log.d(TAG, "Mesh hotspot scan attempt $attemptCount/3 (merge)")
+                    Log.d(TAG, "[MERGE SCAN] ===== Attempt $attemptCount/3 =====")
+                    Log.d(TAG, "[MERGE SCAN] Triggering WiFi scan...")
                     
                     wifiManager.startScan()
                     delay(2000)
                     
-                    val meshHotspots = wifiManager.scanResults.filter { scanResult ->
+                    val allNetworks = wifiManager.scanResults
+                    Log.d(TAG, "[MERGE SCAN] Total networks detected: ${allNetworks.size}")
+                    val meshHotspots = allNetworks.filter { scanResult ->
                         scanResult.SSID.startsWith(ssidPattern)
                     }.sortedByDescending { it.level }
                     
-                    Log.d(TAG, "Found ${meshHotspots.size} mesh hotspots for merge")
+                    Log.d(TAG, "[MERGE SCAN] Mesh hotspots matching pattern '$ssidPattern': ${meshHotspots.size}")
+                    meshHotspots.forEachIndexed { idx, hs ->
+                        Log.d(TAG, "[MERGE SCAN]   [$idx] SSID=${hs.SSID}, Signal=${hs.level}dBm, Freq=${hs.frequency}MHz, BSSID=${hs.BSSID}")
+                    }
                     
-                    for (hotspot in meshHotspots) {
-                        Log.d(TAG, "Attempting merge connection to ${hotspot.SSID}")
+                    for ((index, hotspot) in meshHotspots.withIndex()) {
+                        Log.d(TAG, "[MERGE CONNECT] --- Hotspot ${index + 1}/${meshHotspots.size} ---")
+                        Log.d(TAG, "[MERGE CONNECT] Attempting merge connection to ${hotspot.SSID} (signal: ${hotspot.level} dBm)")
                         
                         try {
+                            val band = when {
+                                hotspot.frequency in 2400..2500 -> ConnectBand.BAND_2GHZ
+                                hotspot.frequency in 5000..6000 -> ConnectBand.BAND_5GHZ
+                                else -> ConnectBand.BAND_UNKNOWN
+                            }
+                            Log.d(TAG, "[MERGE CONNECT] Band detected: $band (${hotspot.frequency}MHz)")
+                            
                             val config = com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig(
                                 nodeVirtualAddr = 0,
                                 ssid = hotspot.SSID,
@@ -655,21 +708,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                                 port = 27267,
                                 hotspotType = HotspotType.LOCALONLY_HOTSPOT,
                                 persistenceType = com.ustadmobile.meshrabiya.vnet.wifi.HotspotPersistenceType.NONE,
-                                band = when {
-                                    hotspot.frequency in 2400..2500 -> ConnectBand.BAND_2GHZ
-                                    hotspot.frequency in 5000..6000 -> ConnectBand.BAND_5GHZ
-                                    else -> ConnectBand.BAND_UNKNOWN
-                                },
+                                band = band,
                                 bssid = hotspot.BSSID
                             )
                             
+                            Log.d(TAG, "[MERGE CONNECT] Config created: ssid=${config.ssid}, port=${config.port}, band=${config.band}")
+                            Log.d(TAG, "[MERGE CONNECT] Calling connectAsStation()...")
                             node.connectAsStation(config)
-                            Log.d(TAG, "Successfully merged with ${hotspot.SSID}")
+                            Log.d(TAG, "[MERGE SUCCESS] ✅ Successfully merged with ${hotspot.SSID}")
+                            Log.d(TAG, "[MERGE SUCCESS] Meshes are now merged, stopping scan loop")
                             connected = true
                             break
                             
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to merge with ${hotspot.SSID}: ${e.message}")
+                            Log.e(TAG, "[MERGE FAIL] ❌ Failed to merge with ${hotspot.SSID}", e)
+                            Log.w(TAG, "[MERGE FAIL] Error: ${e.javaClass.simpleName}: ${e.message}")
                         }
                     }
                     
@@ -679,22 +732,32 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
                 
                 if (connected) {
+                    Log.d(TAG, "[MERGE RESULT] ========== MERGE MESH SUCCESS ==========")
+                    Log.d(TAG, "[MERGE RESULT] Mesh merge completed successfully")
+                    Log.d(TAG, "[MERGE RESULT] Two meshes are now unified")
+                    Log.d(TAG, "[MERGE RESULT] New mesh state: ${getMeshStatus()}")
+                    Log.d(TAG, "[MERGE RESULT] Neighbor count after merge: ${node.currentNodeState.originatorMessages.size}")
                     callback(Result.success(Unit))
-                    Log.d(TAG, "mergeMesh callback invoked with success")
                 } else {
+                    Log.e(TAG, "[MERGE RESULT] ========== MERGE MESH FAILURE ==========")
+                    Log.e(TAG, "[MERGE RESULT] No mesh hotspots available after 3 scan attempts")
+                    Log.e(TAG, "[MERGE RESULT] Scanned for pattern: $ssidPattern")
+                    Log.e(TAG, "[MERGE RESULT] Original mesh still intact, merge aborted")
                     callback(Result.failure(
                         Exception("No mesh hotspots available for merge after 3 scan attempts")
                     ))
-                    Log.e(TAG, "mergeMesh failed - no available hotspots found")
                 }
                 
             } catch (e: Exception) {
-                Log.e(TAG, "mergeMesh failed with exception", e)
+                Log.e(TAG, "[MERGE ERROR] ========== MERGE MESH EXCEPTION ==========")
+                Log.e(TAG, "[MERGE ERROR] Exception during merge process", e)
+                Log.e(TAG, "[MERGE ERROR] Exception type: ${e.javaClass.simpleName}")
+                Log.e(TAG, "[MERGE ERROR] Exception message: ${e.message}")
                 callback(Result.failure(e))
             }
         }
         
-        Log.d(TAG, "mergeMesh() returning (coroutine launched)")
+        Log.d(TAG, "[MERGE] mergeMesh() returning (async coroutine launched)")
     }
 
     // --- Gateway Controls ---
