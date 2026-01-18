@@ -633,9 +633,13 @@ abstract class VirtualNode(
         }
     }
 
-    // Deduplication cache for broadcast packets (moved to MeshEcosystemListener)
-    // private val seenBroadcasts = ConcurrentHashMap<String, Long>()
-    // private val broadcastTtlMs: Long = 60_000L
+    // Deduplication cache for broadcast packets
+    private val seenBroadcasts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val broadcastTtlMs: Long = 60_000L
+    
+    private fun computeBroadcastId(packet: VirtualPacket): String {
+        return "${packet.header.fromAddr}-${packet.header.fromPort}-${packet.header.payloadSize}"
+    }
 
     override fun route(
         packet: VirtualPacket,
@@ -700,27 +704,32 @@ abstract class VirtualNode(
                 packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
                 // Deduplication for broadcast packets moved to MeshEcosystemListener
                 if(toAddr == ADDR_BROADCAST) {
-                    // val broadcastId = computeBroadcastId(packet)
-                    // val now = System.currentTimeMillis()
-                    // val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
-                    // if (prev == null) {
-                    //     val meshRoles = emergentRoleManager.getCurrentMeshRoles()
-                    //     if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
-                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER)")
-                    //         originatingMessageManager.neighbors().filter {
-                    //             it.first != fromLastHop && it.first != packet.header.fromAddr
-                    //         }.forEach {
-                    //             logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
-                    //             it.second.receivedFromSocket.send(
-                    //                 nextHopAddress = it.second.lastHopRealInetAddr,
-                    //                 nextHopPort = it.second.lastHopRealPort,
-                    //                 virtualPacket = packet,
-                    //             )
-                    //         }
-                    //     } else {
-                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
-                    //     }
-                    // }
+                    val broadcastId = computeBroadcastId(packet)
+                    val now = System.currentTimeMillis()
+                    val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
+                    if (prev == null) {
+                        // PT8: Check TTL before forwarding (prevent infinite loops)
+                        if (packet.header.maxHops > 0) {
+                            val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                            if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER, hops remaining: ${packet.header.maxHops})")
+                                originatingMessageManager.neighbors().filter {
+                                    it.first != fromLastHop && it.first != packet.header.fromAddr
+                                }.forEach {
+                                    logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
+                                    it.second.receivedFromSocket.send(
+                                        nextHopAddress = it.second.lastHopRealInetAddr,
+                                        nextHopPort = it.second.lastHopRealPort,
+                                        virtualPacket = packet,
+                                    )
+                                }
+                            } else {
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
+                            }
+                        } else {
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")
+                        }
+                    }
                 }else {
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)

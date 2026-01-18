@@ -114,6 +114,48 @@ object MeshrabiyaConstants {
     const val TASK_COMPLETION_RETRY_PERIOD_MS = 30000L  // 30 seconds
     const val TASK_COMPLETION_RETRY_INTERVAL_MS = 5000L // 5 seconds
 
+    // ========================================
+    // MESH MERGE CONSTANTS (PT8)
+    // ========================================
+
+    /**
+     * Default TTL for merge announcement messages (max hops before message dies).
+     * 5 hops should cover most small-to-medium mesh networks (<50 nodes).
+     */
+    const val MERGE_MESSAGE_TTL_DEFAULT = 5
+
+    /**
+     * Minimum jitter delay before rebroadcasting merge announcement (milliseconds).
+     * Prevents broadcast storms by randomizing rebroadcast timing.
+     */
+    const val MERGE_REBROADCAST_JITTER_MIN_MS = 100L
+
+    /**
+     * Maximum jitter delay before rebroadcasting merge announcement (milliseconds).
+     * Rebroadcast delay = Random(100ms, 500ms)
+     */
+    const val MERGE_REBROADCAST_JITTER_MAX_MS = 500L
+
+    /**
+     * Base delay for hotspot recovery (milliseconds).
+     * Actual delay = BASE_DELAY / max(1, neighborCount)
+     * 
+     * Example:
+     * - 0 neighbors: 30s delay (30000 / 1 = 30000)
+     * - 1 neighbor: 30s delay (30000 / 1 = 30000)
+     * - 2 neighbors: 15s delay (30000 / 2 = 15000)
+     * - 5 neighbors: 6s delay (30000 / 5 = 6000)
+     * 
+     * This prevents multiple devices from starting hotspots simultaneously.
+     */
+    const val HOTSPOT_RECOVERY_BASE_DELAY_MS = 30_000L
+
+    /**
+     * Timeout for WiFi network scanning (milliseconds).
+     * Used when searching for available mesh hotspots during join.
+     */
+    const val WIFI_SCAN_TIMEOUT_MS = 10_000L
+
     // --- TaskType enablement persistence ---
     private const val ENABLED_TASK_TYPES_KEY = "enabled_task_types"
 

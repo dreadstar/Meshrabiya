@@ -270,6 +270,13 @@ class MeshEcosystemListener(
                 }
             }
 
+            // === MESH MERGE ANNOUNCEMENTS (PT8) ===
+            is MeshMergeAnnouncementMessage -> {
+                scope.launch {
+                    onMergeAnnouncementReceived(message)
+                }
+            }
+
             // Handle other message types as they are added
             else -> {
                 // Unknown message type - log if needed
@@ -394,6 +401,98 @@ class MeshEcosystemListener(
     fun availableConnections(): Int = connectionPool.availableConnections()
     fun totalConnectionCount(): Int = connectionPool.totalConnectionCount()
     fun maxPoolSize(): Int = connectionPool.maxPoolSize()
+
+    // ========================================
+    // MESH MERGE ANNOUNCEMENT HANDLING (PT8)
+    // ========================================
+
+    /**
+     * Tracks seen merge message IDs to prevent rebroadcast loops.
+     * Thread-safe concurrent set.
+     */
+    private val seenMergeMessages = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Handle received merge announcement from another device.
+     * 
+     * This implements the core organic merge logic:
+     * 1. Check if config is different (idempotent)
+     * 2. If different, log intent to join (actual join requires WiFi implementation)
+     * 3. Rebroadcast to neighbors (with deduplication)
+     * 
+     * NO coordination, NO quorum, NO synchronized execution.
+     * Each device makes independent decision.
+     * 
+     * @param message Merge announcement from another device
+     */
+    private suspend fun onMergeAnnouncementReceived(message: MeshMergeAnnouncementMessage) {
+        android.util.Log.i("MeshEcosystemListener", 
+            "Merge announcement received from ${message.announcerId}, messageId=${message.messageId}, ttl=${message.ttl}, hopCount=${message.hopCount}")
+        
+        // TODO PT8: Implement idempotent check with MeshConfigStorage
+        // TODO PT8: Implement autonomous join decision
+        // For now, just log the announcement
+        android.util.Log.i("MeshEcosystemListener", 
+            "Target mesh: ssid=${message.targetSsid}, port=${message.targetPort}")
+        
+        // ========================================
+        // STEP 3: REBROADCAST (ALWAYS, even if we didn't join)
+        // ========================================
+        rebroadcastAnnouncement(message)
+    }
+
+    /**
+     * Rebroadcast merge announcement to neighbors (gossip propagation).
+     * 
+     * Uses:
+     * - Deduplication (seen message tracking)
+     * - TTL checking (prevent infinite propagation)
+     * - Random jitter (prevent broadcast storms)
+     * 
+     * MESH_ROUTER nodes will forward this via multi-hop logic in VirtualNode.kt.
+     * 
+     * @param message Original merge announcement
+     */
+    private suspend fun rebroadcastAnnouncement(message: MeshMergeAnnouncementMessage) {
+        // Check deduplication
+        if (seenMergeMessages.contains(message.messageId)) {
+            android.util.Log.v("MeshEcosystemListener", 
+                "Merge announcement ${message.messageId} already seen, not rebroadcasting")
+            return
+        }
+        
+        // Check TTL
+        if (message.ttl <= 0) {
+            android.util.Log.v("MeshEcosystemListener", 
+                "Merge announcement ${message.messageId} TTL exhausted, not rebroadcasting")
+            return
+        }
+        
+        // Mark as seen
+        seenMergeMessages.add(message.messageId)
+        
+        // Random jitter prevents broadcast storms
+        kotlinx.coroutines.delay(
+            kotlin.random.Random.nextLong(
+                com.ustadmobile.meshrabiya.MeshrabiyaConstants.MERGE_REBROADCAST_JITTER_MIN_MS,
+                com.ustadmobile.meshrabiya.MeshrabiyaConstants.MERGE_REBROADCAST_JITTER_MAX_MS
+            )
+        )
+        
+        // Create rebroadcast message (decremented TTL, incremented hopCount)
+        val rebroadcast = message.copy(
+            ttl = message.ttl - 1,
+            hopCount = message.hopCount + 1
+        )
+        
+        android.util.Log.i("MeshEcosystemListener", 
+            "Rebroadcasting merge announcement ${message.messageId}, new ttl=${rebroadcast.ttl}, hopCount=${rebroadcast.hopCount}")
+        
+        // TODO PT8: Implement actual broadcast via MeshGossipService or VirtualNode
+        // For now, this is a placeholder - multi-hop forwarding will handle propagation
+        android.util.Log.d("MeshEcosystemListener", 
+            "TODO: Broadcast rebroadcast message via MeshGossipService")
+    }
 
     // === Shutdown ===
 

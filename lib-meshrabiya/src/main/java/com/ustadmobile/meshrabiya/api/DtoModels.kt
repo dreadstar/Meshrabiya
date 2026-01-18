@@ -100,6 +100,50 @@ fun NodeInfoDto.toInternal() = NodeInfo(
     nodeId, displayName, isOnline, lastSeen, capabilities
 )
 
+/**
+ * Hotspot information data transfer object
+ * Contains network credentials and configuration for joining mesh
+ */
+@Serializable
+data class HotspotInfoDto(
+    /**
+     * Network SSID (hotspot name)
+     * Format depends on Android version:
+     * - Android 13+: "meshr-<virtualaddr_hex>" (e.g., "meshr-a9fe2d8e")
+     * - Android 8-12: "AndroidShare_XXXX" (random)
+     */
+    val ssid: String,
+    
+    /**
+     * Network password (WPA2-PSK passphrase)
+     * - Android 13+: "meshtest12" (hardcoded, shared by all devices)
+     * - Android 8-12: Random Android-generated password
+     */
+    val password: String,
+    
+    /**
+     * Frequency band (2.4GHz, 5GHz, or unknown)
+     */
+    val band: String,
+    
+    /**
+     * Virtual address of hotspot owner (32-bit integer)
+     * Used for mesh routing and identification
+     */
+    val nodeAddress: Int,
+    
+    /**
+     * Optional: BSSID (MAC address) for sticky connection
+     * Helps device reconnect to same hotspot even if SSID is duplicated
+     */
+    val bssid: String? = null,
+    
+    /**
+     * Hotspot type: LOCAL_ONLY or WIFI_DIRECT
+     */
+    val hotspotType: String = "LOCAL_ONLY",
+)
+
 // ApiResult DTO
 sealed class ApiResultDto {
     object Success : ApiResultDto()
