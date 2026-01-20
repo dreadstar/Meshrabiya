@@ -524,11 +524,19 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     // Get scan results and filter for mesh hotspots
                     val allNetworks = wifiManager.scanResults
                     Log.d(TAG, "[JOIN SCAN] Total networks detected: ${allNetworks.size}")
-                    val meshHotspots = allNetworks.filter { scanResult ->
-                        scanResult.SSID.startsWith(ssidPattern)
-                    }.sortedByDescending { it.level }  // Sort by signal strength (strongest first)
                     
-                    Log.d(TAG, "[JOIN SCAN] Mesh hotspots matching pattern '$ssidPattern': ${meshHotspots.size}")
+                    // If bootstrapSSID is provided, look for it specifically; otherwise use pattern matching
+                    val meshHotspots = if (!bootstrapSsid.isNullOrEmpty()) {
+                        Log.d(TAG, "[JOIN SCAN] Looking for specific bootstrap SSID: $bootstrapSsid")
+                        val bootstrap = allNetworks.filter { it.SSID == bootstrapSsid }
+                        val pattern = allNetworks.filter { it.SSID.startsWith(ssidPattern) && it.SSID != bootstrapSsid }
+                        (bootstrap + pattern).sortedByDescending { it.level }
+                    } else {
+                        Log.d(TAG, "[JOIN SCAN] No bootstrap SSID, using pattern matching: $ssidPattern")
+                        allNetworks.filter { it.SSID.startsWith(ssidPattern) }.sortedByDescending { it.level }
+                    }
+                    
+                    Log.d(TAG, "[JOIN SCAN] Mesh hotspots found: ${meshHotspots.size}")
                     meshHotspots.forEachIndexed { idx, hs ->
                         Log.d(TAG, "[JOIN SCAN]   [$idx] SSID=${hs.SSID}, Signal=${hs.level}dBm, Freq=${hs.frequency}MHz, BSSID=${hs.BSSID}")
                     }
@@ -658,8 +666,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 val qrJson = org.json.JSONObject(jsonQrData)
                 val password = qrJson.getString("password")
                 val ssidPattern = qrJson.optString("ssidPattern", "meshr-")
+                val bootstrapSsid = qrJson.optString("bootstrapSSID", null)  // Optional hint
                 
-                Log.d(TAG, "[MERGE] Parsed QR: password=$password, pattern=$ssidPattern")
+                Log.d(TAG, "[MERGE] Parsed QR: password=$password, pattern=$ssidPattern, bootstrap=$bootstrapSsid")
                 Log.d(TAG, "[MERGE] QR data validation successful")
                 
                 // Scan and connect (same logic as joinMesh)
@@ -679,11 +688,19 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     
                     val allNetworks = wifiManager.scanResults
                     Log.d(TAG, "[MERGE SCAN] Total networks detected: ${allNetworks.size}")
-                    val meshHotspots = allNetworks.filter { scanResult ->
-                        scanResult.SSID.startsWith(ssidPattern)
-                    }.sortedByDescending { it.level }
                     
-                    Log.d(TAG, "[MERGE SCAN] Mesh hotspots matching pattern '$ssidPattern': ${meshHotspots.size}")
+                    // If bootstrapSSID is provided, look for it specifically; otherwise use pattern matching
+                    val meshHotspots = if (!bootstrapSsid.isNullOrEmpty()) {
+                        Log.d(TAG, "[MERGE SCAN] Looking for specific bootstrap SSID: $bootstrapSsid")
+                        val bootstrap = allNetworks.filter { it.SSID == bootstrapSsid }
+                        val pattern = allNetworks.filter { it.SSID.startsWith(ssidPattern) && it.SSID != bootstrapSsid }
+                        (bootstrap + pattern).sortedByDescending { it.level }
+                    } else {
+                        Log.d(TAG, "[MERGE SCAN] No bootstrap SSID, using pattern matching: $ssidPattern")
+                        allNetworks.filter { it.SSID.startsWith(ssidPattern) }.sortedByDescending { it.level }
+                    }
+                    
+                    Log.d(TAG, "[MERGE SCAN] Mesh hotspots found: ${meshHotspots.size}")
                     meshHotspots.forEachIndexed { idx, hs ->
                         Log.d(TAG, "[MERGE SCAN]   [$idx] SSID=${hs.SSID}, Signal=${hs.level}dBm, Freq=${hs.frequency}MHz, BSSID=${hs.BSSID}")
                     }
