@@ -60,7 +60,11 @@ class VirtualNodeDatagramSocket(
                 val rxPacket = DatagramPacket(buffer, 0, buffer.size)
                 socket.receive(rxPacket)
 
+                logger(Log.INFO, "$logPrefix ⬇️ RECEIVED packet from ${rxPacket.address}:${rxPacket.port} size=${rxPacket.length} bytes", null)
+
                 val rxVirtualPacket = VirtualPacket.fromDatagramPacket(rxPacket)
+                logger(Log.INFO, "$logPrefix 📦 Packet details: from=${rxVirtualPacket.header.fromAddr.addressToDotNotation()}:${rxVirtualPacket.header.fromPort} to=${rxVirtualPacket.header.toAddr.addressToDotNotation()}:${rxVirtualPacket.header.toPort} hopCount=${rxVirtualPacket.header.hopCount} payloadSize=${rxVirtualPacket.header.payloadSize}", null)
+                
                 router.route(
                     packet = rxVirtualPacket,
                     datagramPacket = rxPacket,
@@ -86,7 +90,12 @@ class VirtualNodeDatagramSocket(
         val datagramPacket = virtualPacket.toDatagramPacket()
         datagramPacket.address = nextHopAddress
         datagramPacket.port = nextHopPort
+        
+        logger(Log.INFO, "$logPrefix ⬆️ SENDING packet to ${nextHopAddress}:${nextHopPort} from=${virtualPacket.header.fromAddr.addressToDotNotation()} to=${virtualPacket.header.toAddr.addressToDotNotation()} size=${datagramPacket.length} bytes", null)
+        
         socket.send(datagramPacket)
+        
+        logger(Log.DEBUG, "$logPrefix ✅ Packet sent successfully to ${nextHopAddress}:${nextHopPort}", null)
     }
 
     fun close(closeSocket: Boolean) {

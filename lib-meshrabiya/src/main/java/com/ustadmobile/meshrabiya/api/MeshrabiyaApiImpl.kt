@@ -10,6 +10,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
 import com.ustadmobile.meshrabiya.vnet.MeshFile
 import com.ustadmobile.meshrabiya.storage.StorageDevice
 import com.ustadmobile.meshrabiya.storage.StorageAllocation
@@ -97,6 +101,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // Internal managers, initialized in initMesh
     private var myNode: AndroidVirtualNode? = null
     private var emergentRoleManager: EmergentRoleManager? = null
+    
+    // StateFlow for network info - updated every 2 seconds
+    private val _networkInfoFlow = MutableStateFlow<NetworkInfoDto?>(null)
+    val networkInfoFlow: StateFlow<NetworkInfoDto?> = _networkInfoFlow.asStateFlow()
     private var distributedStorageManager: DistributedStorageManager? = null
     // distributedComputeClient accessed via myNode?.distributedComputeClient (protected property)
     // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
@@ -113,8 +121,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var currentGatewayPreference: GatewayPreference = GatewayPreference.DEFAULT
     @Volatile
     private var isTorRunning: Boolean = false
-    @Volatile
-    private var isMeshHotspotActive: Boolean = false
     private val torStatusMonitor = TorStatusMonitor()
 
      // --- Proxy Controls ---
@@ -202,6 +208,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
             }
         }
+        
+        // Update network info Flow every 2 seconds for UI
+        eventMonitoringScope.launch {
+            while (true) {
+                _networkInfoFlow.value = getNetworkInfo()
+                delay(2000) // Update every 2 seconds
+            }
+        }
     }
     
     /**
@@ -238,7 +252,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Mesh Network Controls ---
     override fun startMesh(callback: (Result<Unit>) -> Unit) {
-        Log.d("MeshrabiyaApiImpl", "startMesh() called")
+        Log.e("MeshrabiyaApiImpl", "========== startMesh() CALLED ==========")
+        Log.e("MeshrabiyaApiImpl", "This log MUST appear if startMesh is invoked")
         Log.d("MeshrabiyaApiImpl", "myNode is null: ${myNode == null}")
         
         if (myNode == null) {
@@ -257,7 +272,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     hotspotType = HotspotType.AUTO
                 )
                 Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
-                isMeshHotspotActive = true
                 
                 // Load persisted role preferences and apply them to EmergentRoleManager
                 loadAndApplyPersistedRolePreferences()
@@ -293,7 +307,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     hotspotType = HotspotType.AUTO
                 )
                 Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
-                isMeshHotspotActive = false
                 callback(Result.success(Unit))
                 Log.d("MeshrabiyaApiImpl", "stopMesh callback invoked with success")
             } catch (e: Exception) {
@@ -312,14 +325,29 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             return MeshStateDto.DISCONNECTED
         }
         
-        // Determine state based on hotspot active state and neighbors
+        // Check if mesh networking is actually active by checking WiFi state
+        val wifiState = runBlocking {
+            node.meshrabiyaWifiManager.state.first()
+        }
+        
+        val hasActiveHotspot = wifiState.hotspotIsStarted
+        val hasActiveStation = wifiState.wifiStationState.status == com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState.Status.AVAILABLE
+        val isMeshNetworkActive = hasActiveHotspot || hasActiveStation
+        
+        Log.d("MeshrabiyaApiImpl", "getMeshStatus() - wifiRole=${wifiState.wifiRole}, hotspot=${hasActiveHotspot}, station=${hasActiveStation}, active=${isMeshNetworkActive}")
+        
+        if (!isMeshNetworkActive) {
+            Log.d("MeshrabiyaApiImpl", "getMeshStatus() returning DISCONNECTED (no active network)")
+            return MeshStateDto.DISCONNECTED
+        }
+        
+        // Mesh network is active - determine state based on neighbors
         val neighborCount = node.neighbors().size
-        Log.d("MeshrabiyaApiImpl", "getMeshStatus() - isMeshHotspotActive=$isMeshHotspotActive, neighborCount=$neighborCount")
+        Log.d("MeshrabiyaApiImpl", "getMeshStatus() - neighborCount=$neighborCount")
         
         val status = when {
-            !isMeshHotspotActive -> MeshStateDto.DISCONNECTED
-            neighborCount > 0 -> MeshStateDto.CONNECTED
-            neighborCount == 0 -> MeshStateDto.CONNECTING  // Hotspot active but no peers yet
+            neighborCount > 0 -> MeshStateDto.CONNECTED     // Has neighbors = connected to mesh
+            neighborCount == 0 -> MeshStateDto.CONNECTING   // No neighbors yet but network active
             else -> MeshStateDto.UNKNOWN
         }
         
@@ -335,11 +363,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getNetworkInfo(): NetworkInfoDto? {
         val node = myNode
         if (node == null) {
+            Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - myNode is null, returning null")
             return null // Mesh not initialized
         }
         
         val topology = node.originatingMessageManager.getTopologyMapInfo()
         val connectedNeighbors = node.neighbors().size
+        
+        Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - connectedNeighbors=$connectedNeighbors, topologySize=${topology.size}")
         
         // Phase 3B: Count gateways by type
         val torGateways = topology.values.count { nodeInfo ->
@@ -351,6 +382,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) &&
             !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
         }
+        
+        Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - returning NetworkInfoDto with connectedPeers=$connectedNeighbors")
         
         return NetworkInfoDto(
             bssid = "",
@@ -426,7 +459,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 band = localHotspotConfig.band.toString(),
                 nodeAddress = node.addressAsInt,
                 bssid = localHotspotConfig.bssid,
-                hotspotType = "LOCAL_ONLY"
+                hotspotType = "LOCAL_ONLY",
+                port = localHotspotConfig.port
             )
         }
         
@@ -442,7 +476,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 band = wifiDirectConfig.band.toString(),
                 nodeAddress = node.addressAsInt,
                 bssid = wifiDirectConfig.bssid,
-                hotspotType = "WIFI_DIRECT"
+                hotspotType = "WIFI_DIRECT",
+                port = wifiDirectConfig.port
             )
         }
         
@@ -458,7 +493,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 band = stationConfig.band.toString(),
                 nodeAddress = stationConfig.nodeVirtualAddr,
                 bssid = stationConfig.bssid,
-                hotspotType = stationConfig.hotspotType.toString()
+                hotspotType = stationConfig.hotspotType.toString(),
+                port = stationConfig.port
             )
         }
         
@@ -554,12 +590,16 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                             }
                             Log.d(TAG, "[JOIN CONNECT] Band detected: $band (${hotspot.frequency}MHz)")
                             
+                            // Parse port from QR data (REQUIRED)
+                            val meshPort = qrJson.getInt("port")
+                            Log.d(TAG, "[JOIN CONNECT] Using port from QR: $meshPort")
+                            
                             val config = com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig(
                                 nodeVirtualAddr = 0,  // Discovered from originating message
                                 ssid = hotspot.SSID,
                                 passphrase = password,
                                 linkLocalAddr = null,
-                                port = 27267,
+                                port = meshPort,
                                 hotspotType = HotspotType.LOCALONLY_HOTSPOT,
                                 persistenceType = com.ustadmobile.meshrabiya.vnet.wifi.HotspotPersistenceType.NONE,
                                 band = band,
@@ -717,12 +757,23 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                             }
                             Log.d(TAG, "[MERGE CONNECT] Band detected: $band (${hotspot.frequency}MHz)")
                             
+                            // Get port from MMCP originating message connectConfig
+                            // This is for mesh-to-mesh merge without QR code - port comes from neighbor's broadcast
+                            // Find the originating message whose connectConfig has matching SSID
+                            val originatorMessages = node.originatingMessageManager.getOriginatorMessages()
+                            val matchingMessage = originatorMessages.values.find { 
+                                it.originatorMessage.connectConfig?.ssid == hotspot.SSID 
+                            }
+                            val meshPort = matchingMessage?.originatorMessage?.connectConfig?.port
+                                ?: throw IllegalStateException("[MERGE CONNECT] No connectConfig with SSID ${hotspot.SSID} found in MMCP messages")
+                            Log.d(TAG, "[MERGE CONNECT] Using port from MMCP: $meshPort")
+                            
                             val config = com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig(
                                 nodeVirtualAddr = 0,
                                 ssid = hotspot.SSID,
                                 passphrase = password,
                                 linkLocalAddr = null,
-                                port = 27267,
+                                port = meshPort,
                                 hotspotType = HotspotType.LOCALONLY_HOTSPOT,
                                 persistenceType = com.ustadmobile.meshrabiya.vnet.wifi.HotspotPersistenceType.NONE,
                                 band = band,

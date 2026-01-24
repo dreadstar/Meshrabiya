@@ -8,6 +8,7 @@ import com.ustadmobile.meshrabiya.model.MeshState
 import com.ustadmobile.meshrabiya.model.NetworkInfo
 import com.ustadmobile.meshrabiya.model.NodeInfo
 import com.ustadmobile.meshrabiya.model.ApiResult
+import android.util.Base64
 import com.ustadmobile.meshrabiya.vnet.LocalNodeState
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import kotlinx.coroutines.flow.Flow
@@ -142,6 +143,12 @@ data class HotspotInfoDto(
      * Hotspot type: LOCAL_ONLY or WIFI_DIRECT
      */
     val hotspotType: String = "LOCAL_ONLY",
+    
+    /**
+     * UDP port number for mesh communication
+     * This is the actual port the VirtualNode's socket is listening on
+     */
+    val port: Int,
 )
 
 // ApiResult DTO
@@ -530,7 +537,7 @@ fun MmcpOriginatorMessage.toDto() = MmcpOriginatorMessageDto(
     messageId = this.messageId,
     sentTime = this.sentTime,
     pingTimeSum = this.pingTimeSum,
-    connectConfig = this.connectConfig?.toString(), // TODO: Proper serialization if needed
+    connectConfig = this.connectConfig?.let { Base64.encodeToString(it.toBytes(), Base64.NO_WRAP) },
     neighbors = this.neighbors,
     centralityScore = this.centralityScore,
     fitnessScore = this.fitnessScore,
@@ -542,7 +549,10 @@ fun MmcpOriginatorMessageDto.toInternal(): MmcpOriginatorMessage =
         messageId = messageId,
         sentTime = sentTime,
         pingTimeSum = pingTimeSum,
-        connectConfig = connectConfig, // TODO: Proper deserialization if needed
+        connectConfig = connectConfig?.let { 
+            val bytes = Base64.decode(it, Base64.NO_WRAP)
+            com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig.fromBytes(bytes, 0)
+        },
         neighbors = neighbors,
         centralityScore = centralityScore,
         fitnessScore = fitnessScore,

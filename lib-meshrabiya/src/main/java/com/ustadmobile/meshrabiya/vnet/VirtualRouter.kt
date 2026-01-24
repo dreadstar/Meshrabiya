@@ -56,6 +56,22 @@ interface VirtualRouter {
         portNum: Int
     )
 
+    /**
+     * Notify that hotspot experienced WiFi interference (WiFi kept reconnecting)
+     * @param reconnectionCount Number of times WiFi reconnected during hotspot operation
+     */
+    fun notifyHotspotInterference(reconnectionCount: Int) {
+        // Default implementation: no-op (concrete implementations can override)
+    }
+
+    /**
+     * Notify that hotspot was lost unexpectedly while mesh was active
+     * @param reason Reason why hotspot was lost
+     */
+    fun notifyHotspotLost(reason: String) {
+        // Default implementation: no-op (concrete implementations can override)
+    }
+
 
     companion object {
 

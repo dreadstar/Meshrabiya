@@ -440,6 +440,16 @@ abstract class VirtualNode(
         activeSockets.remove(portNum)
     }
 
+    override fun notifyHotspotInterference(reconnectionCount: Int) {
+        logger(Log.WARN, "Hotspot interference: WiFi reconnected $reconnectionCount times", null)
+        // Subclasses can override to show UI notification
+    }
+
+    override fun notifyHotspotLost(reason: String) {
+        logger(Log.ERROR, "Hotspot lost: $reason", null)
+        // Subclasses can override to show UI notification
+    }
+
     fun createDatagramSocket(): DatagramSocket {
         return VirtualDatagramSocket2(this, addressAsInt, logger)
     }
@@ -659,9 +669,12 @@ abstract class VirtualNode(
 
             // MMCP message handling (unchanged)
             if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
+                logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
                 if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
                     logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
                 }
+            }else if(packet.header.toPort == 0){
+                logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
             }
 
             // Ecosystem message handling (UDP broadcast or direct)
@@ -1032,19 +1045,27 @@ abstract class VirtualNode(
         neighborNodeVirtualAddr: Int,
         socket: VirtualNodeDatagramSocket,
     ) {
-        logger(Log.DEBUG,
-            "$logPrefix addNewNeighborConnection connection to virtual addr " +
-                    "${neighborNodeVirtualAddr.addressToDotNotation()} " +
-                    "via datagram to $address:$port",
+        logger(Log.INFO,
+            "$logPrefix 🆕 addNewNeighborConnection - Starting connection setup for " +
+                    "virtualAddr=${neighborNodeVirtualAddr.addressToDotNotation()} " +
+                    "realAddr=$address:$port socket.localPort=${socket.localPort}",
             null
         )
 
         coroutineScope.launch {
-            originatingMessageManager.addNeighbor(
-                neighborRealInetAddr = address,
-                neighborRealPort = port,
-                socket =  socket,
-            )
+            try {
+                logger(Log.DEBUG, "$logPrefix 🚀 addNewNeighborConnection - Launching addNeighbor coroutine", null)
+                
+                originatingMessageManager.addNeighbor(
+                    neighborRealInetAddr = address,
+                    neighborRealPort = port,
+                    socket =  socket,
+                )
+                
+                logger(Log.INFO, "$logPrefix ✅ addNewNeighborConnection - Successfully established neighbor connection to ${neighborNodeVirtualAddr.addressToDotNotation()}", null)
+            } catch (e: Exception) {
+                logger(Log.ERROR, "$logPrefix ❌ addNewNeighborConnection - FAILED to establish neighbor connection to ${neighborNodeVirtualAddr.addressToDotNotation()}", e)
+            }
         }
     }
 
