@@ -105,6 +105,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // StateFlow for network info - updated every 2 seconds
     private val _networkInfoFlow = MutableStateFlow<NetworkInfoDto?>(null)
     val networkInfoFlow: StateFlow<NetworkInfoDto?> = _networkInfoFlow.asStateFlow()
+    // StateFlow for mesh status
+    private val _meshStatusFlow = MutableStateFlow(getMeshStatus())
+    override val meshStatusFlow: StateFlow<MeshStateDto> get() = _meshStatusFlow
+
+    // --- Network Overview Metrics StateFlow ---
+    private val _networkOverviewMetricsFlow = MutableStateFlow(NetworkOverviewMetricsDto(0L, 0L, 0))
+    override val networkOverviewMetricsFlow: StateFlow<NetworkOverviewMetricsDto> = _networkOverviewMetricsFlow.asStateFlow()
+
+    private var metricsMonitorJob: Job? = null
     private var distributedStorageManager: DistributedStorageManager? = null
     // distributedComputeClient accessed via myNode?.distributedComputeClient (protected property)
     // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
@@ -192,6 +201,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 if (currentState != previousState) {
                     previousState = currentState
                     onMeshStateChanged?.invoke(currentState)
+                    // Update meshStatusFlow when mesh status changes
+                    _meshStatusFlow.value = currentState
                 }
             }
         }
@@ -203,8 +214,17 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 delay(1000) // Check every second
                 val currentCount = getPeerCount()
                 if (currentCount != previousCount) {
-                    previousCount = currentCount
+                    // Call the peer count changed callback if present
                     onPeerCountChanged?.invoke(currentCount)
+                    // If peer count transitions from 0 to 1, update meshStatusFlow to CONNECTED
+                    if (previousCount == 0 && currentCount > 0) {
+                        _meshStatusFlow.value = MeshStateDto.CONNECTED
+                    }
+                    // If peer count transitions from >=1 to 0, update meshStatusFlow to CONNECTING
+                    if (previousCount > 0 && currentCount == 0) {
+                        _meshStatusFlow.value = MeshStateDto.CONNECTING
+                    }
+                    previousCount = currentCount
                 }
             }
         }
@@ -214,6 +234,34 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             while (true) {
                 _networkInfoFlow.value = getNetworkInfo()
                 delay(2000) // Update every 2 seconds
+            }
+        }
+
+        // --- Network Overview Metrics Polling ---
+        metricsMonitorJob?.cancel()
+        metricsMonitorJob = eventMonitoringScope.launch {
+            var lastUploadBytes = myNode?.currentNodeState?.uploadBytes ?: 0L
+            var lastDownloadBytes = myNode?.currentNodeState?.downloadBytes ?: 0L
+            while (true) {
+                delay(1000)
+                val node = myNode
+                if (node != null) {
+                    val state = node.currentNodeState
+                    val uploadNow = state.uploadBytes
+                    val downloadNow = state.downloadBytes
+                    val uploadRate = uploadNow - lastUploadBytes
+                    val downloadRate = downloadNow - lastDownloadBytes
+                    lastUploadBytes = uploadNow
+                    lastDownloadBytes = downloadNow
+                    val activeNodeCount = node.neighbors().size + 1 // +1 for self
+                    _networkOverviewMetricsFlow.value = NetworkOverviewMetricsDto(
+                        uploadBps = uploadRate,
+                        downloadBps = downloadRate,
+                        activeNodeCount = activeNodeCount
+                    )
+                } else {
+                    _networkOverviewMetricsFlow.value = NetworkOverviewMetricsDto(0L, 0L, 0)
+                }
             }
         }
     }
@@ -1668,6 +1716,22 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             MeshrabiyaConstants.setNickname(nickname)
         }
     }
+
+        // --- Network Overview Metrics StateFlow ---
+    // private val _networkOverviewMetricsFlow = MutableStateFlow(NetworkOverviewMetricsDto())
+    // val networkOverviewMetricsFlow: StateFlow<NetworkOverviewMetricsDto> = _networkOverviewMetricsFlow.asStateFlow()
+
+    // private var lastUploadBytes: Long = 0L
+    // private var lastDownloadBytes: Long = 0L
+    // private var lastTimestamp: Long = System.currentTimeMillis()
+
+    
+
+    // private fun getActiveNodeCount(): Int {
+    //     // Implement logic to count active nodes in the mesh
+    //     return meshNodeList.size // or other logic as appropriate
+    // }
+
 
 
 }

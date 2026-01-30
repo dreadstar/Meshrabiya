@@ -30,6 +30,8 @@ import com.ustadmobile.meshrabiya.api.model.*
  * Exposes all key operations, state, and event registration for UI/control layers.
  */
 interface MeshrabiyaApi {
+    val meshStatusFlow: kotlinx.coroutines.flow.StateFlow<MeshStateDto>
+    val networkOverviewMetricsFlow: kotlinx.coroutines.flow.StateFlow<NetworkOverviewMetricsDto>
 
     /**
      * Provide application context to the Meshrabiya core (for use by TaskManager, etc.)

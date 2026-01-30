@@ -38,6 +38,11 @@ import kotlin.random.Random
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
+import kotlinx.coroutines.flow.StateFlow
+
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 // Removed: import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService (deprecated - replaced by DistributedComputeClient/Server)
 import com.ustadmobile.meshrabiya.service.compute.TaskManager
@@ -90,6 +95,18 @@ abstract class VirtualNode(
     val appContext: Context
 ): VirtualRouter, Closeable, HasNodeState {
 
+    /**
+     * Data class to hold real-time bit rate metrics.
+     */
+    data class BitRateMetrics(
+        val uploadBitRateBps: Long = 0L,
+        val downloadBitRateBps: Long = 0L
+    )
+
+    // StateFlow to expose real-time bit rate metrics
+    private val _bitRateMetrics = MutableStateFlow(BitRateMetrics())
+    val bitRateMetrics: StateFlow<BitRateMetrics> = _bitRateMetrics.asStateFlow()
+
     val addressAsInt: Int = address.requireAddressAsInt()
     fun getInetAddressFor(addr: Int) = InetAddress.getByAddress(addr.addressToByteArray())
     /**
@@ -128,6 +145,24 @@ abstract class VirtualNode(
 
     protected val coroutineScope = CoroutineScope(Dispatchers.Default + Job())
 
+    /**
+     * Public method to increment uploadBytes in LocalNodeState in a thread-safe way.
+     */
+    fun incrementUploadBytes(amount: Long) {
+        updateNodeState { prev ->
+            prev.copy(uploadBytes = prev.uploadBytes + amount)
+        }
+    }
+
+    /**
+     * Public method to increment downloadBytes in LocalNodeState in a thread-safe way.
+     */
+    fun incrementDownloadBytes(amount: Long) {
+        updateNodeState { prev ->
+            prev.copy(downloadBytes = prev.downloadBytes + amount)
+        }
+    }
+
     private val messageCounter = AtomicInteger(0)
 
     protected open val _state = MutableStateFlow(LocalNodeState())
@@ -155,6 +190,31 @@ abstract class VirtualNode(
     protected val meshConnectionPool: MeshConnectionPool = MeshConnectionPool(this)
     init {
         MeshConnectionPool.init(this)
+        // Coroutine to calculate and update real-time bit rates
+        coroutineScope.launch {
+            var lastUploadBytes = currentNodeState.uploadBytes
+            var lastDownloadBytes = currentNodeState.downloadBytes
+            var lastTimestamp = System.currentTimeMillis()
+            while (true) {
+                delay(1000L) // 1 second interval
+                val now = System.currentTimeMillis()
+                val elapsedMs = now - lastTimestamp
+                val elapsedSec = if (elapsedMs > 0) elapsedMs / 1000.0 else 1.0
+                val currentUpload = currentNodeState.uploadBytes
+                val currentDownload = currentNodeState.downloadBytes
+                val uploadDelta = currentUpload - lastUploadBytes
+                val downloadDelta = currentDownload - lastDownloadBytes
+                val uploadBps = (uploadDelta / elapsedSec).toLong()
+                val downloadBps = (downloadDelta / elapsedSec).toLong()
+                _bitRateMetrics.value = BitRateMetrics(
+                    uploadBitRateBps = if (uploadBps >= 0) uploadBps else 0L,
+                    downloadBitRateBps = if (downloadBps >= 0) downloadBps else 0L
+                )
+                lastUploadBytes = currentUpload
+                lastDownloadBytes = currentDownload
+                lastTimestamp = now
+            }
+        }
     }
 
     data class LastOriginatorMessage(

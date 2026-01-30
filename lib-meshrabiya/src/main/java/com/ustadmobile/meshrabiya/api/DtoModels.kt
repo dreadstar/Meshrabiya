@@ -35,6 +35,13 @@ enum class MeshStateDto {
     INITIALIZING, CONNECTING, CONNECTED, DISCONNECTED, ERROR, UNKNOWN;
 }
 
+@kotlinx.serialization.Serializable
+data class NetworkOverviewMetricsDto(
+    val uploadBps: Long,
+    val downloadBps: Long,
+    val activeNodeCount: Int
+)
+
 fun MeshState.toDto() = MeshStateDto.valueOf(this.name)
 fun MeshStateDto.toInternal() = MeshState.valueOf(this.name)
 
@@ -167,12 +174,34 @@ fun ApiResultDto.toInternal(): ApiResult = when(this) {
 }
 
 // LocalNodeState DTO (partial, nested DTOs required)
- data class LocalNodeStateDto(
+data class LocalNodeStateDto(
     val address: Int,
     val wifiState: MeshrabiyaWifiStateDto,
     val bluetoothState: MeshrabiyaBluetoothStateDto,
     val connectUri: String?,
-    val originatorMessages: Map<Int, LastOriginatorMessageDto>
+    val originatorMessages: Map<Int, LastOriginatorMessageDto>,
+    val uploadBytes: Long = 0L,
+    val downloadBytes: Long = 0L
+)
+
+fun LocalNodeState.toDto(): LocalNodeStateDto = LocalNodeStateDto(
+    address = address,
+    wifiState = wifiState.toDto(),
+    bluetoothState = bluetoothState.toDto(),
+    connectUri = connectUri,
+    originatorMessages = originatorMessages.mapValues { it.value.toDto() },
+    uploadBytes = uploadBytes,
+    downloadBytes = downloadBytes
+)
+
+fun LocalNodeStateDto.toInternal(): LocalNodeState = LocalNodeState(
+    address = address,
+    wifiState = wifiState.toInternal(),
+    bluetoothState = bluetoothState.toInternal(),
+    connectUri = connectUri,
+    originatorMessages = originatorMessages.mapValues { it.value.toInternal() },
+    uploadBytes = uploadBytes,
+    downloadBytes = downloadBytes
 )
 
 // MeshrabiyaWifiState DTO
@@ -364,21 +393,21 @@ StorageDeviceDto(
 
 // --- Conversion functions for LocalNodeState and nested DTOs ---
 
-fun LocalNodeState.toDto() = LocalNodeStateDto(
-    address = address,
-    wifiState = wifiState.toDto(),
-    bluetoothState = bluetoothState.toDto(),
-    connectUri = connectUri,
-    originatorMessages = originatorMessages.mapValues { it.value.toDto() }
-)
+// fun LocalNodeState.toDto() = LocalNodeStateDto(
+//     address = address,
+//     wifiState = wifiState.toDto(),
+//     bluetoothState = bluetoothState.toDto(),
+//     connectUri = connectUri,
+//     originatorMessages = originatorMessages.mapValues { it.value.toDto() }
+// )
 
-fun LocalNodeStateDto.toInternal() = LocalNodeState(
-    address = address,
-    wifiState = wifiState.toInternal(),
-    bluetoothState = bluetoothState.toInternal(),
-    connectUri = connectUri,
-    originatorMessages = originatorMessages.mapValues { it.value.toInternal() }
-)
+// fun LocalNodeStateDto.toInternal() = LocalNodeState(
+//     address = address,
+//     wifiState = wifiState.toInternal(),
+//     bluetoothState = bluetoothState.toInternal(),
+//     connectUri = connectUri,
+//     originatorMessages = originatorMessages.mapValues { it.value.toInternal() }
+// )
 
 fun MeshrabiyaWifiState.toDto() = MeshrabiyaWifiStateDto(
     wifiRole = wifiRole.name,
@@ -619,3 +648,10 @@ data class NeighborInfoDto(
 
 fun TaskType.toDto(): TaskTypeDto = TaskTypeDto.valueOf(this.name)
 fun TaskTypeDto.toInternal(): TaskType = TaskType.valueOf(this.name)
+
+
+// data class NetworkOverviewMetricsDto(
+//     val uploadRateBytesPerSec: Long,
+//     val downloadRateBytesPerSec: Long,
+//     val activeNodeCount: Int
+// )
