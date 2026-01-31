@@ -16,6 +16,7 @@ import com.ustadmobile.meshrabiya.mmcp.MmcpPing
 import com.ustadmobile.meshrabiya.mmcp.MmcpPong
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket.Companion.ADDR_BROADCAST
 import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketNextHop
+import com.ustadmobile.meshrabiya.vnet.wifi.HotspotStatus
 import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -183,14 +184,20 @@ class OriginatingMessageManager(
                 it.value.hopCount == 1.toByte()
             }
 
+            logger(Log.INFO, "$logPrefix 📡 Broadcasting originating message to ${neighbors.size} direct neighbors", null)
+
             neighbors.forEach {
                 val lastOriginatorMessage = it.value
                 try {
+                    logger(Log.INFO, "$logPrefix   → Sending to neighbor ${it.key.addressToDotNotation()} at ${lastOriginatorMessage.lastHopRealInetAddr}:${lastOriginatorMessage.lastHopRealPort}", null)
+                    
                     lastOriginatorMessage.receivedFromSocket.send(
                         nextHopAddress = lastOriginatorMessage.lastHopRealInetAddr,
                         nextHopPort = lastOriginatorMessage.lastHopRealPort,
                         virtualPacket = packet,
                     )
+                    
+                    logger(Log.DEBUG, "$logPrefix   ✅ Sent successfully to ${it.key.addressToDotNotation()}", null)
                 }catch(e: Exception) {
                     logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable: exception sending to " +
                             "${it.key.addressToDotNotation()} through ${it.value.lastHopRealInetAddr}:${it.value.lastHopRealPort}",
@@ -226,6 +233,10 @@ class OriginatingMessageManager(
                 logger(Log.WARN, "$logPrefix : sendOriginatingMessagesRunnable : could not send " +
                         "originating message to group owner socket not set on state")
             }
+            
+            // Note: Removed separate hotspot socket broadcasting - the main VirtualNodeDatagramSocket
+            // already receives packets on all interfaces including the hotspot interface (ap0).
+            // Normal broadcast mechanism handles hotspot scenarios automatically.
         } catch (e: Exception) {
             logBeta(LogLevel.ERROR, "Error sending originating message", e)
             logger(Log.ERROR, { "$logPrefix : sendOriginatingMessageRunnable : exception sending originating message" }, e)
@@ -401,6 +412,14 @@ class OriginatingMessageManager(
                 neighborAddr =  InetAddress.getByAddress(virtualPacket.header.fromAddr.addressToByteArray())
             )
             
+            logger(Log.INFO, "$logPrefix 📥 RECEIVED originating message from ${virtualPacket.header.fromAddr.addressToDotNotation()} via ${datagramPacket.address}:${datagramPacket.port} hopCount=${virtualPacket.header.hopCount}", null)
+            
+            if (virtualPacket.header.hopCount == 1.toByte()) {
+                logger(Log.INFO, "$logPrefix 🤝 DIRECT NEIGHBOR detected: ${virtualPacket.header.fromAddr.addressToDotNotation()} (isNew=$isNewNeighbor)", null)
+            } else {
+                logger(Log.DEBUG, "$logPrefix 🔀 Multi-hop node: ${virtualPacket.header.fromAddr.addressToDotNotation()} (${virtualPacket.header.hopCount} hops away)", null)
+            }
+            
             // === ENHANCED: BUILD TOPOLOGY MAP WITH ROLES ===
             val nodeInfo = NodeTopologyInfo(
                 nodeAddress = virtualPacket.header.fromAddr,
@@ -572,38 +591,54 @@ class OriginatingMessageManager(
         sendInterval: Int = 1_000,
     ) {
         logBeta(LogLevel.INFO, "Adding neighbor: $neighborRealInetAddr:$neighborRealPort")
-        logger(Log.DEBUG, "$logPrefix: addNeighbor - sending originating messages out")
+        logger(Log.INFO, "$logPrefix 🔗 addNeighbor - Attempting to establish connection with $neighborRealInetAddr:$neighborRealPort (timeout=${timeout}ms)", null)
 
         //send originating packets out to the other device until we get something back from it
         val sendOriginatingMessageJob = scope.launch {
-            try {
-                val originatingMessage = makeOriginatingMessage()  // Use no-arg version with callbacks
-                socket.send(
-                    nextHopAddress = neighborRealInetAddr,
-                    nextHopPort = neighborRealPort,
-                    virtualPacket = originatingMessage.toVirtualPacket(
-                        toAddr = ADDR_BROADCAST,
-                        fromAddr = localNodeAddress,
-                        lastHopAddr = localNodeAddress,
-                        hopCount = 1,
+            var messageCount = 0
+            while (true) {
+                try {
+                    messageCount++
+                    logger(Log.INFO, "$logPrefix 📤 addNeighbor - Sending originating message #$messageCount to $neighborRealInetAddr:$neighborRealPort", null)
+                    
+                    val originatingMessage = makeOriginatingMessage()  // Use no-arg version with callbacks
+                    socket.send(
+                        nextHopAddress = neighborRealInetAddr,
+                        nextHopPort = neighborRealPort,
+                        virtualPacket = originatingMessage.toVirtualPacket(
+                            toAddr = ADDR_BROADCAST,
+                            fromAddr = localNodeAddress,
+                            lastHopAddr = localNodeAddress,
+                            hopCount = 1,
+                        )
                     )
-                )
-            }catch(e: Exception) {
-                logger(Log.WARN, "$logPrefix : addNeighbor : exception trying to send originating message", e)
-            }
+                    
+                    logger(Log.DEBUG, "$logPrefix ✅ addNeighbor - Message #$messageCount sent successfully", null)
+                }catch(e: Exception) {
+                    logger(Log.WARN, "$logPrefix : addNeighbor : exception trying to send originating message #$messageCount", e)
+                }
 
-            delay(sendInterval.toLong())
+                delay(sendInterval.toLong())
+            }
         }
 
         try {
+            logger(Log.INFO, "$logPrefix ⏳ addNeighbor - Waiting for reply from $neighborRealInetAddr:$neighborRealPort...", null)
+            
             withTimeout(timeout.toLong()) {
                 val replyMessage = receivedMessages.filter {
                     it.lastHopRealInetAddr == neighborRealInetAddr && it.lastHopRealPort == neighborRealPort
                 }.first()
+                
+                logger(Log.INFO, "$logPrefix ✅ addNeighbor - SUCCESS! Received reply from ${replyMessage.lastHopAddr.addressToDotNotation()} at $neighborRealInetAddr:$neighborRealPort", null)
                 logBeta(LogLevel.INFO, "Received originating message reply from ${replyMessage.lastHopAddr.addressToDotNotation()}")
             }
-        }finally {
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            logger(Log.ERROR, "$logPrefix ❌ addNeighbor - TIMEOUT! No reply received from $neighborRealInetAddr:$neighborRealPort after ${timeout}ms", e)
+            throw e
+        } finally {
             sendOriginatingMessageJob.cancel()
+            logger(Log.DEBUG, "$logPrefix addNeighbor - Stopped sending originating messages to $neighborRealInetAddr:$neighborRealPort", null)
         }
 
     }

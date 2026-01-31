@@ -18,6 +18,7 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketAddress
 import java.util.concurrent.LinkedBlockingDeque
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -29,7 +30,8 @@ open class VirtualDatagramSocketImpl(
     private val router: VirtualRouter,
     private val localVirtualAddress: Int,
     private val logger: MNetLogger,
-    private val context: Context? = null,  //V3: Optional context for GatewayTypeResolver
+    private val context: Context? = null,  //V3: Optional context for GatewayTypeResolver,
+    private val parentNode: VirtualNode? = null // NEW: reference to parent VirtualNode for metrics
 ): DatagramSocketImpl() {
     private val logPrefix: String
         get() = "[VirtualDatagramSocketImpl] "
@@ -82,6 +84,9 @@ open class VirtualDatagramSocketImpl(
         datagramPacket.port = virtualPacket.header.fromPort
         datagramPacket.length = virtualPacket.header.payloadSize
         receiveQueue.put(datagramPacket)
+
+        // === METRICS: Increment downloadBytes using public method ===
+        parentNode?.incrementDownloadBytes(virtualPacket.header.payloadSize.toLong())
     }
 
     override fun setOption(optID: Int, value: Any?) {
@@ -138,6 +143,9 @@ open class VirtualDatagramSocketImpl(
                 //Update packet header in-place
                 virtualPacket.data[VirtualPacketHeader.HEADER_SIZE - 3] = resolvedType //gatewayType at offset 18
             }
+
+            // === METRICS: Increment uploadBytes using public method ===
+            parentNode?.incrementUploadBytes(p.length.toLong())
             
             router.route(virtualPacket)
         }finally {

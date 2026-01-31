@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.mmcp
 
 import com.ustadmobile.meshrabiya.vnet.MeshRole
+import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.ByteBuffer
@@ -30,7 +31,7 @@ class MmcpOriginatorMessage(
     // === OFFICIAL FIELDS (from canonical design) ===
     val sentTime: Long,
     val pingTimeSum: Short = 0,
-    val connectConfig: Any? = null,  // WiFi ConnectConfig (platform-specific)
+    val connectConfig: WifiConnectConfig? = null,
     
     // === ENHANCED FIELDS (for topology/centrality) ===
     val neighbors: List<Int> = emptyList(),  // Direct neighbor virtual addresses
@@ -69,9 +70,13 @@ class MmcpOriginatorMessage(
         dos.writeLong(sentTime)
         dos.writeShort(pingTimeSum.toInt())
         
-        // Write connectConfig (simplified - null for now)
+        // Write connectConfig
         dos.writeBoolean(connectConfig != null)
-        // TODO: Serialize connectConfig if present
+        if (connectConfig != null) {
+            val configBytes = connectConfig.toBytes()
+            dos.writeInt(configBytes.size)
+            dos.write(configBytes)
+        }
         
         // Write enhanced fields
         dos.writeInt(neighbors.size)
@@ -83,7 +88,8 @@ class MmcpOriginatorMessage(
         dos.writeInt(meshRoles.size)
         meshRoles.forEach { dos.writeByte(it.ordinal) }
         
-        return baos.toByteArray()
+        val payload = baos.toByteArray()
+        return headerAndPayloadToBytes(header, payload)
     }
 
     companion object {
@@ -102,8 +108,10 @@ class MmcpOriginatorMessage(
             // Read connectConfig
             val hasConnectConfig = buffer.get() != 0.toByte()
             val connectConfig = if (hasConnectConfig) {
-                // TODO: Deserialize connectConfig
-                null
+                val configSize = buffer.int
+                val configBytes = ByteArray(configSize)
+                buffer.get(configBytes)
+                WifiConnectConfig.fromBytes(configBytes, 0)
             } else null
             
             // Read enhanced fields

@@ -30,6 +30,8 @@ import com.ustadmobile.meshrabiya.api.model.*
  * Exposes all key operations, state, and event registration for UI/control layers.
  */
 interface MeshrabiyaApi {
+    val meshStatusFlow: kotlinx.coroutines.flow.StateFlow<MeshStateDto>
+    val networkOverviewMetricsFlow: kotlinx.coroutines.flow.StateFlow<NetworkOverviewMetricsDto>
 
     /**
      * Provide application context to the Meshrabiya core (for use by TaskManager, etc.)
@@ -63,6 +65,88 @@ interface MeshrabiyaApi {
     fun getNetworkInfo(): NetworkInfoDto?
     fun getNodeInfo(nodeId: String): NodeInfoDto?
     fun getNodeId(): Int
+    
+    /**
+     * Get current hotspot information (credentials, band, node address)
+     * 
+     * Returns network credentials that peers can use to join this mesh.
+     * The hotspot must be active (mesh CONNECTED state) to retrieve valid credentials.
+     * 
+     * **Android Version Differences:**
+     * - Android 13+: Managed hotspot with predictable SSID ("meshr-<hex>") and shared password
+     * - Android 8-12: LocalOnlyHotspot with random SSID/password
+     * 
+     * @return HotspotInfoDto containing ssid, password, band, nodeAddress, bssid, hotspotType
+     *         Returns null if mesh is not in CONNECTED state (hotspot not active)
+     */
+    fun getHotspotInfo(): HotspotInfoDto?
+    
+    /**
+     * Join an existing mesh network using mesh-wide discovery
+     * 
+     * This method scans for ALL available mesh hotspots and connects to the strongest one.
+     * This enables resilient joining - if the QR code generator's hotspot is offline,
+     * the device will automatically connect to any other available mesh hotspot.
+     * 
+     * This method can be called from ANY mesh state:
+     * - DISCONNECTED: Device will initialize mesh and connect as station
+     * - CONNECTING: Will switch to new network
+     * - CONNECTED: Will broadcast merge announcement, then add station connection
+     * 
+     * **Process:**
+     * 1. IF CONNECTED: Broadcast merge announcement to current mesh (5s delay for propagation)
+     * 2. Parses JSON QR code data (password, SSID pattern)
+     * 3. Scans for all SSIDs matching "meshr-*"
+     * 4. Sorts by signal strength and attempts connection (strongest first)
+     * 5. Retries scan up to 3 times if no hotspots found
+     * 6. Stores password for automatic reconnection if hotspot changes
+     * 
+     * @param jsonQrData JSON string from scanned QR code containing:
+     *                   {"type":"mesh_join", "password":"...", "ssidPattern":"meshr-*", "bootstrapSSID":"..."}
+     * @param callback Result callback invoked on completion
+     *                 Success(Unit) on successful connection to any mesh hotspot
+     *                 Failure(exception) if no mesh hotspots available after retries
+     */
+    fun joinMesh(jsonQrData: String, callback: (Result<Unit>) -> Unit)
+    
+    /**
+     * Merge current mesh with another mesh network (CONNECTED state only)
+     * 
+     * **USE CASE: Merging two existing meshes**
+     * - Device is ALREADY connected to a mesh
+     * - User scans QR of another mesh to merge
+     * - ALWAYS broadcasts merge announcement first
+     * 
+     * **ORGANIC MESH MERGE WORKFLOW (PT8):**
+     * 1. Broadcast MeshMergeAnnouncement to ALL devices on current mesh
+     * 2. Wait 5 seconds for multi-hop gossip propagation
+     * 3. Connect this device to target mesh (add station connection)
+     * 4. Other devices receive announcement and independently decide to join
+     * 5. Idempotent check prevents duplicate joins (same SSID/password)
+     * 
+     * **Key Differences from joinMesh():**
+     * - mergeMesh() REQUIRES CONNECTED state (returns error if DISCONNECTED)
+     * - ALWAYS broadcasts announcement (joinMesh() only broadcasts if CONNECTED)
+     * - Clearer user intent: "I want to merge two meshes"
+     * - UI: Separate "Merge Mesh" button (enabled only when CONNECTED)
+     * 
+     * **Requirements:**
+     * - Multi-hop forwarding MUST be enabled (VirtualNode.kt Lines 702-722 uncommented)
+     * - MeshMergeAnnouncementMessage must be implemented (PT8 Change 2)
+     * - MeshConfigStorage must be implemented (PT8 Change 4)
+     * - EmergentRoleManager must forward broadcasts (MESH_ROUTER role)
+     * 
+     * See PT8 for complete implementation details.
+     * See MESH_GROUP_MERGING_RESEARCH_FINDINGS.md for organic merge strategy.
+     * 
+     * @param jsonQrData JSON string from scanned QR code containing:
+     *                   {"type":"mesh_join", "password":"...", "ssidPattern":"meshr-*", "bootstrapSSID":"..."}
+     * @param callback Result callback invoked on completion
+     *                 Success(Unit) on successful merge (announcement broadcast + connection)
+     *                 Failure(exception) if not CONNECTED, no hotspots found, or connection fails
+     */
+    fun mergeMesh(jsonQrData: String, callback: (Result<Unit>) -> Unit)
+    
     // --- Proxy Controls ---
     fun setProxy(host: String, port: Int)
     fun setProxyActive(active: Boolean)

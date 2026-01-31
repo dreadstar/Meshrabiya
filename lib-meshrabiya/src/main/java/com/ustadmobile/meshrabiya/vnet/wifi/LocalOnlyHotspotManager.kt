@@ -19,6 +19,10 @@ import com.ustadmobile.meshrabiya.vnet.VirtualRouter
 import com.ustadmobile.meshrabiya.vnet.wifi.UnhiddenSoftApConfigurationBuilder.Companion.RANDOMIZATION_NONE
 import com.ustadmobile.meshrabiya.vnet.wifi.UnhiddenSoftApConfigurationBuilder.Companion.SECURITY_TYPE_WPA2_PSK
 import com.ustadmobile.meshrabiya.vnet.wifi.state.LocalOnlyHotspotState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +31,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class LocalOnlyHotspotManager(
     appContext: Context,
@@ -64,6 +70,9 @@ class LocalOnlyHotspotManager(
                     config = hotspotConfig,
                 )
             }
+            
+            // Start monitoring hotspot state to detect if it stops
+            startHotspotMonitoring()
         }
 
         override fun onStopped() {
@@ -92,6 +101,8 @@ class LocalOnlyHotspotManager(
     }
 
     private val wifiManager: WifiManager = appContext.getSystemService(WifiManager::class.java)
+    
+    private var hotspotMonitoringJob: kotlinx.coroutines.Job? = null
 
     suspend fun startLocalOnlyHotspot(
         preferredBand: ConnectBand,
@@ -150,10 +161,77 @@ class LocalOnlyHotspotManager(
         }
     }
 
+    private fun startHotspotMonitoring() {
+        hotspotMonitoringJob?.cancel()
+        hotspotMonitoringJob = CoroutineScope(Dispatchers.Default).launch {
+            var checkCount = 0
+            var wifiReconnectCount = 0
+            
+            while (isActive) {
+                delay(2000) // Check every 2 seconds
+                checkCount++
+                
+                val currentStatus = _state.value.status
+                val wifiInfo = wifiManager.connectionInfo
+                val isWifiConnected = wifiInfo?.networkId != -1
+                val wifiSSID = wifiInfo?.ssid ?: "null"
+                
+                logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR #$checkCount] Hotspot: $currentStatus | WiFi: $isWifiConnected | SSID: $wifiSSID")
+                
+                // PHASE 2: Continuous WiFi Suppression - actively prevent reconnection
+                if (currentStatus == HotspotStatus.STARTED && isWifiConnected && wifiSSID != "<unknown ssid>") {
+                    wifiReconnectCount++
+                    logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: WiFi reconnected (#$wifiReconnectCount) to $wifiSSID! Forcing disconnect...")
+                    
+                    try {
+                        // Use removeNetwork() to force disconnection
+                        val reconnectedNetworkId = wifiInfo.networkId
+                        wifiManager.disconnect()
+                        wifiManager.removeNetwork(reconnectedNetworkId)
+                        wifiManager.configuredNetworks?.forEach { config ->
+                            wifiManager.disableNetwork(config.networkId)
+                        }
+                        logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] WiFi disconnected, removed network, and disabled all networks")
+                        
+                        // Alert every 3 reconnections
+                        if (wifiReconnectCount % 3 == 0) {
+                            logger(Log.WARN, "$logPrefix [HOTSPOT MONITOR] WiFi interference: $wifiReconnectCount reconnection attempts suppressed")
+                            // Trigger UI notification
+                            router.notifyHotspotInterference(wifiReconnectCount)
+                        }
+                    } catch (e: Exception) {
+                        logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] Failed to disconnect WiFi", e)
+                    }
+                }
+                
+                // PHASE 2: Detect if hotspot was lost/stopped unexpectedly
+                if (currentStatus == HotspotStatus.STARTED) {
+                    // Check if hotspot is actually active by verifying the reservation is still valid
+                    val reservation = localOnlyHotspotReservation
+                    if (reservation == null) {
+                        logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: Hotspot reservation lost while status is STARTED!")
+                        router.notifyHotspotLost("Hotspot reservation lost unexpectedly")
+                        break
+                    }
+                }
+                
+                // Stop monitoring if hotspot stopped
+                if (currentStatus == HotspotStatus.STOPPED) {
+                    logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] Hotspot stopped, ending monitoring. WiFi reconnections suppressed: $wifiReconnectCount")
+                    break
+                }
+            }
+            
+            logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] Monitoring ended")
+        }
+    }
+    
     suspend fun stopLocalOnlyHotspot(
         waitForStop: Boolean = true,
     ) {
         logger(Log.DEBUG, "$logPrefix stopLocalOnlyHotspot")
+        hotspotMonitoringJob?.cancel()
+        hotspotMonitoringJob = null
         val prevState = _state.getAndUpdate { prev ->
             if(prev.status == HotspotStatus.STARTED) {
                 prev.copy(status = HotspotStatus.STOPPING)

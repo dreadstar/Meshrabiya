@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.vnet.wifi.state
 
 import android.net.wifi.WifiManager.LocalOnlyHotspotCallback
+import com.ustadmobile.meshrabiya.vnet.VirtualNodeDatagramSocket
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotStatus
 import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
 

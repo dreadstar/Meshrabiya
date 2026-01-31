@@ -481,6 +481,11 @@ class DistributedStorageManager(
         )
     }
     
+    /**
+     * Get current storage capabilities for role calculation
+     */
+    fun getStorageCapabilities(): StorageStats = _storageStats.value
+    
     // === Data Classes ===
     
     data class StorageConfiguration(

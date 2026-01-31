@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 
 class AndroidVirtualNode(
-    val appContext: Context,
+    appContext: Context,
     port: Int = 0,
     json: Json = Json,
     logger: MNetLogger = MNetLoggerStdout(),
@@ -41,12 +41,16 @@ class AndroidVirtualNode(
     address = address,
     json = json,
     config = config,
+    appContext = appContext,
 ) {
     
     /**
      * Provides context for service initialization (EmergentRoleManager, IntelligentDistributedComputeService).
      */
-    override fun getContext(): Context = appContext
+    override fun getContext(): Context  {
+        Log.d("AndroidVirtualNode", "getContext() called, returning: $appContext")
+        return appContext
+    }
 
     private val bluetoothManager: BluetoothManager by lazy {
         appContext.getSystemService(BluetoothManager::class.java)
@@ -111,6 +115,10 @@ class AndroidVirtualNode(
     private val receiverRegistered = AtomicBoolean(false)
 
     init {
+        Log.d("AndroidVirtualNode", "Constructed with appContext: $appContext")
+        if (appContext == null) {
+            Log.e("AndroidVirtualNode", "appContext is NULL in constructor!")
+        }
         appContext.registerReceiver(
             bluetoothStateBroadcastReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         )
@@ -160,6 +168,21 @@ class AndroidVirtualNode(
         hotspotType: HotspotType,
     ): LocalHotspotResponse? {
         updateBluetoothState()
+        
+        // CRITICAL: Disconnect from regular WiFi before starting hotspot
+        // Even on devices with concurrent AP+STA support, we MUST be on the hotspot network
+        // to receive packets from joining devices. If we stay on regular WiFi, we'll be on
+        // a different subnet (e.g., 192.168.1.x vs 192.168.121.x) and can't communicate.
+        if (enabled) {
+            logger(Log.INFO, "setWifiHotspotEnabled: Disconnecting from station (regular WiFi) before starting hotspot", null)
+            meshrabiyaWifiManager.disconnectStation()
+            
+            // CRITICAL: Wait for WiFi disconnect to complete and verify
+            logger(Log.INFO, "setWifiHotspotEnabled: Waiting 2 seconds for WiFi disconnect to stabilize...", null)
+            kotlinx.coroutines.delay(2000)
+            logger(Log.INFO, "setWifiHotspotEnabled: Proceeding with hotspot creation", null)
+        }
+        
         return super.setWifiHotspotEnabled(enabled, preferredBand, hotspotType)
     }
 
@@ -181,6 +204,16 @@ class AndroidVirtualNode(
         } else {
             logger(Log.WARN, "AndroidVirtualNode: storeBssid: BSSID for $ssid is NULL, can't save to avoid prompts on reconnect")
         }
+    }
+
+    override fun notifyHotspotInterference(reconnectionCount: Int) {
+        super.notifyHotspotInterference(reconnectionCount)
+        logger(Log.WARN, "[HOTSPOT ALERT] WiFi interference detected: $reconnectionCount reconnection attempts suppressed", null)
+    }
+
+    override fun notifyHotspotLost(reason: String) {
+        super.notifyHotspotLost(reason)
+        logger(Log.ERROR, "[HOTSPOT ALERT] Hotspot lost: $reason", null)
     }
 
     

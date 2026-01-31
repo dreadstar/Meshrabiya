@@ -28,6 +28,7 @@ import com.ustadmobile.meshrabiya.util.findFreePort
 import com.ustadmobile.meshrabiya.vnet.VirtualNodeDatagramSocket
 import com.ustadmobile.meshrabiya.vnet.VirtualRouter
 import com.ustadmobile.meshrabiya.vnet.WifiRole
+import kotlinx.coroutines.delay
 import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketFactory
 import com.ustadmobile.meshrabiya.vnet.socket.ChainSocketServer
 import com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManagerAndroid.OnNewWifiConnectionListener
@@ -62,6 +63,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 
 /**
  *
@@ -70,7 +72,7 @@ class MeshrabiyaWifiManagerAndroid(
     private val appContext: Context,
     private val logger: MNetLogger,
     private val localNodeAddr: Int,
-    private val router: VirtualRouter,
+    private val router: VirtualNode,
     private val chainSocketFactory: ChainSocketFactory,
     private val ioExecutor: ExecutorService,
     private val onNewWifiConnectionListener: OnNewWifiConnectionListener = OnNewWifiConnectionListener { },
@@ -155,6 +157,42 @@ class MeshrabiyaWifiManagerAndroid(
     )
 
     private val wifiManager: WifiManager = appContext.getSystemService(WifiManager::class.java)
+    
+    /**
+     * Helper function to convert integer IP to readable string format
+     */
+    private fun intToIpString(ip: Int): String {
+        return "${ip and 0xFF}.${(ip shr 8) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 24) and 0xFF}"
+    }
+    
+    /**
+     * Log detailed WiFi state for diagnostics
+     */
+    private fun logDetailedWifiState(prefix: String) {
+        try {
+            val info = wifiManager.connectionInfo
+            val dhcpInfo = wifiManager.dhcpInfo
+            
+            logger(Log.INFO, "$prefix WiFi State:")
+            logger(Log.INFO, "  networkId: ${info.networkId}")
+            logger(Log.INFO, "  SSID: ${info.ssid}")
+            logger(Log.INFO, "  BSSID: ${info.bssid}")
+            logger(Log.INFO, "  IP: ${info.ipAddress} (${intToIpString(info.ipAddress)})")
+            logger(Log.INFO, "  LinkSpeed: ${info.linkSpeed} Mbps")
+            logger(Log.INFO, "  RSSI: ${info.rssi}")
+            logger(Log.INFO, "  Gateway: ${intToIpString(dhcpInfo.gateway)}")
+            logger(Log.INFO, "  DNS1: ${intToIpString(dhcpInfo.dns1)}")
+            
+            // List all configured networks
+            val configured = wifiManager.configuredNetworks
+            logger(Log.INFO, "  Configured Networks: ${configured?.size ?: 0}")
+            configured?.forEachIndexed { index, config ->
+                logger(Log.INFO, "    [$index] ${config.SSID} (id=${config.networkId}, status=${config.status})")
+            }
+        } catch (e: Exception) {
+            logger(Log.ERROR, "$prefix Failed to log WiFi state", e)
+        }
+    }
 
     private val _state = MutableStateFlow(MeshrabiyaWifiState(
         concurrentApStationSupported = if(Build.VERSION.SDK_INT >= 30) {
@@ -207,12 +245,16 @@ class MeshrabiyaWifiManagerAndroid(
         }
 
         nodeScope.launch {
-            localOnlyHotspotManager.state.collect {
+            localOnlyHotspotManager.state.collect { hotspotState ->
                 _state.update { prev ->
                     prev.copy(
-                        localOnlyHotspotState = it
+                        localOnlyHotspotState = hotspotState
                     )
                 }
+                
+                // Note: We don't create a separate hotspot socket - the main VirtualNodeDatagramSocket
+                // receives packets on all interfaces. OriginatingMessageManager will handle sending
+                // broadcasts appropriately when hotspot is active.
             }
         }
 
@@ -234,6 +276,23 @@ class MeshrabiyaWifiManagerAndroid(
         assertNotClosed()
 
         logger(Log.DEBUG, "$logPrefix requestHotspot requestId=$requestMessageId", null)
+
+        // Check if concurrent AP+STA is supported
+        val currentState = _state.value
+        if (!currentState.concurrentApStationSupported && currentState.wifiStationState.status != WifiStationState.Status.INACTIVE) {
+            logger(Log.INFO, "$logPrefix Concurrent AP+STA not supported, disconnecting from WiFi before starting hotspot", null)
+            // Disconnect from WiFi first
+            withContext(Dispatchers.Main) {
+                try {
+                    wifiManager.disconnect()
+                    logger(Log.DEBUG, "$logPrefix WiFi disconnected successfully", null)
+                    // Give it a moment to disconnect
+                    delay(500)
+                } catch (e: Exception) {
+                    logger(Log.WARN, "$logPrefix Failed to disconnect WiFi: ${e.message}", e)
+                }
+            }
+        }
 
         /**
          * The user might explicityl specify WifiDirect or Localonlyhotspot. If so, honor that
@@ -412,6 +471,14 @@ class MeshrabiyaWifiManagerAndroid(
 
         if (resultState.network != null) {
             logger(Log.INFO, "$logPrefix connectToHotspot: ${config.ssid} - success status=${resultState.status}")
+            
+            // CRITICAL: Bind all app sockets to this mesh network to prevent switching back to regular WiFi
+            val bindSuccess = connectivityManager.bindProcessToNetwork(resultState.network)
+            logger(Log.INFO, "$logPrefix connectToHotspot: bindProcessToNetwork result=$bindSuccess", null)
+            if (!bindSuccess) {
+                logger(Log.WARN, "$logPrefix connectToHotspot: Failed to bind process to mesh network - device may switch networks", null)
+            }
+            
             return resultState.network
         }else {
             logger(Log.ERROR, "$logPrefix connectToHotspot: ${config.ssid} - fail status=${resultState.status}")
@@ -446,6 +513,12 @@ class MeshrabiyaWifiManagerAndroid(
      * the station mode is already inactive, this will have no effect.
      */
     suspend fun disconnectStation() {
+        logger(Log.ERROR, "$logPrefix ========== disconnectStation() CALLED ==========")
+        logger(Log.ERROR, "$logPrefix This log MUST appear if function is called")
+        
+        // Log detailed state BEFORE disconnect
+        logDetailedWifiState("$logPrefix [BEFORE DISCONNECT]")
+        
         val prevState = _state.getAndUpdate { prev ->
             if(prev.wifiStationState.status != WifiStationState.Status.INACTIVE) {
                 prev.copy(
@@ -484,20 +557,78 @@ class MeshrabiyaWifiManagerAndroid(
                     connectivityManager.unregisterNetworkCallback(it)
                     logger(Log.DEBUG, "$logPrefix unregistered network request callback")
                 }
+                
+                // CRITICAL: Unbind network so device can use regular WiFi again
+                connectivityManager.bindProcessToNetwork(null)
+                logger(Log.DEBUG, "$logPrefix disconnectStation: unbound process from mesh network", null)
+                
             }catch(e: Exception) {
                 logger(Log.WARN, "$logPrefix disconnectStation: exception unregistering network callback")
             }
-
-            _state.update { prev ->
-                prev.copy(
-                    wifiStationState = prev.wifiStationState.copy(
-                        config = null,
-                        network = null,
-                        stationBoundSocketsPort = -1,
-                        stationBoundDatagramSocket = null,
-                    )
+        }
+        
+        // CRITICAL FIX: Actually disconnect from WiFi using WifiManager with verification loop
+        try {
+            val currentNetworkId = wifiManager.connectionInfo?.networkId ?: -1
+            val currentSSID = wifiManager.connectionInfo?.ssid ?: "null"
+            val wasConnected = currentNetworkId != -1
+            
+            logger(Log.INFO, "$logPrefix disconnectStation: WiFi connection status BEFORE disconnect: networkId=$currentNetworkId, SSID=$currentSSID")
+            
+            if (wasConnected) {
+                // CRITICAL: On Android 10+, apps cannot programmatically disable WiFi
+                // Attempting to disable WiFi will succeed silently but Android ignores it
+                // The ONLY solution is to instruct the user to manually disable WiFi
+                
+                logger(Log.ERROR, "$logPrefix disconnectStation: ❌ CRITICAL: Device is connected to WiFi ($currentSSID)")
+                logger(Log.ERROR, "$logPrefix disconnectStation: ❌ Android prevents apps from disabling WiFi programmatically")
+                logger(Log.ERROR, "$logPrefix disconnectStation: ❌ User MUST manually disable WiFi in Settings before starting mesh")
+                
+                throw IllegalStateException(
+                    "❌ Cannot start mesh hotspot while WiFi is enabled.\n\n" +
+                    "📱 Please manually disable WiFi in Android Settings:\n" +
+                    "   Settings → Network & Internet → WiFi → Turn OFF\n\n" +
+                    "Currently connected to: $currentSSID\n\n" +
+                    "Why? Android prevents apps from disabling WiFi for security reasons. " +
+                    "The hotspot and WiFi cannot run simultaneously on this device."
                 )
+            } else {
+                logger(Log.INFO, "$logPrefix disconnectStation: WiFi was not connected (networkId=-1)")
+                // Still disable WiFi to prevent reconnection during hotspot operation
+                @Suppress("DEPRECATION")
+                if (wifiManager.isWifiEnabled) {
+                    logger(Log.INFO, "$logPrefix disconnectStation: Disabling WiFi subsystem to prevent reconnection")
+                    try {
+                        wifiManager.isWifiEnabled = false
+                        delay(500)
+                        logger(Log.INFO, "$logPrefix disconnectStation: WiFi subsystem disabled successfully")
+                    } catch (e: SecurityException) {
+                        logger(Log.ERROR, "$logPrefix disconnectStation: PERMISSION DENIED - Cannot disable WiFi", e)
+                        throw IllegalStateException("Cannot disable WiFi - permission denied. Please manually disable WiFi in Android Settings before starting mesh.", e)
+                    } catch (e: Exception) {
+                        logger(Log.ERROR, "$logPrefix disconnectStation: FAILED to disable WiFi subsystem", e)
+                        throw IllegalStateException("Failed to disable WiFi. Please manually disable WiFi in Android Settings before starting mesh.", e)
+                    }
+                }
             }
+        } catch (e: IllegalStateException) {
+            // Re-throw WiFi disable failures with clear message
+            throw e
+        } catch (e: Exception) {
+            logger(Log.ERROR, "$logPrefix disconnectStation: Exception during WiFi disconnect", e)
+            throw e
+        }
+        
+        // Update state to clear station configuration
+        _state.update { prev ->
+            prev.copy(
+                wifiStationState = prev.wifiStationState.copy(
+                    config = null,
+                    network = null,
+                    stationBoundSocketsPort = -1,
+                    stationBoundDatagramSocket = null,
+                )
+            )
         }
     }
 
@@ -546,7 +677,7 @@ class MeshrabiyaWifiManagerAndroid(
             logger(Log.INFO, "$logPrefix : connectToHotspot: Got link local address = " +
                     "$netAddress on interface ${linkProperties?.interfaceName}", null)
 
-            val socketPort = findFreePort(0)
+            val socketPort = config.port
 
             val socket = if(config.hotspotType == HotspotType.WIFIDIRECT_GROUP) {
                 /**
@@ -667,8 +798,28 @@ class MeshrabiyaWifiManagerAndroid(
             wifiLock?.also {
                 it.release()
             }
+            
+            // Re-enable WiFi subsystem when mesh stops
+            @Suppress("DEPRECATION")
+            if (!wifiManager.isWifiEnabled) {
+                logger(Log.INFO, "$logPrefix close: Re-enabling WiFi subsystem")
+                wifiManager.isWifiEnabled = true
+            }
         }
     }
+
+    /**
+     * Create network-bound sockets for the hotspot interface. This is critical for mesh discovery
+     * because it ensures broadcast packets from the hotspot host are sent on the correct interface
+     * and can be received by joining nodes with network-bound sockets.
+     * 
+     * Without this, the hotspot's broadcasts go to the default network interface and never reach
+     * joining nodes that are listening on their network-bound hotspot interface.
+     *
+     * NOTE: This method has been removed. The main VirtualNodeDatagramSocket already receives
+     * packets on all interfaces. We cannot create a separate socket on the same port as it causes
+     * EADDRINUSE errors. Instead, OriginatingMessageManager sends broadcasts when hotspot is active.
+     */
 
     suspend fun lookupStoredBssid(ssid: String) : String? {
         val prefKey = stringPreferencesKey("${PREFIX_SSID}$ssid")

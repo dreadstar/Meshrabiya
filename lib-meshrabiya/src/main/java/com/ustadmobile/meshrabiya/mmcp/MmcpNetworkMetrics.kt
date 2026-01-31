@@ -36,7 +36,8 @@ class MmcpNetworkMetrics(
         // Write timestamp
         dos.writeLong(timestamp)
         
-        return baos.toByteArray()
+        val payload = baos.toByteArray()
+        return headerAndPayloadToBytes(header, payload)
     }
 
     companion object {

@@ -38,6 +38,11 @@ import kotlin.random.Random
 import com.ustadmobile.meshrabiya.service.MeshEcosystemListener
 import com.ustadmobile.meshrabiya.service.MeshGossipService
 import com.ustadmobile.meshrabiya.vnet.CoreGossipBroadcastService
+import kotlinx.coroutines.flow.StateFlow
+
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.ustadmobile.meshrabiya.storage.DistributedStorageManager
 // Removed: import com.ustadmobile.meshrabiya.service.compute.IntelligentDistributedComputeService (deprecated - replaced by DistributedComputeClient/Server)
 import com.ustadmobile.meshrabiya.service.compute.TaskManager
@@ -54,6 +59,7 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use hardware pa
 
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
+import android.content.Context
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
@@ -86,7 +92,20 @@ abstract class VirtualNode(
     final override val address: InetAddress = randomApipaInetAddr(),
     override val networkPrefixLength: Int = 16,
     val config: NodeConfig = NodeConfig.DEFAULT_CONFIG,
+    val appContext: Context
 ): VirtualRouter, Closeable, HasNodeState {
+
+    /**
+     * Data class to hold real-time bit rate metrics.
+     */
+    data class BitRateMetrics(
+        val uploadBitRateBps: Long = 0L,
+        val downloadBitRateBps: Long = 0L
+    )
+
+    // StateFlow to expose real-time bit rate metrics
+    private val _bitRateMetrics = MutableStateFlow(BitRateMetrics())
+    val bitRateMetrics: StateFlow<BitRateMetrics> = _bitRateMetrics.asStateFlow()
 
     val addressAsInt: Int = address.requireAddressAsInt()
     fun getInetAddressFor(addr: Int) = InetAddress.getByAddress(addr.addressToByteArray())
@@ -126,6 +145,24 @@ abstract class VirtualNode(
 
     protected val coroutineScope = CoroutineScope(Dispatchers.Default + Job())
 
+    /**
+     * Public method to increment uploadBytes in LocalNodeState in a thread-safe way.
+     */
+    fun incrementUploadBytes(amount: Long) {
+        updateNodeState { prev ->
+            prev.copy(uploadBytes = prev.uploadBytes + amount)
+        }
+    }
+
+    /**
+     * Public method to increment downloadBytes in LocalNodeState in a thread-safe way.
+     */
+    fun incrementDownloadBytes(amount: Long) {
+        updateNodeState { prev ->
+            prev.copy(downloadBytes = prev.downloadBytes + amount)
+        }
+    }
+
     private val messageCounter = AtomicInteger(0)
 
     protected open val _state = MutableStateFlow(LocalNodeState())
@@ -153,6 +190,31 @@ abstract class VirtualNode(
     protected val meshConnectionPool: MeshConnectionPool = MeshConnectionPool(this)
     init {
         MeshConnectionPool.init(this)
+        // Coroutine to calculate and update real-time bit rates
+        coroutineScope.launch {
+            var lastUploadBytes = currentNodeState.uploadBytes
+            var lastDownloadBytes = currentNodeState.downloadBytes
+            var lastTimestamp = System.currentTimeMillis()
+            while (true) {
+                delay(1000L) // 1 second interval
+                val now = System.currentTimeMillis()
+                val elapsedMs = now - lastTimestamp
+                val elapsedSec = if (elapsedMs > 0) elapsedMs / 1000.0 else 1.0
+                val currentUpload = currentNodeState.uploadBytes
+                val currentDownload = currentNodeState.downloadBytes
+                val uploadDelta = currentUpload - lastUploadBytes
+                val downloadDelta = currentDownload - lastDownloadBytes
+                val uploadBps = (uploadDelta / elapsedSec).toLong()
+                val downloadBps = (downloadDelta / elapsedSec).toLong()
+                _bitRateMetrics.value = BitRateMetrics(
+                    uploadBitRateBps = if (uploadBps >= 0) uploadBps else 0L,
+                    downloadBitRateBps = if (downloadBps >= 0) downloadBps else 0L
+                )
+                lastUploadBytes = currentUpload
+                lastDownloadBytes = currentDownload
+                lastTimestamp = now
+            }
+        }
     }
 
     data class LastOriginatorMessage(
@@ -205,16 +267,12 @@ abstract class VirtualNode(
     }
 
     // === STEP 1: Create EmergentRoleManager with topology callback ===
-    open val emergentRoleManager: EmergentRoleManager = run {
-        val context = getContext() 
-            ?: throw IllegalStateException("Context required for EmergentRoleManager initialization")
-        EmergentRoleManager(
-            virtualNode = this,
-            context = context,
-            getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
-            getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
-        )
-    }
+    open val emergentRoleManager: EmergentRoleManager = EmergentRoleManager(
+        virtualNode = this,
+        context = appContext,
+        getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
+        getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
+    )
 
     // === STEP 2: Create OriginatingMessageManager with EmergentRoleManager callbacks ===
     open val originatingMessageManager = OriginatingMessageManager(
@@ -264,6 +322,7 @@ abstract class VirtualNode(
         router = this,
         localNodeVirtualAddress = addressAsInt,
         logger = logger,
+        // parentNode = this
     )
 
     protected val chainSocketFactory: ChainSocketFactory = ChainSocketFactoryImpl(
@@ -328,12 +387,12 @@ abstract class VirtualNode(
     // TaskManager: Orchestrates compute task lifecycle on compute node
     protected val taskManager: TaskManager by lazy {
         TaskManager(
-            context = getContext() ?: throw IllegalStateException("Context required for TaskManager"),
+            context = appContext ?: throw IllegalStateException("Context required for TaskManager"),
             virtualNode = this,
             distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
                 ?: throw IllegalStateException("DistributedStorageClient required for TaskManager"),
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }
@@ -341,10 +400,10 @@ abstract class VirtualNode(
     // DistributedComputeClient: Client-side distributed compute service
     protected val distributedComputeClient: DistributedComputeClient by lazy {
         DistributedComputeClient(
-            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeClient"),
+            context = appContext ?: throw IllegalStateException("Context required for DistributedComputeClient"),
             virtualNode = this,
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }
@@ -364,14 +423,14 @@ abstract class VirtualNode(
     // DistributedComputeServer: Server-side distributed compute service
     protected val distributedComputeServer: DistributedComputeServer by lazy {
         DistributedComputeServer(
-            context = getContext() ?: throw IllegalStateException("Context required for DistributedComputeServer"),
+            context = appContext ?: throw IllegalStateException("Context required for DistributedComputeServer"),
             virtualNode = this,
             emergentRoleManager = emergentRoleManager,
             taskManager = taskManager,
             distributedStorageClient = distributedStorageManager?.getDistributedStorageClient()
                 ?: throw IllegalStateException("DistributedStorageClient required for DistributedComputeServer"),
             betaLogger = BetaTestLogger.getInstance(
-                getContext() ?: throw IllegalStateException("Context required")
+                appContext ?: throw IllegalStateException("Context required")
             )
         )
     }
@@ -442,8 +501,18 @@ abstract class VirtualNode(
         activeSockets.remove(portNum)
     }
 
+    override fun notifyHotspotInterference(reconnectionCount: Int) {
+        logger(Log.WARN, "Hotspot interference: WiFi reconnected $reconnectionCount times", null)
+        // Subclasses can override to show UI notification
+    }
+
+    override fun notifyHotspotLost(reason: String) {
+        logger(Log.ERROR, "Hotspot lost: $reason", null)
+        // Subclasses can override to show UI notification
+    }
+
     fun createDatagramSocket(): DatagramSocket {
-        return VirtualDatagramSocket2(this, addressAsInt, logger)
+        return VirtualDatagramSocket2(this, addressAsInt, logger, this)
     }
 
     fun createBoundDatagramSocket(port: Int): DatagramSocket {
@@ -635,9 +704,13 @@ abstract class VirtualNode(
         }
     }
 
-    // Deduplication cache for broadcast packets (moved to MeshEcosystemListener)
-    // private val seenBroadcasts = ConcurrentHashMap<String, Long>()
-    // private val broadcastTtlMs: Long = 60_000L
+    // Deduplication cache for broadcast packets
+    private val seenBroadcasts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val broadcastTtlMs: Long = 60_000L
+    
+    private fun computeBroadcastId(packet: VirtualPacket): String {
+        return "${packet.header.fromAddr}-${packet.header.fromPort}-${packet.header.payloadSize}"
+    }
 
     override fun route(
         packet: VirtualPacket,
@@ -657,9 +730,12 @@ abstract class VirtualNode(
 
             // MMCP message handling (unchanged)
             if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
+                logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
                 if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
                     logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
                 }
+            }else if(packet.header.toPort == 0){
+                logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
             }
 
             // Ecosystem message handling (UDP broadcast or direct)
@@ -702,27 +778,32 @@ abstract class VirtualNode(
                 packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
                 // Deduplication for broadcast packets moved to MeshEcosystemListener
                 if(toAddr == ADDR_BROADCAST) {
-                    // val broadcastId = computeBroadcastId(packet)
-                    // val now = System.currentTimeMillis()
-                    // val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
-                    // if (prev == null) {
-                    //     val meshRoles = emergentRoleManager.getCurrentMeshRoles()
-                    //     if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
-                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER)")
-                    //         originatingMessageManager.neighbors().filter {
-                    //             it.first != fromLastHop && it.first != packet.header.fromAddr
-                    //         }.forEach {
-                    //             logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
-                    //             it.second.receivedFromSocket.send(
-                    //                 nextHopAddress = it.second.lastHopRealInetAddr,
-                    //                 nextHopPort = it.second.lastHopRealPort,
-                    //                 virtualPacket = packet,
-                    //             )
-                    //         }
-                    //     } else {
-                    //         logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
-                    //     }
-                    // }
+                    val broadcastId = computeBroadcastId(packet)
+                    val now = System.currentTimeMillis()
+                    val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
+                    if (prev == null) {
+                        // PT8: Check TTL before forwarding (prevent infinite loops)
+                        if (packet.header.maxHops > 0) {
+                            val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                            if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER, hops remaining: ${packet.header.maxHops})")
+                                originatingMessageManager.neighbors().filter {
+                                    it.first != fromLastHop && it.first != packet.header.fromAddr
+                                }.forEach {
+                                    logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
+                                    it.second.receivedFromSocket.send(
+                                        nextHopAddress = it.second.lastHopRealInetAddr,
+                                        nextHopPort = it.second.lastHopRealPort,
+                                        virtualPacket = packet,
+                                    )
+                                }
+                            } else {
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
+                            }
+                        } else {
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")
+                        }
+                    }
                 }else {
                     val originatorMessage = originatingMessageManager
                         .findOriginatingMessageFor(packet.header.toAddr)
@@ -1025,19 +1106,27 @@ abstract class VirtualNode(
         neighborNodeVirtualAddr: Int,
         socket: VirtualNodeDatagramSocket,
     ) {
-        logger(Log.DEBUG,
-            "$logPrefix addNewNeighborConnection connection to virtual addr " +
-                    "${neighborNodeVirtualAddr.addressToDotNotation()} " +
-                    "via datagram to $address:$port",
+        logger(Log.INFO,
+            "$logPrefix 🆕 addNewNeighborConnection - Starting connection setup for " +
+                    "virtualAddr=${neighborNodeVirtualAddr.addressToDotNotation()} " +
+                    "realAddr=$address:$port socket.localPort=${socket.localPort}",
             null
         )
 
         coroutineScope.launch {
-            originatingMessageManager.addNeighbor(
-                neighborRealInetAddr = address,
-                neighborRealPort = port,
-                socket =  socket,
-            )
+            try {
+                logger(Log.DEBUG, "$logPrefix 🚀 addNewNeighborConnection - Launching addNeighbor coroutine", null)
+                
+                originatingMessageManager.addNeighbor(
+                    neighborRealInetAddr = address,
+                    neighborRealPort = port,
+                    socket =  socket,
+                )
+                
+                logger(Log.INFO, "$logPrefix ✅ addNewNeighborConnection - Successfully established neighbor connection to ${neighborNodeVirtualAddr.addressToDotNotation()}", null)
+            } catch (e: Exception) {
+                logger(Log.ERROR, "$logPrefix ❌ addNewNeighborConnection - FAILED to establish neighbor connection to ${neighborNodeVirtualAddr.addressToDotNotation()}", e)
+            }
         }
     }
 

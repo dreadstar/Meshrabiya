@@ -8,6 +8,7 @@ import com.ustadmobile.meshrabiya.model.MeshState
 import com.ustadmobile.meshrabiya.model.NetworkInfo
 import com.ustadmobile.meshrabiya.model.NodeInfo
 import com.ustadmobile.meshrabiya.model.ApiResult
+import android.util.Base64
 import com.ustadmobile.meshrabiya.vnet.LocalNodeState
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +34,13 @@ import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 enum class MeshStateDto {
     INITIALIZING, CONNECTING, CONNECTED, DISCONNECTED, ERROR, UNKNOWN;
 }
+
+@kotlinx.serialization.Serializable
+data class NetworkOverviewMetricsDto(
+    val uploadBps: Long,
+    val downloadBps: Long,
+    val activeNodeCount: Int
+)
 
 fun MeshState.toDto() = MeshStateDto.valueOf(this.name)
 fun MeshStateDto.toInternal() = MeshState.valueOf(this.name)
@@ -100,6 +108,56 @@ fun NodeInfoDto.toInternal() = NodeInfo(
     nodeId, displayName, isOnline, lastSeen, capabilities
 )
 
+/**
+ * Hotspot information data transfer object
+ * Contains network credentials and configuration for joining mesh
+ */
+@Serializable
+data class HotspotInfoDto(
+    /**
+     * Network SSID (hotspot name)
+     * Format depends on Android version:
+     * - Android 13+: "meshr-<virtualaddr_hex>" (e.g., "meshr-a9fe2d8e")
+     * - Android 8-12: "AndroidShare_XXXX" (random)
+     */
+    val ssid: String,
+    
+    /**
+     * Network password (WPA2-PSK passphrase)
+     * - Android 13+: "meshtest12" (hardcoded, shared by all devices)
+     * - Android 8-12: Random Android-generated password
+     */
+    val password: String,
+    
+    /**
+     * Frequency band (2.4GHz, 5GHz, or unknown)
+     */
+    val band: String,
+    
+    /**
+     * Virtual address of hotspot owner (32-bit integer)
+     * Used for mesh routing and identification
+     */
+    val nodeAddress: Int,
+    
+    /**
+     * Optional: BSSID (MAC address) for sticky connection
+     * Helps device reconnect to same hotspot even if SSID is duplicated
+     */
+    val bssid: String? = null,
+    
+    /**
+     * Hotspot type: LOCAL_ONLY or WIFI_DIRECT
+     */
+    val hotspotType: String = "LOCAL_ONLY",
+    
+    /**
+     * UDP port number for mesh communication
+     * This is the actual port the VirtualNode's socket is listening on
+     */
+    val port: Int,
+)
+
 // ApiResult DTO
 sealed class ApiResultDto {
     object Success : ApiResultDto()
@@ -116,12 +174,34 @@ fun ApiResultDto.toInternal(): ApiResult = when(this) {
 }
 
 // LocalNodeState DTO (partial, nested DTOs required)
- data class LocalNodeStateDto(
+data class LocalNodeStateDto(
     val address: Int,
     val wifiState: MeshrabiyaWifiStateDto,
     val bluetoothState: MeshrabiyaBluetoothStateDto,
     val connectUri: String?,
-    val originatorMessages: Map<Int, LastOriginatorMessageDto>
+    val originatorMessages: Map<Int, LastOriginatorMessageDto>,
+    val uploadBytes: Long = 0L,
+    val downloadBytes: Long = 0L
+)
+
+fun LocalNodeState.toDto(): LocalNodeStateDto = LocalNodeStateDto(
+    address = address,
+    wifiState = wifiState.toDto(),
+    bluetoothState = bluetoothState.toDto(),
+    connectUri = connectUri,
+    originatorMessages = originatorMessages.mapValues { it.value.toDto() },
+    uploadBytes = uploadBytes,
+    downloadBytes = downloadBytes
+)
+
+fun LocalNodeStateDto.toInternal(): LocalNodeState = LocalNodeState(
+    address = address,
+    wifiState = wifiState.toInternal(),
+    bluetoothState = bluetoothState.toInternal(),
+    connectUri = connectUri,
+    originatorMessages = originatorMessages.mapValues { it.value.toInternal() },
+    uploadBytes = uploadBytes,
+    downloadBytes = downloadBytes
 )
 
 // MeshrabiyaWifiState DTO
@@ -313,21 +393,21 @@ StorageDeviceDto(
 
 // --- Conversion functions for LocalNodeState and nested DTOs ---
 
-fun LocalNodeState.toDto() = LocalNodeStateDto(
-    address = address,
-    wifiState = wifiState.toDto(),
-    bluetoothState = bluetoothState.toDto(),
-    connectUri = connectUri,
-    originatorMessages = originatorMessages.mapValues { it.value.toDto() }
-)
+// fun LocalNodeState.toDto() = LocalNodeStateDto(
+//     address = address,
+//     wifiState = wifiState.toDto(),
+//     bluetoothState = bluetoothState.toDto(),
+//     connectUri = connectUri,
+//     originatorMessages = originatorMessages.mapValues { it.value.toDto() }
+// )
 
-fun LocalNodeStateDto.toInternal() = LocalNodeState(
-    address = address,
-    wifiState = wifiState.toInternal(),
-    bluetoothState = bluetoothState.toInternal(),
-    connectUri = connectUri,
-    originatorMessages = originatorMessages.mapValues { it.value.toInternal() }
-)
+// fun LocalNodeStateDto.toInternal() = LocalNodeState(
+//     address = address,
+//     wifiState = wifiState.toInternal(),
+//     bluetoothState = bluetoothState.toInternal(),
+//     connectUri = connectUri,
+//     originatorMessages = originatorMessages.mapValues { it.value.toInternal() }
+// )
 
 fun MeshrabiyaWifiState.toDto() = MeshrabiyaWifiStateDto(
     wifiRole = wifiRole.name,
@@ -486,7 +566,7 @@ fun MmcpOriginatorMessage.toDto() = MmcpOriginatorMessageDto(
     messageId = this.messageId,
     sentTime = this.sentTime,
     pingTimeSum = this.pingTimeSum,
-    connectConfig = this.connectConfig?.toString(), // TODO: Proper serialization if needed
+    connectConfig = this.connectConfig?.let { Base64.encodeToString(it.toBytes(), Base64.NO_WRAP) },
     neighbors = this.neighbors,
     centralityScore = this.centralityScore,
     fitnessScore = this.fitnessScore,
@@ -498,7 +578,10 @@ fun MmcpOriginatorMessageDto.toInternal(): MmcpOriginatorMessage =
         messageId = messageId,
         sentTime = sentTime,
         pingTimeSum = pingTimeSum,
-        connectConfig = connectConfig, // TODO: Proper deserialization if needed
+        connectConfig = connectConfig?.let { 
+            val bytes = Base64.decode(it, Base64.NO_WRAP)
+            com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig.fromBytes(bytes, 0)
+        },
         neighbors = neighbors,
         centralityScore = centralityScore,
         fitnessScore = fitnessScore,
@@ -565,3 +648,10 @@ data class NeighborInfoDto(
 
 fun TaskType.toDto(): TaskTypeDto = TaskTypeDto.valueOf(this.name)
 fun TaskTypeDto.toInternal(): TaskType = TaskType.valueOf(this.name)
+
+
+// data class NetworkOverviewMetricsDto(
+//     val uploadRateBytesPerSec: Long,
+//     val downloadRateBytesPerSec: Long,
+//     val activeNodeCount: Int
+// )

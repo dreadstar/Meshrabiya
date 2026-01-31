@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,7 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ChargingSource
 import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
 import com.ustadmobile.meshrabiya.vnet.hardware.PowerState
 import com.ustadmobile.meshrabiya.vnet.hardware.SerializableNetworkInterfaceInfo
+import android.util.Log
 
 // DEPRECATED: MmcpGatewayAnnouncement - part of quorum/announcement false start
 // File moved to MmcpGatewayAnnouncement.md (already deprecated on filesystem)
@@ -124,6 +126,20 @@ class EmergentRoleManager(
     private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
 ) {
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
+
+    // Cache WiFi concurrency support (hardware capability, doesn't change at runtime)
+    private val concurrentApStationSupported: Boolean by lazy {
+        runBlocking {
+            virtualNode.meshrabiyaWifiManager.state.first().concurrentApStationSupported
+        }
+    }
+
+    init {
+        Log.d("EmergentRoleManager", "Initialized with virtualNode: $virtualNode, context: $context")
+        if (context == null) {
+            Log.e("EmergentRoleManager", "context is NULL in constructor!")
+        }
+    }
     
     // Initialize hardware capability manager if not provided
     private val hardwareManager: DeviceCapabilityManager by lazy {
@@ -187,11 +203,18 @@ class EmergentRoleManager(
     fun determineOptimalRoles(
         nodeCapabilities: NodeCapabilitySnapshot = getCurrentCapabilities(),
         meshIntelligence: MeshIntelligence = this.meshIntelligence.value,
-        currentRoles: Set<MeshRole> = currentMeshRoles.value
+        currentRoles: Set<MeshRole> = currentMeshRoles.value,
+        userInitiated: Boolean = false
     ): RoleTransitionPlan {
+        android.util.Log.i("EmergentRoleManager", "[DETERMINE_ROLES] Starting (userInitiated=$userInitiated)")
+        android.util.Log.i("EmergentRoleManager", "[DETERMINE_ROLES] Current roles: $currentRoles")
+        android.util.Log.i("EmergentRoleManager", "[DETERMINE_ROLES] Preferred roles: ${_preferredRoles.value}")
         
         val targetRoles = calculateTargetRoles(nodeCapabilities, meshIntelligence)
-        val transitions = planGracefulTransitions(currentRoles, targetRoles)
+        android.util.Log.i("EmergentRoleManager", "[DETERMINE_ROLES] Target roles calculated: $targetRoles")
+        
+        val transitions = planGracefulTransitions(currentRoles, targetRoles, userInitiated)
+        android.util.Log.i("EmergentRoleManager", "[DETERMINE_ROLES] Transitions planned: add=${transitions.toAdd}, remove=${transitions.toRemove}")
         
         return RoleTransitionPlan(
             addRoles = transitions.toAdd,
@@ -211,51 +234,108 @@ class EmergentRoleManager(
         val roles = mutableSetOf<MeshRole>()
         val userPreferences = _preferredRoles.value
         
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Starting calculation")
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] User preferences: $userPreferences")
+        
         // Base participation - everyone gets this
         roles.add(MeshRole.MESH_PARTICIPANT)
         
         // Calculate normalized fitness score (0.0-1.0)
         val fitness = calculateNormalizedFitness(node)
         
-        safeLog(LogLevel.DEBUG, "Node fitness: $fitness, Mesh needs: gateways=${mesh.needsMoreGateways}, storage=${mesh.needsMoreStorage}, compute=${mesh.needsMoreCompute}")
-        safeLog(LogLevel.DEBUG, "User preferences: $userPreferences")
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Fitness: $fitness")
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Mesh needs: gateways=${mesh.needsMoreGateways}, storage=${mesh.needsMoreStorage}")
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Node stable: ${node.hasStableConnection()}")
         
-        // Gateway roles (exclusive - pick one based on capabilities and preferences)
+        safeLog(LogLevel.INFO, "[ROLE_CALC] ===== Starting role calculation =====")
+        safeLog(LogLevel.INFO, "[ROLE_CALC] Node fitness: $fitness")
+        safeLog(LogLevel.INFO, "[ROLE_CALC] Mesh needs: gateways=${mesh.needsMoreGateways}, storage=${mesh.needsMoreStorage}, compute=${mesh.needsMoreCompute}")
+        safeLog(LogLevel.INFO, "[ROLE_CALC] User preferences: $userPreferences")
+        safeLog(LogLevel.INFO, "[ROLE_CALC] Node stable connection: ${node.hasStableConnection()}")
+        
+        // Gateway roles: respect user preferences as filters
+        // Only assign gateway roles if user has enabled them AND device meets criteria
         if (node.hasStableConnection() && fitness > 0.8 && mesh.needsMoreGateways) {
-            val gatewayRole = selectBestGatewayRole(node, mesh, userPreferences)
-            roles.add(gatewayRole)
-            safeLog(LogLevel.INFO, "Assigned gateway role: $gatewayRole")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Gateway criteria MET, checking user preferences...")
+            safeLog(LogLevel.INFO, "[ROLE_CALC] Gateway criteria met, checking user preferences...")
+            // Check each gateway type individually
+            if (MeshRole.TOR_GATEWAY in userPreferences) {
+                roles.add(MeshRole.TOR_GATEWAY)
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding TOR_GATEWAY")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✓ Assigned TOR_GATEWAY (user enabled + device meets criteria)")
+            } else {
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ Skipping TOR_GATEWAY (not in preferences)")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✗ Skipping TOR_GATEWAY (not in user preferences)")
+            }
+            if (MeshRole.CLEARNET_GATEWAY in userPreferences) {
+                roles.add(MeshRole.CLEARNET_GATEWAY)
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding CLEARNET_GATEWAY")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✓ Assigned CLEARNET_GATEWAY (user enabled + device meets criteria)")
+            } else {
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ Skipping CLEARNET_GATEWAY (not in preferences)")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✗ Skipping CLEARNET_GATEWAY (not in user preferences)")
+            }
+            if (MeshRole.I2P_GATEWAY in userPreferences) {
+                roles.add(MeshRole.I2P_GATEWAY)
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding I2P_GATEWAY")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✓ Assigned I2P_GATEWAY (user enabled + device meets criteria)")
+            } else {
+                android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ Skipping I2P_GATEWAY (not in preferences)")
+                safeLog(LogLevel.INFO, "[ROLE_CALC] ✗ Skipping I2P_GATEWAY (not in user preferences)")
+            }
+        } else {
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Gateway criteria NOT MET (stable=${node.hasStableConnection()}, fitness=$fitness, needsGateways=${mesh.needsMoreGateways})")
+            safeLog(LogLevel.INFO, "[ROLE_CALC] Gateway criteria NOT met (stable=${node.hasStableConnection()}, fitness=$fitness, needsGateways=${mesh.needsMoreGateways})")
         }
         
-        // Storage role (additive) - consider user preference
-        if (node.storageOffered > 1_000_000L && // At least 1MB offered
+        // Storage role: only if user enabled AND device meets criteria
+        safeLog(LogLevel.INFO, "[ROLE_CALC] Evaluating STORAGE_NODE...")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - In preferences: ${MeshRole.STORAGE_NODE in userPreferences}")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Storage offered: ${node.storageOffered} bytes (need > 1MB)")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Fitness: $fitness (need > 0.4)")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Mesh needs storage: ${mesh.needsMoreStorage}")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Thermal state: ${node.thermalState} (must not be THROTTLING/CRITICAL)")
+        
+        if (MeshRole.STORAGE_NODE in userPreferences &&
+            node.storageOffered > 1_000_000L && // At least 1MB offered
             fitness > 0.4 && 
             mesh.needsMoreStorage &&
-            node.thermalState !in setOf(ThermalState.THROTTLING, ThermalState.CRITICAL) &&
-            (userPreferences.isEmpty() || MeshRole.STORAGE_NODE in userPreferences)) {
+            node.thermalState !in setOf(ThermalState.THROTTLING, ThermalState.CRITICAL)) {
             roles.add(MeshRole.STORAGE_NODE)
-            safeLog(LogLevel.INFO, "Assigned storage role")
+            safeLog(LogLevel.INFO, "[ROLE_CALC] ✓ Assigned STORAGE_NODE (user enabled + device meets criteria)")
+        } else {
+            safeLog(LogLevel.INFO, "[ROLE_CALC] ✗ Skipping STORAGE_NODE (user disabled OR device criteria not met)")
         }
         
-        // Compute role (additive, but consider thermal state, battery, and preferences)
-        if (node.availableCPU > 0.3f && 
+        // Compute role: only if user enabled AND device meets criteria
+        safeLog(LogLevel.INFO, "[ROLE_CALC] Evaluating COMPUTE_NODE...")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - In preferences: ${MeshRole.COMPUTE_NODE in userPreferences}")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Available CPU: ${node.availableCPU} (need > 0.3)")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Thermal state: ${node.thermalState} (must not be THROTTLING/CRITICAL)")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Charging: ${node.isCharging}, Battery: ${node.batteryLevel}% (need charging OR >30%)")
+        safeLog(LogLevel.INFO, "[ROLE_CALC]   - Mesh needs compute: ${mesh.needsMoreCompute}")
+        
+        if (MeshRole.COMPUTE_NODE in userPreferences &&
+            node.availableCPU > 0.3f && 
             node.thermalState !in setOf(ThermalState.THROTTLING, ThermalState.CRITICAL) && 
             (node.isCharging || node.batteryLevel > 30) &&
-            mesh.needsMoreCompute &&
-            (userPreferences.isEmpty() || MeshRole.COMPUTE_NODE in userPreferences)) {
+            mesh.needsMoreCompute) {
             roles.add(MeshRole.COMPUTE_NODE)
-            safeLog(LogLevel.INFO, "Assigned compute role")
+            safeLog(LogLevel.INFO, "[ROLE_CALC] ✓ Assigned COMPUTE_NODE (user enabled + device meets criteria)")
+        } else {
+            safeLog(LogLevel.INFO, "[ROLE_CALC] ✗ Skipping COMPUTE_NODE (user disabled OR device criteria not met)")
         }
         
-        // Router roles based on connectivity AND graph centrality
+        // Router roles based on connectivity, graph centrality, AND WiFi concurrency capability
         // Use BFS centrality to identify nodes in structurally important positions
+        // Nodes with AP+Station concurrency can forward traffic while maintaining connections
         val centralityResult = calculateBFSCentrality()
         val centralityThreshold = 3.0f // Minimum centrality score for router role
         
-        if (fitness > 0.6 && centralityResult.centralityScore > centralityThreshold) {
+        if (fitness > 0.6 && centralityResult.centralityScore > centralityThreshold && concurrentApStationSupported) {
             roles.add(MeshRole.MESH_ROUTER)
             safeLog(LogLevel.INFO, "Assigned router role (centrality=${centralityResult.centralityScore}, " +
-                "degree=${centralityResult.degree}, reachable=${centralityResult.reachableNodes})")
+                "degree=${centralityResult.degree}, reachable=${centralityResult.reachableNodes}, concurrency=true)")
         }
         
         // COORDINATOR ROLE DEPRECATED - Not in canonical design
@@ -271,6 +351,7 @@ class EmergentRoleManager(
         }
         */
         
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ===== FINAL TARGET ROLES: $roles =====")
         return roles
     }
     
@@ -331,24 +412,40 @@ class EmergentRoleManager(
     
     /**
      * Plan graceful transitions between role sets
+     * @param userInitiated If true, bypass safety checks - user explicitly wants this role change
      */
     private fun planGracefulTransitions(
         currentRoles: Set<MeshRole>, 
-        targetRoles: Set<MeshRole>
+        targetRoles: Set<MeshRole>,
+        userInitiated: Boolean = false
     ): RoleTransition {
         val toAdd = targetRoles - currentRoles
         val toRemove = currentRoles - targetRoles
         
-        // Filter out roles that would cause service disruption
-        val safeToRemove = toRemove.filter { role ->
-            when (role) {
-                MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY -> {
-                    // Only remove gateway roles if there are other gateways
-                    meshIntelligence.value.activeGateways > 1
+        android.util.Log.i("EmergentRoleManager", "[GRACEFUL_TRANS] userInitiated=$userInitiated, toAdd=$toAdd, toRemove=$toRemove")
+        
+        // If user explicitly toggled, respect their choice immediately
+        // Only apply safety checks for autonomous role adjustments
+        val safeToRemove = if (userInitiated) {
+            android.util.Log.i("EmergentRoleManager", "[GRACEFUL_TRANS] User-initiated: bypassing safety checks, removing $toRemove immediately")
+            toRemove  // User wants it removed - do it now
+        } else {
+            android.util.Log.i("EmergentRoleManager", "[GRACEFUL_TRANS] Autonomous: applying safety checks (activeGateways=${meshIntelligence.value.activeGateways})")
+            // Filter out roles that would cause service disruption
+            toRemove.filter { role ->
+                when (role) {
+                    MeshRole.TOR_GATEWAY, MeshRole.CLEARNET_GATEWAY -> {
+                        // Only remove gateway roles if there are other gateways
+                        val canRemove = meshIntelligence.value.activeGateways > 1
+                        android.util.Log.i("EmergentRoleManager", "[GRACEFUL_TRANS] Gateway $role: canRemove=$canRemove")
+                        canRemove
+                    }
+                    else -> true
                 }
-                else -> true
-            }
-        }.toSet()
+            }.toSet()
+        }
+        
+        android.util.Log.i("EmergentRoleManager", "[GRACEFUL_TRANS] Final safeToRemove=$safeToRemove")
         
         return RoleTransition(toAdd, safeToRemove)
     }
@@ -726,19 +823,34 @@ class EmergentRoleManager(
     fun applyTransitionPlan(plan: RoleTransitionPlan) {
         val currentRoles = _currentMeshRoles.value.toMutableSet()
         
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] Applying transition plan...")
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] Current roles BEFORE: $currentRoles")
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] Roles to ADD: ${plan.addRoles}")
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] Roles to REMOVE: ${plan.removeRoles}")
+        
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] Applying transition plan...")
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] Current roles BEFORE: $currentRoles")
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] Roles to ADD: ${plan.addRoles}")
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] Roles to REMOVE: ${plan.removeRoles}")
+        
         // Add new roles
         currentRoles.addAll(plan.addRoles)
         
         // Remove old roles
         currentRoles.removeAll(plan.removeRoles)
         
-        _currentMeshRoles.value = currentRoles
+        // Force StateFlow emission by creating a new immutable set
+        // This ensures the observer fires even when removing elements
+        _currentMeshRoles.value = currentRoles.toSet()
+        
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] Current roles AFTER: $currentRoles")
+        android.util.Log.i("EmergentRoleManager", "[ROLE_TRANSITION] StateFlow updated to: ${_currentMeshRoles.value}")
+        
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] Current roles AFTER: $currentRoles")
+        safeLog(LogLevel.INFO, "[ROLE_TRANSITION] StateFlow updated, UI should observe change")
         
         // Handle gateway role transitions
         handleGatewayRoleTransitions(plan.addRoles, plan.removeRoles)
-        
-        safeLog(LogLevel.INFO, "Applied role transition: +${plan.addRoles}, -${plan.removeRoles}")
-        safeLog(LogLevel.INFO, "Current roles: $currentRoles")
     }
     
     /**
@@ -1105,24 +1217,40 @@ class EmergentRoleManager(
     /**
      * Main update function - call this periodically to reassess roles
      */
-    fun updateRoles() {
+    fun updateRoles(userInitiated: Boolean = false) {
         try {
+            android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] ===== updateRoles() called (userInitiated=$userInitiated) =====")
+            android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] Current preferred roles: ${_preferredRoles.value}")
+            android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] Current active roles: ${_currentMeshRoles.value}")
+            
+            safeLog(LogLevel.INFO, "[UPDATE_ROLES] ===== updateRoles() called (userInitiated=$userInitiated) =====")
+            safeLog(LogLevel.INFO, "[UPDATE_ROLES] Current preferred roles: ${_preferredRoles.value}")
+            safeLog(LogLevel.INFO, "[UPDATE_ROLES] Current active roles: ${_currentMeshRoles.value}")
+            
             _isRoleTransitionInProgress.value = true
             
-            val plan = determineOptimalRoles()
+            val plan = determineOptimalRoles(userInitiated = userInitiated)
+            
+            android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] Plan: addRoles=${plan.addRoles}, removeRoles=${plan.removeRoles}")
             
             if (plan.addRoles.isNotEmpty() || plan.removeRoles.isNotEmpty()) {
-                safeLog(LogLevel.INFO, "Role transition needed: +${plan.addRoles}, -${plan.removeRoles}")
+                safeLog(LogLevel.INFO, "[UPDATE_ROLES] Role transition needed: +${plan.addRoles}, -${plan.removeRoles}")
                 applyTransitionPlan(plan)
+            } else {
+                android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] No role changes needed")
+                safeLog(LogLevel.INFO, "[UPDATE_ROLES] No role changes needed")
             }
             
             // DEPRECATED: meshRoleManager.updateRole() - legacy NodeRole system removed
             // EmergentRoleManager uses MeshRole enum exclusively, no legacy compatibility needed
             
         } catch (e: Exception) {
-            safeLog(LogLevel.ERROR, "Error updating roles: ${e.message}")
+            android.util.Log.e("EmergentRoleManager", "[UPDATE_ROLES] ERROR updating roles: ${e.message}", e)
+            safeLog(LogLevel.ERROR, "[UPDATE_ROLES] Error updating roles: ${e.message}")
         } finally {
             _isRoleTransitionInProgress.value = false
+            android.util.Log.i("EmergentRoleManager", "[UPDATE_ROLES] ===== updateRoles() completed =====")
+            safeLog(LogLevel.INFO, "[UPDATE_ROLES] ===== updateRoles() completed =====")
         }
     }
 
