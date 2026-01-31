@@ -29,7 +29,7 @@ class VirtualNodeDatagramSocket(
     private val socket: DatagramSocket,
     private val localNodeVirtualAddress: Int,
     ioExecutorService: ExecutorService,
-    private val router: VirtualRouter,
+    private val router: VirtualNode,
     private val logger: MNetLogger,
     name: String? = null,
     val boundNetwork: Network? = null,
@@ -64,6 +64,7 @@ class VirtualNodeDatagramSocket(
 
                 val rxVirtualPacket = VirtualPacket.fromDatagramPacket(rxPacket)
                 logger(Log.INFO, "$logPrefix 📦 Packet details: from=${rxVirtualPacket.header.fromAddr.addressToDotNotation()}:${rxVirtualPacket.header.fromPort} to=${rxVirtualPacket.header.toAddr.addressToDotNotation()}:${rxVirtualPacket.header.toPort} hopCount=${rxVirtualPacket.header.hopCount} payloadSize=${rxVirtualPacket.header.payloadSize}", null)
+                router.incrementDownloadBytes(rxPacket.length.toLong())
                 
                 router.route(
                     packet = rxVirtualPacket,
@@ -96,6 +97,7 @@ class VirtualNodeDatagramSocket(
         socket.send(datagramPacket)
         
         logger(Log.DEBUG, "$logPrefix ✅ Packet sent successfully to ${nextHopAddress}:${nextHopPort}", null)
+        router.incrementUploadBytes(datagramPacket.length.toLong())
     }
 
     fun close(closeSocket: Boolean) {

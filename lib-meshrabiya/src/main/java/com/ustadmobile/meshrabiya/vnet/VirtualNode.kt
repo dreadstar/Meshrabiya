@@ -322,6 +322,7 @@ abstract class VirtualNode(
         router = this,
         localNodeVirtualAddress = addressAsInt,
         logger = logger,
+        // parentNode = this
     )
 
     protected val chainSocketFactory: ChainSocketFactory = ChainSocketFactoryImpl(
@@ -511,7 +512,7 @@ abstract class VirtualNode(
     }
 
     fun createDatagramSocket(): DatagramSocket {
-        return VirtualDatagramSocket2(this, addressAsInt, logger)
+        return VirtualDatagramSocket2(this, addressAsInt, logger, this)
     }
 
     fun createBoundDatagramSocket(port: Int): DatagramSocket {

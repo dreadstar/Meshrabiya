@@ -63,6 +63,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import com.ustadmobile.meshrabiya.vnet.VirtualNode
 
 /**
  *
@@ -71,7 +72,7 @@ class MeshrabiyaWifiManagerAndroid(
     private val appContext: Context,
     private val logger: MNetLogger,
     private val localNodeAddr: Int,
-    private val router: VirtualRouter,
+    private val router: VirtualNode,
     private val chainSocketFactory: ChainSocketFactory,
     private val ioExecutor: ExecutorService,
     private val onNewWifiConnectionListener: OnNewWifiConnectionListener = OnNewWifiConnectionListener { },
