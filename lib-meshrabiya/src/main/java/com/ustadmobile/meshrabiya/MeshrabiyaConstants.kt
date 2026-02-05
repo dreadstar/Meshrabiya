@@ -21,6 +21,36 @@ object MeshrabiyaConstants {
     fun setBroadcastTtlMs(ttl: Long) {
         prefs?.edit()?.putLong("broadcast_ttl_ms", ttl)?.apply()
     }
+
+    // ========================================
+    // BROADCAST MESSAGE+FILE CONSTANTS
+    // ========================================
+
+    /**
+     * Chunk size for broadcast file transfer (bytes).
+     * Balances memory efficiency with packet overhead.
+     * Must be smaller than VirtualPacket max payload (~1500 bytes).
+     */
+    const val BROADCAST_CHUNK_SIZE = 1024
+
+    /**
+     * MMCP message type for broadcast message+file packets.
+     * Uses port 0 (MMCP port) with this type identifier.
+     */
+    const val MMCP_TYPE_BROADCAST_MESSAGE = 6
+
+    /**
+     * Timeout for incomplete broadcast reception (milliseconds).
+     * After this time, incomplete broadcasts are cleaned up.
+     */
+    const val BROADCAST_TIMEOUT_MS = 30_000L
+
+    /**
+     * Maximum length for broadcast message text (characters).
+     * Keeps total packet size within limits.
+     */
+    const val MAX_BROADCAST_MESSAGE_LENGTH = 500
+
     const val LOG_TAG = "Meshrabiya"
     const val VERSION = "0.1d11"
     val UUID_BUSY = UUID(0, 0)

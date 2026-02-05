@@ -384,6 +384,13 @@ abstract class VirtualNode(
     // Will be initialized later via initialize() method when dependencies are available
     open var distributedStorageManager: DistributedStorageManager? = null
     
+    /**
+     * Handler for broadcast message+file operations
+     * Set by MeshrabiyaApiImpl during initialization
+     * Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+     */
+    var broadcastMessageHandler: com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler? = null
+    
     // TaskManager: Orchestrates compute task lifecycle on compute node
     protected val taskManager: TaskManager by lazy {
         TaskManager(
@@ -802,6 +809,28 @@ abstract class VirtualNode(
                             }
                         } else {
                             logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")
+                        }
+                    }
+                    
+                    // Check if this is a broadcast message packet (MMCP port 0, version 1)
+                    // Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+                    if (packet.header.toPort == 0 && packet.header.payloadSize >= 4) {
+                        try {
+                            // Peek at payload to check version field
+                            val payloadBuffer = java.nio.ByteBuffer.wrap(
+                                packet.data,
+                                packet.payloadOffset,
+                                packet.header.payloadSize
+                            )
+                            val version = payloadBuffer.getInt()
+                            
+                            // Version 1 = broadcast message packet
+                            if (version == 1) {
+                                logger(Log.DEBUG, "$logPrefix: Detected broadcast message packet (version=$version), delegating to handler")
+                                broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
+                            }
+                        } catch (e: Exception) {
+                            logger(Log.WARN, "$logPrefix: Failed to check broadcast message packet version", e)
                         }
                     }
                 }else {
