@@ -146,8 +146,31 @@ class BroadcastMessageHandler(
                         payloadOffset = VirtualPacketHeader.HEADER_SIZE
                     )
                     
-                    // Send via VirtualNode
-                    virtualNode.route(packet)
+                    // NEW: DIRECT NEIGHBOR BROADCAST (NO LOOPBACK)
+                    // Send directly to all neighbors, no role check required
+                    // ANY node (station, hub, router) can originate broadcasts
+                    val neighbors = virtualNode.originatingMessageManager.neighbors()
+                    
+                    if (neighbors.isEmpty()) {
+                        logger(Log.WARN, "$TAG Broadcast $broadcastId chunk $chunkIndex: No neighbors found")
+                    } else {
+                        logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk $chunkIndex: sending to ${neighbors.size} neighbor(s)")
+                        neighbors.forEach { (neighborAddr, lastMsg) ->
+                            try {
+                                lastMsg.receivedFromSocket.send(
+                                    nextHopAddress = lastMsg.lastHopRealInetAddr,
+                                    nextHopPort = lastMsg.lastHopRealPort,
+                                    virtualPacket = packet
+                                )
+                                logger(Log.VERBOSE, "$TAG Broadcast $broadcastId chunk $chunkIndex: sent to neighbor $neighborAddr")
+                            } catch (e: Exception) {
+                                logger(Log.ERROR, "$TAG Broadcast $broadcastId chunk $chunkIndex: failed to send to neighbor $neighborAddr", e)
+                            }
+                        }
+                    }
+                    
+                    // Do NOT call route() - no loopback
+                    // Sender does NOT receive own broadcasts (user requirement)
                     
                     state.chunksSent++
                     

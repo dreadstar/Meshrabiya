@@ -544,7 +544,7 @@ fun WifiConnectConfigDto.toInternal() = WifiConnectConfig(
 
 // --- MeshRole DTO ---
 enum class MeshRoleDto {
-    MESH_PARTICIPANT, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, TOR_GATEWAY, CLEARNET_GATEWAY, I2P_GATEWAY
+    MESH_PARTICIPANT, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, MESH_HUB, TOR_GATEWAY, CLEARNET_GATEWAY, I2P_GATEWAY
 }
 
 fun MeshRole.toDto() = MeshRoleDto.valueOf(this.name)

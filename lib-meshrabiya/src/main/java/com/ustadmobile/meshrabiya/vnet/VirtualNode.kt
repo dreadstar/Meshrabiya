@@ -792,8 +792,13 @@ abstract class VirtualNode(
                         // PT8: Check TTL before forwarding (prevent infinite loops)
                         if (packet.header.maxHops > 0) {
                             val meshRoles = emergentRoleManager.getCurrentMeshRoles()
-                            if (meshRoles.contains(MeshRole.MESH_ROUTER)) {
-                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=MESH_ROUTER, hops remaining: ${packet.header.maxHops})")
+                            // UPDATED: Allow MESH_HUB nodes to forward broadcasts
+                            if (meshRoles.contains(MeshRole.MESH_ROUTER) || meshRoles.contains(MeshRole.MESH_HUB)) {
+                                val roleType = when {
+                                    meshRoles.contains(MeshRole.MESH_ROUTER) -> "MESH_ROUTER"
+                                    else -> "MESH_HUB"
+                                }
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=$roleType, hops remaining: ${packet.header.maxHops})")
                                 originatingMessageManager.neighbors().filter {
                                     it.first != fromLastHop && it.first != packet.header.fromAddr
                                 }.forEach {
@@ -805,7 +810,7 @@ abstract class VirtualNode(
                                     )
                                 }
                             } else {
-                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER, not forwarding")
+                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER or MESH_HUB, not forwarding")
                             }
                         } else {
                             logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")

@@ -338,6 +338,23 @@ class EmergentRoleManager(
                 "degree=${centralityResult.degree}, reachable=${centralityResult.reachableNodes}, concurrency=true)")
         }
         
+        // NEW: MESH_HUB role for non-concurrent hotspot nodes
+        // Hotspot nodes WITHOUT AP concurrency need forwarding capability to relay broadcasts
+        // Assignment criteria:
+        // 1. Node started mesh as hotspot (setWifiHotspotEnabled called)
+        // 2. Device does NOT have concurrent AP+Station hardware capability
+        // Note: No stable connection requirement - hotspot IS a hub as soon as it starts
+        // MESH_HUB nodes forward broadcasts but cannot bridge mesh segments (no station mode)
+        val wifiState = virtualNode.currentNodeState.wifiState
+        if (!concurrentApStationSupported && wifiState.hotspotIsStarted) {
+            roles.add(MeshRole.MESH_HUB)
+            safeLog(LogLevel.INFO, "Assigned MESH_HUB role (hotspot active, no AP concurrency)")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_HUB (non-concurrent hotspot)")
+        } else {
+            safeLog(LogLevel.DEBUG, "MESH_HUB not assigned: concurrency=$concurrentApStationSupported, " +
+                "hotspot=${wifiState.hotspotIsStarted}")
+        }
+        
         // COORDINATOR ROLE DEPRECATED - Not in canonical design
         // Coordinator role assignment commented out per architectural decision
         // If needed in future, centrality score should be primary factor

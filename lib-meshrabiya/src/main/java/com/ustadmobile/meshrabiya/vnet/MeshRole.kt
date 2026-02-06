@@ -9,6 +9,7 @@ enum class MeshRole {
     STORAGE_NODE,        // Node offering distributed storage
     COMPUTE_NODE,        // Node offering compute resources
     MESH_ROUTER,         // Node routing mesh traffic
+    MESH_HUB, 
     TOR_GATEWAY,         // Node sharing Tor gateway
     CLEARNET_GATEWAY,    // Node sharing clearnet Internet gateway
     I2P_GATEWAY          // Node sharing I2P gateway
