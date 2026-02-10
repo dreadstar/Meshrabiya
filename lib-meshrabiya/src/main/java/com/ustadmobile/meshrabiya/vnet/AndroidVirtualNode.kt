@@ -81,6 +81,11 @@ class AndroidVirtualNode(
         onNewWifiConnectionListener = newWifiConnectionListener,
     )
 
+    init {
+        // Start WiFi state monitoring after all properties initialized
+        emergentRoleManager.startWifiStateMonitoring()
+    }
+
     private val _bluetoothState = MutableStateFlow(MeshrabiyaBluetoothState())
 
 

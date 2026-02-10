@@ -10,6 +10,7 @@ data class OutgoingBroadcastState(
     val messageText: String,
     val fileId: String,
     val fileName: String,
+    val filePath: String,  // Full path to original file for NACK resend
     val totalChunks: Int,
     var chunksSent: Int = 0,
     val callback: (Result<com.ustadmobile.meshrabiya.api.model.BroadcastResultDto>) -> Unit,
@@ -31,6 +32,12 @@ data class IncomingBroadcastState(
      * Check if all chunks have been received
      */
     fun isComplete(): Boolean = receivedChunks.size == metadata.totalChunks
+    
+    /**
+     * Check if transfer has timed out
+     */
+    fun isTimedOut(timeoutMs: Long = 60_000): Boolean = 
+        System.currentTimeMillis() - startTime > timeoutMs
     
     /**
      * Get missing chunk indices

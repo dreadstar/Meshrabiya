@@ -706,6 +706,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     Log.d(TAG, "[JOIN RESULT] ========== JOIN MESH SUCCESS ==========")
                     Log.d(TAG, "[JOIN RESULT] Mesh join completed successfully")
                     Log.d(TAG, "[JOIN RESULT] New mesh state: ${getMeshStatus()}")
+                    
+                    // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
+                    val node = myNode
+                    if (node != null && broadcastHandler == null) {
+                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = node.logger,
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolder() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode (joinMesh)")
+                    }
+                    
                     callback(Result.success(Unit))
                 } else {
                     Log.e(TAG, "[JOIN RESULT] ========== JOIN MESH FAILURE ==========")
@@ -880,6 +895,20 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     Log.d(TAG, "[MERGE RESULT] Two meshes are now unified")
                     Log.d(TAG, "[MERGE RESULT] New mesh state: ${getMeshStatus()}")
                     Log.d(TAG, "[MERGE RESULT] Neighbor count after merge: ${node.currentNodeState.originatorMessages.size}")
+                    
+                    // Initialize broadcast handler if not already done (NETWORK_BROADCAST_v2 implementation)
+                    if (broadcastHandler == null) {
+                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = node.logger,
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolder() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode (mergeMesh)")
+                    }
+                    
                     callback(Result.success(Unit))
                 } else {
                     Log.e(TAG, "[MERGE RESULT] ========== MERGE MESH FAILURE ==========")
