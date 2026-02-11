@@ -11,6 +11,7 @@ import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -19,7 +20,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.SupervisorJob
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
@@ -142,6 +145,9 @@ class EmergentRoleManager(
     }
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
 
+    // Coroutine scope for WiFi state monitoring (lifecycle-managed)
+    private val monitoringScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
     // Cache WiFi concurrency support (hardware capability, doesn't change at runtime)
     private val concurrentApStationSupported: Boolean by lazy {
         try {
@@ -168,39 +174,67 @@ class EmergentRoleManager(
      * This monitors hotspot state changes and triggers role recalculation when hotspot starts.
      */
     fun startWifiStateMonitoring() {
-        CoroutineScope(Dispatchers.Default).launch {
+        Log.d(TAG, "[WIFI_STATE] ===== startWifiStateMonitoring() CALLED =====")
+        
+        // Monitor hotspot state changes
+        monitoringScope.launch {
+            Log.d(TAG, "[WIFI_STATE] Hotspot monitoring coroutine STARTED")
             try {
                 virtualNode.meshrabiyaWifiManager.state
-                    .map { it.localOnlyHotspotState.status }
+                    .map { 
+                        val status = it.localOnlyHotspotState.status
+                        Log.v(TAG, "[WIFI_STATE] Hotspot status: $status")
+                        status
+                    }
                     .distinctUntilChanged()
                     .collect { status ->
+                        Log.d(TAG, "[WIFI_STATE] Hotspot status CHANGED to: $status")
                         if (status == HotspotStatus.STARTED) {
                             Log.d(TAG, "[WIFI_STATE] Hotspot started, triggering role recalculation")
                             updateRoles(userInitiated = false)
                         }
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "[WIFI_STATE] Failed to monitor WiFi state", e)
+                Log.e(TAG, "[WIFI_STATE] Hotspot monitor FAILED", e)
             }
         }
 
-        // ADD THIS: Monitor station connection state
-        CoroutineScope(Dispatchers.Default).launch {
+        // Monitor station connection state
+        monitoringScope.launch {
+            Log.d(TAG, "[WIFI_STATE] Station monitoring coroutine STARTED")
             try {
                 virtualNode.meshrabiyaWifiManager.state
-                    .map { it.wifiStationState.status == WifiStationState.Status.AVAILABLE }
+                    .map { 
+                        val status = it.wifiStationState.status
+                        val isAvailable = status == WifiStationState.Status.AVAILABLE
+                        Log.v(TAG, "[WIFI_STATE] Station status: $status, isAvailable: $isAvailable")
+                        isAvailable
+                    }
                     .distinctUntilChanged()
                     .collect { isConnected ->
+                        Log.d(TAG, "[WIFI_STATE] Station connection CHANGED to: isConnected=$isConnected")
                         if (isConnected) {
-                            Log.d(TAG, "[WIFI_STATE] Station connected, triggering role recalculation")
+                            Log.d(TAG, "[WIFI_STATE] Station connected (AVAILABLE), triggering role recalculation in 2s")
                             delay(2000) // Allow neighbors to be discovered
+                            Log.d(TAG, "[WIFI_STATE] Calling updateRoles() after station connection")
                             updateRoles(userInitiated = false)
                         }
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "[WIFI_STATE] Failed to monitor station state", e)
+                Log.e(TAG, "[WIFI_STATE] Station monitor FAILED", e)
             }
         }
+        
+        Log.d(TAG, "[WIFI_STATE] Both monitoring coroutines launched successfully")
+    }
+
+    /**
+     * Stop WiFi state monitoring and cleanup coroutines.
+     * Should be called when EmergentRoleManager is no longer needed.
+     */
+    fun stopWifiStateMonitoring() {
+        Log.d(TAG, "[WIFI_STATE] Stopping WiFi state monitoring")
+        monitoringScope.cancel()
     }
     
     // Initialize hardware capability manager if not provided

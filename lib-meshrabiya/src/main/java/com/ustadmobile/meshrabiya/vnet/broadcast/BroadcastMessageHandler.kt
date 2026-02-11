@@ -243,15 +243,15 @@ class BroadcastMessageHandler(
                     
                     state.chunksSent++
                     
-                    // Reduced delay - 1ms instead of 10ms for better throughput
-                    Thread.sleep(1)
+                    // Delay between chunks within batch
+                    Thread.sleep(MeshrabiyaConstants.BROADCAST_CHUNK_DELAY_MS)
                 }
                 
                 logger(Log.INFO, "$TAG Broadcast $broadcastId: Batch ${batchNum + 1}/$totalBatches complete")
                 
-                // Small delay between batches (not between chunks)
+                // Delay between batches to allow receiver processing
                 if (batchNum < totalBatches - 1) {
-                    Thread.sleep(10)
+                    Thread.sleep(MeshrabiyaConstants.BROADCAST_BATCH_DELAY_MS)
                 }
             } // tmt close
                 

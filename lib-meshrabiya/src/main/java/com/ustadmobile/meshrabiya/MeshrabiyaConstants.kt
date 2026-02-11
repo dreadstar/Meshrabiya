@@ -51,6 +51,20 @@ object MeshrabiyaConstants {
      */
     const val MAX_BROADCAST_MESSAGE_LENGTH = 500
 
+    /**
+     * Delay between sending individual chunks within a batch (milliseconds).
+     * Prevents network flooding while maintaining good throughput.
+     * Lower values = faster transfer but higher network load.
+     */
+    const val BROADCAST_CHUNK_DELAY_MS = 1L
+
+    /**
+     * Delay between sending batches of chunks (milliseconds).
+     * Allows receiver time to process batch and prevents buffer overflow.
+     * Reduced from 10ms to 2ms for faster overall transfer rate.
+     */
+    const val BROADCAST_BATCH_DELAY_MS = 2L
+
     const val LOG_TAG = "Meshrabiya"
     const val VERSION = "0.1d11"
     val UUID_BUSY = UUID(0, 0)
