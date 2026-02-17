@@ -196,8 +196,31 @@ interface MeshrabiyaApi {
     fun enableDistributedStorage()
     fun disableDistributedStorage()
     fun isComputeLayerParticipating(): Boolean
-    fun setDropFolderPath(path: String) 
-    fun getDropFolderPath(): String
+
+    
+    /**
+     * Set the drop folder URI for broadcast file reception.
+     * @param uri The content:// URI from Android's folder picker
+     */
+    fun setDropFolderUri(uri: String)
+    
+    /**
+     * Get the stored drop folder URI.
+     * @return The content:// URI, or null if not set
+     */
+    fun getDropFolderUri(): String?
+    
+    /**
+     * Set the storage quota for mesh participation in bytes.
+     * @param quotaBytes Maximum storage allocation in bytes
+     */
+    fun setStorageQuotaBytes(quotaBytes: Long)
+    
+    /**
+     * Get the configured storage quota in bytes.
+     * @return Quota in bytes (default: 100MB)
+     */
+    fun getStorageQuotaBytes(): Long
 
     // --- Broadcast Message+File Operations ---
     /**
@@ -259,8 +282,8 @@ interface MeshrabiyaApi {
     fun setComputeLayerParticipatingEnabled(enabled: Boolean)
 
     // --- Drop Folder Management ---
-    fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
-    fun getDropFolder(): File?
+    // fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
+    // fun getDropFolder(): File?
     fun getDropFolderFiles(): List<File>
     fun setOnDropFolderUpdate(handler: (List<DropFolderItemDto>) -> Unit)
 

@@ -60,6 +60,8 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState  // Use hardware pa
 import com.ustadmobile.meshrabiya.service.MeshEcosystemMessage
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import android.content.Context
+// import com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler
+import com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastPacketSerializer
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
@@ -138,7 +140,7 @@ abstract class VirtualNode(
 
 
     //This executor is used for direct I/O activities
-    protected val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
+    internal val connectionExecutor: ExecutorService = Executors.newCachedThreadPool()
 
     //This executor is used to schedule maintenance e.g. pings etc.
     protected val scheduledExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
@@ -616,6 +618,44 @@ abstract class VirtualNode(
         datagramPacket: DatagramPacket?,
         datagramSocket: VirtualNodeDatagramSocket?,
     ) : Boolean {
+        // CRITICAL FIX: Check if this is a broadcast packet BEFORE attempting MMCP parsing
+        // Root cause: MMCP parser was intercepting broadcast packets and rejecting them as
+        // "Invalid what: 0" because broadcast packet type byte (0x01) is not a valid MMCP type
+        // See: BROADCAST_TRANSFER_ROOT_CAUSE_ANALYSIS_02112026.md
+        val payload = virtualPacket.data
+        val payloadSize = virtualPacket.header.payloadSize
+        val offset = virtualPacket.payloadOffset
+        
+        // COMPREHENSIVE DEBUG: Log ALL packet structure details
+        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] dataSize=${payload.size}, payloadOffset=$offset, payloadSize=$payloadSize, toPort=${virtualPacket.header.toPort}, fromAddr=${virtualPacket.header.fromAddr.addressToDotNotation()}")
+        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] isEmpty=${payload.isEmpty()}, offsetValid=${offset < payload.size}, boundsCheck=${offset + payloadSize <= payload.size}")
+        
+        // Enhanced bounds checking for broadcast packet detection
+        // FIXED: Check offset+4 is in bounds since packet type byte is at offset+4 per BroadcastPacketSerializer format
+        if (payloadSize > 0 && offset >= 0 && offset + 4 < payload.size && offset + payloadSize <= payload.size) {
+            // FIXED: Read packet type byte at offset+4, not offset
+            // Per BroadcastPacketSerializer.serialize():
+            //   [0-3]: Version (Int32BE)
+            //   [4]: Packet Type Byte (0x01 = BROADCAST_CHUNK, 0x02 = NACK)
+            val versionByte = payload[offset]  // First byte of version Int32BE (for debugging)
+            val packetTypeByte = payload[offset + 4]  // Actual packet type at offset+4
+            val versionByteHex = "0x${String.format("%02x", versionByte)}"
+            val packetTypeHex = "0x${String.format("%02x", packetTypeByte)}"
+            logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] ✓ Bounds valid - versionByte=$versionByteHex, packetTypeByte=$packetTypeHex, BROADCAST_CHUNK=0x${String.format("%02x", BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK.toByte())}, NACK=0x${String.format("%02x", BroadcastPacketSerializer.TYPE_NACK_REQUEST.toByte())}")
+            
+            // Route broadcast packets directly to handler WITHOUT MMCP parsing
+            if (packetTypeByte == BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK.toByte() ||
+                packetTypeByte == BroadcastPacketSerializer.TYPE_NACK_REQUEST.toByte()) {
+                logger(Log.INFO, "$logPrefix: [PKT_CHECK] ✅ BROADCAST PACKET DETECTED (type=$packetTypeHex) - routing to BroadcastMessageHandler")
+                broadcastMessageHandler?.onReceiveBroadcastPacket(virtualPacket)
+                return false  // Don't route broadcast packets through MMCP routing
+            } else {
+                logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] Not broadcast type ($packetTypeHex) - attempting MMCP parsing")
+            }
+        } else {
+            logger(Log.WARN, "$logPrefix: [PKT_CHECK] ❌ BOUNDS CHECK FAILED - payloadSize=$payloadSize, offset=$offset, dataSize=${payload.size}, boundsOK=${if (offset >= 0 && offset + 4 < payload.size) offset + payloadSize <= payload.size else false}")
+        }
+        
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
             val from = virtualPacket.header.fromAddr
@@ -724,151 +764,211 @@ abstract class VirtualNode(
         datagramPacket: DatagramPacket?,
         virtualNodeDatagramSocket: VirtualNodeDatagramSocket?
     ) {
-        try {
-            val fromLastHop = packet.header.lastHopAddr
+        // Copy packet data immediately to prevent buffer corruption
+        // The original datagramPacket buffer is reused by network socket
+        val packetDataCopy = packet.data.copyOfRange(0, packet.data.size)
+        val packetCopy = VirtualPacket.fromHeaderAndPayloadData(
+            header = packet.header,
+            data = packetDataCopy,
+            payloadOffset = packet.payloadOffset,
+            headerAlreadyInData = true
+        )
 
-            if(packet.header.hopCount >= config.maxHops) {
-                logger(Log.DEBUG,
-                    "Drop packet from ${packet.header.fromAddr.addressToDotNotation()} - " +
-                            "${packet.header.hopCount} exceeds ${config.maxHops}",
-                    null)
+        // Offload ALL processing to connection pool to free IO thread immediately
+        connectionExecutor.execute {
+            var connection: MeshConnectionPool.Connection? = null
+            val startTime = System.currentTimeMillis()
+            
+            try {
+                // Acquire connection from pool with timeout
+                connection = meshConnectionPool.acquireConnection(
+                    timeoutMs = MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS
+                )
+                
+                if (connection == null && MeshrabiyaConstants.ROUTE_DROP_ON_POOL_EXHAUSTION) {
+                    logger(Log.WARN, 
+                        "$logPrefix Dropped packet from ${packetCopy.header.fromAddr.addressToDotNotation()}: " +
+                        "connection pool exhausted after ${MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS}ms",
+                        null
+                    )
+                    return@execute
+                }
+                
+                // Process packet using extracted method
+                processRoutePacket(packetCopy, datagramPacket, virtualNodeDatagramSocket)
+                
+                // Check processing time and log if slow
+                val processingTime = System.currentTimeMillis() - startTime
+                if (processingTime > MeshrabiyaConstants.ROUTE_PROCESSING_TIMEOUT_MS) {
+                    logger(Log.WARN,
+                        "$logPrefix Slow packet processing: ${processingTime}ms for packet from " +
+                        "${packetCopy.header.fromAddr.addressToDotNotation()}",
+                        null
+                    )
+                }
+                
+            } catch (e: Exception) {
+                logger(Log.ERROR, 
+                    "$logPrefix : route : exception routing packet from ${packetCopy.header.fromAddr.addressToDotNotation()}", 
+                    e
+                )
+            } finally {
+                // Always release connection back to pool
+                connection?.let { meshConnectionPool.releaseConnection(it) }
+            }
+        }
+    }
+
+     /**
+     * Internal method containing the actual routing logic
+     * Separated from route() to enable connection pooling wrapper
+     * 
+     * @param packet VirtualPacket to process (with data already copied)
+     * @param datagramPacket Original DatagramPacket (may be null)
+     * @param virtualNodeDatagramSocket Socket that received packet (may be null)
+     */
+    private fun processRoutePacket(
+        packet: VirtualPacket,
+        datagramPacket: DatagramPacket?,
+        virtualNodeDatagramSocket: VirtualNodeDatagramSocket?
+    ) {
+        val fromLastHop = packet.header.lastHopAddr
+
+        if(packet.header.hopCount >= config.maxHops) {
+            logger(Log.DEBUG,
+                "Drop packet from ${packet.header.fromAddr.addressToDotNotation()} - " +
+                        "${packet.header.hopCount} exceeds ${config.maxHops}",
+                null)
+            return
+        }
+
+        // MMCP message handling (unchanged)
+        if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
+            logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
+            if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
+                logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
+            }
+        }else if(packet.header.toPort == 0){
+            logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
+        }
+
+        // Ecosystem message handling (UDP broadcast or direct)
+        // Route ALL Distributed Storage & Compute messages to MeshEcosystemListener
+        val ecosystemPort = MeshrabiyaConstants.getEcosystemGossipPort()
+        if(packet.header.toPort == ecosystemPort) {
+            val bytes = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
+            try {
+                val message = MeshEcosystemMessage.fromBytes(bytes)
+                val senderId = packet.header.fromAddr
+                
+                // MeshEcosystemListener is the global listener for all ecosystem messages
+                meshEcosystemListener.routeMessage(senderId, message)
+            } catch (e: Exception) {
+                logger(Log.WARN, "$logPrefix: Failed to deserialize or route MeshEcosystemMessage: ${e.message}", e)
+            }
+            return
+        }
+
+        // --- CONDITIONAL PROXY ROUTING ---
+        val currentRoles = emergentRoleManager.getCurrentMeshRoles()
+        if (proxyActive && currentRoles.contains(MeshRole.TOR_GATEWAY)) {
+            // Route internet traffic via proxy (Tor)
+            if (shouldRouteViaProxy(packet)) {
+                routeViaProxy(packet)
+                logger(Log.INFO, "$logPrefix Routed packet via proxy $proxyHost:$proxyPort", null)
                 return
             }
+        }
 
-            // MMCP message handling (unchanged)
-            if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
-                logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
-                if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
-                    logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
-                }
-            }else if(packet.header.toPort == 0){
-                logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
+        if(packet.header.toAddr == addressAsInt) {
+            val listeningSocket = activeSockets[packet.header.toPort]
+            if(listeningSocket != null) {
+                listeningSocket.onIncomingPacket(packet)
+            }else {
+                logger(Log.DEBUG, "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}")
             }
-
-            // Ecosystem message handling (UDP broadcast or direct)
-            // Route ALL Distributed Storage & Compute messages to MeshEcosystemListener
-            val ecosystemPort = MeshrabiyaConstants.getEcosystemGossipPort()
-            if(packet.header.toPort == ecosystemPort) {
-                val bytes = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
-                try {
-                    val message = MeshEcosystemMessage.fromBytes(bytes)
-                    val senderId = packet.header.fromAddr
-                    
-                    // MeshEcosystemListener is the global listener for all ecosystem messages
-                    meshEcosystemListener.routeMessage(senderId, message)
-                } catch (e: Exception) {
-                    logger(Log.WARN, "$logPrefix: Failed to deserialize or route MeshEcosystemMessage: ${e.message}", e)
+        }else {
+            val toAddr = packet.header.toAddr
+            packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
+            // Deduplication for broadcast packets moved to MeshEcosystemListener
+            if(toAddr == ADDR_BROADCAST) {
+                val broadcastId = computeBroadcastId(packet)
+                val now = System.currentTimeMillis()
+                val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
+                if (prev == null) {
+                    // PT8: Check TTL before forwarding (prevent infinite loops)
+                    if (packet.header.maxHops > 0) {
+                        val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                        // UPDATED: Allow MESH_HUB nodes to forward broadcasts
+                        if (meshRoles.contains(MeshRole.MESH_ROUTER) || meshRoles.contains(MeshRole.MESH_HUB)) {
+                            val roleType = when {
+                                meshRoles.contains(MeshRole.MESH_ROUTER) -> "MESH_ROUTER"
+                                else -> "MESH_HUB"
+                            }
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=$roleType, hops remaining: ${packet.header.maxHops})")
+                            originatingMessageManager.neighbors().filter {
+                                it.first != fromLastHop && it.first != packet.header.fromAddr
+                            }.forEach {
+                                logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
+                                it.second.receivedFromSocket.send(
+                                    nextHopAddress = it.second.lastHopRealInetAddr,
+                                    nextHopPort = it.second.lastHopRealPort,
+                                    virtualPacket = packet,
+                                )
+                            }
+                        } else {
+                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER or MESH_HUB, not forwarding")
+                        }
+                    } else {
+                        logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")
+                    }
                 }
-                return
-            }
-
-            // --- CONDITIONAL PROXY ROUTING ---
-            val currentRoles = emergentRoleManager.getCurrentMeshRoles()
-            if (proxyActive && currentRoles.contains(MeshRole.TOR_GATEWAY)) {
-                // Route internet traffic via proxy (Tor)
-                if (shouldRouteViaProxy(packet)) {
-                    routeViaProxy(packet)
-                    logger(Log.INFO, "$logPrefix Routed packet via proxy $proxyHost:$proxyPort", null)
-                    return
-                }
-            }
-
-            if(packet.header.toAddr == addressAsInt) {
-                val listeningSocket = activeSockets[packet.header.toPort]
-                if(listeningSocket != null) {
-                    listeningSocket.onIncomingPacket(packet)
-                }else {
-                    logger(Log.DEBUG, "$logPrefix Incoming packet received, but no socket listening on: ${packet.header.toPort}")
+                
+                // Check if this is a broadcast message packet (MMCP port 0, version 1)
+                // Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+                if (packet.header.toPort == 0 && packet.header.payloadSize >= 4) {
+                    try {
+                        // Peek at payload to check version field
+                        val payloadBuffer = java.nio.ByteBuffer.wrap(
+                            packet.data,
+                            packet.payloadOffset,
+                            packet.header.payloadSize
+                        )
+                        val version = payloadBuffer.getInt()
+                        
+                        // Version 1 = broadcast message packet
+                        if (version == 1) {
+                            logger(Log.DEBUG, "$logPrefix: Detected broadcast message packet (version=$version), delegating to handler")
+                            broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
+                        }
+                    } catch (e: Exception) {
+                        logger(Log.WARN, "$logPrefix: Failed to check broadcast message packet version", e)
+                    }
                 }
             }else {
-                val toAddr = packet.header.toAddr
-                packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
-                // Deduplication for broadcast packets moved to MeshEcosystemListener
-                if(toAddr == ADDR_BROADCAST) {
-                    val broadcastId = computeBroadcastId(packet)
-                    val now = System.currentTimeMillis()
-                    val prev = seenBroadcasts.putIfAbsent(broadcastId, now)
-                    if (prev == null) {
-                        // PT8: Check TTL before forwarding (prevent infinite loops)
-                        if (packet.header.maxHops > 0) {
-                            val meshRoles = emergentRoleManager.getCurrentMeshRoles()
-                            // UPDATED: Allow MESH_HUB nodes to forward broadcasts
-                            if (meshRoles.contains(MeshRole.MESH_ROUTER) || meshRoles.contains(MeshRole.MESH_HUB)) {
-                                val roleType = when {
-                                    meshRoles.contains(MeshRole.MESH_ROUTER) -> "MESH_ROUTER"
-                                    else -> "MESH_HUB"
-                                }
-                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, forwarding to neighbors (role=$roleType, hops remaining: ${packet.header.maxHops})")
-                                originatingMessageManager.neighbors().filter {
-                                    it.first != fromLastHop && it.first != packet.header.fromAddr
-                                }.forEach {
-                                    logger(Log.VERBOSE, "$logPrefix: Forwarding broadcast to neighbor ${it.first}")
-                                    it.second.receivedFromSocket.send(
-                                        nextHopAddress = it.second.lastHopRealInetAddr,
-                                        nextHopPort = it.second.lastHopRealPort,
-                                        virtualPacket = packet,
-                                    )
-                                }
-                            } else {
-                                logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId not seen before, but node is not MESH_ROUTER or MESH_HUB, not forwarding")
-                            }
-                        } else {
-                            logger(Log.VERBOSE, "$logPrefix: Broadcast packet $broadcastId TTL exhausted (maxHops=0), not forwarding")
-                        }
-                    }
-                    
-                    // Check if this is a broadcast message packet (MMCP port 0, version 1)
-                    // Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
-                    if (packet.header.toPort == 0 && packet.header.payloadSize >= 4) {
-                        try {
-                            // Peek at payload to check version field
-                            val payloadBuffer = java.nio.ByteBuffer.wrap(
-                                packet.data,
-                                packet.payloadOffset,
-                                packet.header.payloadSize
-                            )
-                            val version = payloadBuffer.getInt()
-                            
-                            // Version 1 = broadcast message packet
-                            if (version == 1) {
-                                logger(Log.DEBUG, "$logPrefix: Detected broadcast message packet (version=$version), delegating to handler")
-                                broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
-                            }
-                        } catch (e: Exception) {
-                            logger(Log.WARN, "$logPrefix: Failed to check broadcast message packet version", e)
-                        }
-                    }
+                val originatorMessage = originatingMessageManager
+                    .findOriginatingMessageFor(packet.header.toAddr)
+                if(originatorMessage != null) {
+                    originatorMessage.receivedFromSocket.send(
+                        nextHopAddress = originatorMessage.lastHopRealInetAddr,
+                        nextHopPort = originatorMessage.lastHopRealPort,
+                        virtualPacket = packet
+                    )
                 }else {
-                    val originatorMessage = originatingMessageManager
-                        .findOriginatingMessageFor(packet.header.toAddr)
-                    if(originatorMessage != null) {
-                        originatorMessage.receivedFromSocket.send(
-                            nextHopAddress = originatorMessage.lastHopRealInetAddr,
-                            nextHopPort = originatorMessage.lastHopRealPort,
-                            virtualPacket = packet
+                    // Phase 3A: Check if packet requires gateway routing
+                    if (packet.header.gatewayType != VirtualPacketHeader.GATEWAY_TYPE_NONE) {
+                        logger(Log.DEBUG,
+                            "$logPrefix Destination ${packet.header.toAddr.addressToDotNotation()} not on mesh, " +
+                            "attempting gateway routing (type=${packet.header.gatewayType})",
+                            null
                         )
-                    }else {
-                        // Phase 3A: Check if packet requires gateway routing
-                        if (packet.header.gatewayType != VirtualPacketHeader.GATEWAY_TYPE_NONE) {
-                            logger(Log.DEBUG,
-                                "$logPrefix Destination ${packet.header.toAddr.addressToDotNotation()} not on mesh, " +
-                                "attempting gateway routing (type=${packet.header.gatewayType})",
-                                null
-                            )
-                            routeViaGateway(packet, null)
-                        } else {
-                            logger(Log.WARN, "$logPrefix route: Cannot route packet to " +
-                                    "${packet.header.toAddr.addressToDotNotation()} : no known nexthop")
-                        }
+                        routeViaGateway(packet, null)
+                    } else {
+                        logger(Log.WARN, "$logPrefix route: Cannot route packet to " +
+                                "${packet.header.toAddr.addressToDotNotation()} : no known nexthop")
                     }
                 }
             }
-        }catch(e: Exception) {
-            logger(Log.ERROR,
-                "$logPrefix : route : exception routing packet from ${packet.header.fromAddr.addressToDotNotation()}",
-                e
-            )
-            throw e
         }
     }
 

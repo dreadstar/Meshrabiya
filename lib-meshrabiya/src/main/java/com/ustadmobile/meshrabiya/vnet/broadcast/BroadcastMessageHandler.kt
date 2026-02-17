@@ -30,7 +30,7 @@ class BroadcastMessageHandler(
     
     private val outgoingBroadcasts = ConcurrentHashMap<String, OutgoingBroadcastState>()
     private val incomingBroadcasts = ConcurrentHashMap<String, IncomingBroadcastState>()
-    private val executor = Executors.newSingleThreadExecutor()
+    // private val executor = Executors.newSingleThreadExecutor()
     private var wakeLock: PowerManager.WakeLock? = null
     
     // Callbacks for received broadcasts
@@ -107,40 +107,139 @@ class BroadcastMessageHandler(
         filePath: String,
         callback: (Result<BroadcastResultDto>) -> Unit
     ) {
-        executor.execute {
+        virtualNode.connectionExecutor.execute {
             acquireWakeLock()  // Acquire CPU WakeLock at start
             try {
                 logger(Log.INFO, "$TAG Starting broadcast: message='$messageText', file='$filePath'")
                 
-                val file = File(filePath)
-                require(file.exists()) { "File does not exist: $filePath" }
-                require(file.canRead()) { "Cannot read file: $filePath" }
+                // Handle file if provided, otherwise text-only
+                val hasFile = filePath.isNotEmpty()
+                val file: File?
+                val fileBytes: ByteArray
+                val fileName: String
+                val fileId = UUID.randomUUID().toString()
+                
+                if (hasFile) {
+                    // File broadcast
+                    file = File(filePath)
+                    require(file.exists()) { "File does not exist: $filePath" }
+                    require(file.canRead()) { "Cannot read file: $filePath" }
+                    fileBytes = file.readBytes()
+                    fileName = file?.name ?: ""
+                    logger(Log.DEBUG, "$TAG File broadcast: ${fileBytes.size} bytes, file=$fileName")
+                } else {
+                    // Text-only broadcast
+                    file = null
+                    fileBytes = ByteArray(0)
+                    fileName = ""
+                    logger(Log.DEBUG, "$TAG Text-only broadcast (no file)")
+                }
                 
                 val broadcastId = UUID.randomUUID().toString()
-                val fileId = UUID.randomUUID().toString()
-                val fileBytes = file.readBytes()
                 
-                // Calculate chunks
-                val totalChunks = (fileBytes.size + MeshrabiyaConstants.BROADCAST_CHUNK_SIZE - 1) / 
-                                 MeshrabiyaConstants.BROADCAST_CHUNK_SIZE
+                // Calculate chunks (0 for text-only)
+                val totalChunks = if (hasFile) {
+                    (fileBytes.size + MeshrabiyaConstants.BROADCAST_CHUNK_SIZE - 1) / 
+                    MeshrabiyaConstants.BROADCAST_CHUNK_SIZE
+                } else {
+                    0  // Text-only broadcasts have 0 chunks
+                }
                 
-                logger(Log.DEBUG, "$TAG Broadcast $broadcastId: file size=${fileBytes.size}, chunks=$totalChunks")
+                logger(Log.DEBUG, "$TAG Broadcast $broadcastId: file size=${fileBytes.size}, chunks=$totalChunks, hasFile=$hasFile")
                 
                 // Register outgoing state
                 val state = OutgoingBroadcastState(
                     broadcastId = broadcastId,
                     messageText = messageText,
                     fileId = fileId,
-                    fileName = file.name,
-                    filePath = filePath,  // Store full path for NACK resend
+                    fileName = fileName,
+                    filePath = filePath,  // Can be empty for text-only
                     totalChunks = totalChunks,
                     callback = callback
                 )
                 outgoingBroadcasts[broadcastId] = state
                 
-                // Send each chunk
+                // If text-only (no chunks), complete immediately
+                if (!hasFile) {
+                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId: sending metadata packet only")
+                    
+                    // Send single metadata packet (no chunks)
+                    val metadataOnly = BroadcastChunkMetadata(
+                        chunkId = UUID.randomUUID().toString(),
+                        fileId = fileId,
+                        fileName = "",
+                        chunkIndex = 0,
+                        totalChunks = 0,
+                        chunkSize = 0L,
+                        totalFileSize = 0L,
+                        hash = ""
+                    )
+                    
+                    val packetPayload = BroadcastPacketSerializer.serialize(
+                        broadcastId = broadcastId,
+                        messageText = messageText,
+                        chunkMetadata = metadataOnly,
+                        chunkData = ByteArray(0)
+                    )
+                    
+                    val packetData = ByteArray(packetPayload.size + VirtualPacketHeader.HEADER_SIZE)
+                    System.arraycopy(packetPayload, 0, packetData, VirtualPacketHeader.HEADER_SIZE, packetPayload.size)
+                    
+                    val packet = VirtualPacket.fromHeaderAndPayloadData(
+                        header = VirtualPacketHeader(
+                            toAddr = VirtualPacket.ADDR_BROADCAST,
+                            toPort = 0,
+                            fromAddr = virtualNode.addressAsInt,
+                            fromPort = 0,
+                            lastHopAddr = virtualNode.addressAsInt,
+                            hopCount = 0,
+                            maxHops = 10,
+                            gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
+                            payloadSize = packetPayload.size
+                        ),
+                        data = packetData,
+                        payloadOffset = VirtualPacketHeader.HEADER_SIZE
+                    )
+                    
+                    virtualNode.route(packet)
+                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId sent")
+                    
+                    // Complete immediately
+                    val result = BroadcastResultDto(
+                        broadcastId = broadcastId,
+                        messageText = messageText,
+                        fileId = fileId,
+                        fileName = fileName,
+                        totalChunks = 0,
+                        successNodeIds = emptyList(),
+                        failedNodeIds = emptyList(),
+                        timestamp = System.currentTimeMillis()
+                    )
+                    
+                    callback(Result.success(result))
+                    outgoingBroadcasts.remove(broadcastId)
+                    releaseWakeLock()
+                    return@execute
+                }
+                
+                // File broadcast - send chunks in batches
                 val batchSize = 100
-            val totalBatches = (totalChunks + batchSize - 1) / batchSize
+                val totalBatches = (totalChunks + batchSize - 1) / batchSize
+                
+                // Register outgoing state
+                // val state = OutgoingBroadcastState(
+                //     broadcastId = broadcastId,
+                //     messageText = messageText,
+                //     fileId = fileId,
+                //     fileName = file.name,
+                //     filePath = filePath,  // Store full path for NACK resend
+                //     totalChunks = totalChunks,
+                //     callback = callback
+                // )
+                // outgoingBroadcasts[broadcastId] = state
+                
+                // Send each chunk
+                
 
             for (batchNum in 0 until totalBatches) {
                 val batchStart = batchNum * batchSize
@@ -162,7 +261,7 @@ class BroadcastMessageHandler(
                     val metadata = BroadcastChunkMetadata(
                         chunkId = UUID.randomUUID().toString(),
                         fileId = fileId,
-                        fileName = file.name,
+                        fileName = file?.name ?: "",
                         chunkIndex = chunkIndex,
                         totalChunks = totalChunks,
                         chunkSize = chunkData.size.toLong(),
@@ -262,7 +361,7 @@ class BroadcastMessageHandler(
                     broadcastId = broadcastId,
                     messageText = messageText,
                     fileId = fileId,
-                    fileName = file.name,
+                    fileName = file?.name ?: "",
                     totalChunks = totalChunks,
                     successNodeIds = emptyList(),  // Best effort broadcast, no ACKs
                     failedNodeIds = emptyList(),
@@ -286,38 +385,38 @@ class BroadcastMessageHandler(
      * Called by VirtualNode when broadcast packet arrives (chunk or NACK)
      */
     fun onReceiveBroadcastPacket(packet: VirtualPacket) {
-        executor.execute {
-            try {
-                // Extract payload from packet data
-                val payload = packet.data.copyOfRange(
-                    packet.payloadOffset, 
-                    packet.payloadOffset + packet.header.payloadSize
-                )
-                
-                // Determine packet type and route accordingly
-                val packetType = try {
-                    BroadcastPacketSerializer.getPacketType(payload)
-                } catch (e: Exception) {
-                    logger(Log.ERROR, "$TAG Failed to determine packet type: ${e.message}", e)
-                    return@execute
-                }
-                
-                when (packetType) {
-                    BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK -> {
-                        handleBroadcastChunk(packet, payload)
-                    }
-                    BroadcastPacketSerializer.TYPE_NACK_REQUEST -> {
-                        handleNackRequest(packet, payload)
-                    }
-                    else -> {
-                        logger(Log.WARN, "$TAG Unknown packet type: $packetType")
-                    }
-                }
-                
+        
+        try {
+            // Extract payload from packet data
+            val payload = packet.data.copyOfRange(
+                packet.payloadOffset, 
+                packet.payloadOffset + packet.header.payloadSize
+            )
+            
+            // Determine packet type and route accordingly
+            val packetType = try {
+                BroadcastPacketSerializer.getPacketType(payload)
             } catch (e: Exception) {
-                logger(Log.ERROR, "$TAG Failed to process broadcast packet: ${e.message}", e)
+                logger(Log.ERROR, "$TAG Failed to determine packet type: ${e.message}", e)
+                return
             }
+            
+            when (packetType) {
+                BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK -> {
+                    handleBroadcastChunk(packet, payload)
+                }
+                BroadcastPacketSerializer.TYPE_NACK_REQUEST -> {
+                    handleNackRequest(packet, payload)
+                }
+                else -> {
+                    logger(Log.WARN, "$TAG Unknown packet type: $packetType")
+                }
+            }
+            
+        } catch (e: Exception) {
+            logger(Log.ERROR, "$TAG Failed to process broadcast packet: ${e.message}", e)
         }
+        
     }
     
     /**
@@ -325,73 +424,87 @@ class BroadcastMessageHandler(
      */
     private fun handleBroadcastChunk(packet: VirtualPacket, payload: ByteArray) {
         try {
-                // Deserialize payload
-                val (broadcastId, messageText, chunkPair) = BroadcastPacketSerializer.deserialize(payload)
-                val (metadata, chunkData) = chunkPair
+            // Deserialize payload
+            val (broadcastId, messageText, chunkPair) = BroadcastPacketSerializer.deserialize(payload)
+            val (metadata, chunkData) = chunkPair
+            
+            logger(Log.DEBUG, "$TAG Received broadcast chunk: id=$broadcastId, chunk=${metadata.chunkIndex}/${metadata.totalChunks}")
+            
+            // Get or create incoming state
+            val state = incomingBroadcasts.getOrPut(broadcastId) {
+                logger(Log.INFO, "$TAG New incoming broadcast: id=$broadcastId, file=${metadata.fileName}, totalChunks=${metadata.totalChunks}, isTextOnly=${metadata.totalChunks == 0}")
                 
-                logger(Log.DEBUG, "$TAG Received broadcast chunk: id=$broadcastId, chunk=${metadata.chunkIndex}/${metadata.totalChunks}")
+                val newState = IncomingBroadcastState(
+                    broadcastId = broadcastId,
+                    messageText = messageText,
+                    metadata = metadata,
+                    senderNodeId = packet.header.fromAddr
+                )
                 
-                // Get or create incoming state
-                val state = incomingBroadcasts.getOrPut(broadcastId) {
-                    logger(Log.INFO, "$TAG New incoming broadcast: id=$broadcastId, file=${metadata.fileName}, totalChunks=${metadata.totalChunks}")
-                    
-                    val newState = IncomingBroadcastState(
-                        broadcastId = broadcastId,
-                        messageText = messageText,
-                        metadata = metadata,
-                        senderNodeId = packet.header.fromAddr
-                    )
-                    
-                    // Start timeout monitor for this broadcast
+                // Start timeout monitor (unless text-only, which completes immediately)
+                if (metadata.totalChunks > 0) {
                     startTimeoutMonitor(broadcastId, packet.header.fromAddr)
-                    
-                    newState
                 }
                 
-                // Store chunk (validate hash)
-                val md = MessageDigest.getInstance("SHA-256")
-                val actualHash = md.digest(chunkData).joinToString("") { "%02x".format(it) }
-                if (actualHash != metadata.hash) {
-                    logger(Log.WARN, "$TAG Broadcast $broadcastId chunk ${metadata.chunkIndex}: hash mismatch, discarding")
-                    return@handleBroadcastChunk
-                }
-                
-                state.receivedChunks[metadata.chunkIndex] = chunkData
+                newState
+            }
+            
+            // If text-only broadcast (totalChunks=0), complete immediately
+            if (metadata.totalChunks == 0) {
+                logger(Log.INFO, "$TAG ✅ Text-only broadcast received: id=$broadcastId, message='$messageText'")
+                onTextOnlyBroadcastComplete(broadcastId, messageText, packet.header.fromAddr)
+                incomingBroadcasts.remove(broadcastId)
+                return
+            }
+            
+            // File broadcast - store chunk and continue as before
+            val md = MessageDigest.getInstance("SHA-256")
+            val actualHash = md.digest(chunkData).joinToString("") { "%02x".format(it) }
+            if (actualHash != metadata.hash) {
+                logger(Log.WARN, "$TAG Broadcast $broadcastId chunk ${metadata.chunkIndex}: hash mismatch, discarding")
+                return
+            }
+            
+            state.receivedChunks[metadata.chunkIndex] = chunkData
                 
                 logger(Log.DEBUG, "$TAG Broadcast $broadcastId: ${state.receivedChunks.size}/${metadata.totalChunks} chunks received")
                 
+                // COMPREHENSIVE DEBUG: Check completion status
+                logger(Log.DEBUG, "$TAG [BROADCAST_COMPLETE_CHECK] broadcastId=$broadcastId, receivedChunks=${state.receivedChunks.size}, totalChunks=${metadata.totalChunks}, isComplete=${state.isComplete()}")
+                
                 // Check if complete
                 if (state.isComplete()) {
-                    logger(Log.INFO, "$TAG Broadcast $broadcastId: all chunks received, reassembling")
+                    logger(Log.INFO, "$TAG ✅ [BROADCAST_COMPLETE] Broadcast $broadcastId: all chunks received, reassembling")
                     
                     // Reassemble file
                     val fileBytes = state.reassemble()
-                    logger(Log.INFO, "$TAG Broadcast $broadcastId: reassembled ${fileBytes.size} bytes")
+                    logger(Log.INFO, "$TAG [BROADCAST_COMPLETE] Broadcast $broadcastId: reassembled ${fileBytes.size} bytes")
                     
                     // Try to write to SharedWithMe/ folder
                     var filePath: String?
                     var hasError: Boolean
                     var errorMessage: String? = null
                     try {
-                        logger(Log.DEBUG, "$TAG Broadcast $broadcastId: attempting to write file ${state.metadata.fileName}")
+                        logger(Log.DEBUG, "$TAG [BROADCAST_COMPLETE] Broadcast $broadcastId: attempting to write file ${state.metadata.fileName}")
                         filePath = writeBroadcastFile(state.metadata.fileName, fileBytes)
                         hasError = false
-                        logger(Log.INFO, "$TAG Broadcast $broadcastId: complete, file written to $filePath")
+                        logger(Log.INFO, "$TAG ✅ [BROADCAST_COMPLETE] Broadcast $broadcastId: complete, file written to $filePath")
                     } catch (e: IllegalStateException) {
                         // Drop folder not set - create error notification instead
                         filePath = null
                         hasError = true
                         errorMessage = "No storage folder set"
-                        logger(Log.ERROR, "$TAG Broadcast $broadcastId: drop folder not set, file cannot be saved", e)
+                        logger(Log.ERROR, "$TAG ❌ [BROADCAST_COMPLETE] Broadcast $broadcastId: drop folder not set, file cannot be saved", e)
                     } catch (e: Exception) {
                         // Other errors (permission, IO, etc.)
                         filePath = null
                         hasError = true
                         errorMessage = "Failed to save file: ${e.message}"
-                        logger(Log.ERROR, "$TAG Broadcast $broadcastId: failed to write file", e)
+                        logger(Log.ERROR, "$TAG ❌ [BROADCAST_COMPLETE] Broadcast $broadcastId: failed to write file", e)
                     }
                     
                     // Notify listeners (with or without file path)
+                    logger(Log.DEBUG, "$TAG [BROADCAST_COMPLETE] Creating notification DTO with hasError=$hasError, errorMessage=$errorMessage")
                     val notification = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
                         broadcastId = broadcastId,
                         messageText = state.messageText,
@@ -404,9 +517,11 @@ class BroadcastMessageHandler(
                         errorMessage = errorMessage
                     )
                     
+                    logger(Log.INFO, "$TAG [BROADCAST_COMPLETE] Notifying ${receiveListeners.size} listeners")
                     synchronized(receiveListeners) {
                         receiveListeners.forEach { it(notification) }
                     }
+                    logger(Log.INFO, "$TAG [BROADCAST_COMPLETE] ✅ All listeners notified")
                     
                     // Cleanup
                     incomingBroadcasts.remove(broadcastId)
@@ -422,7 +537,7 @@ class BroadcastMessageHandler(
      * Runs in background thread, waits 60 seconds then checks if broadcast completed
      */
     private fun startTimeoutMonitor(broadcastId: String, senderNodeId: Int) {
-        executor.execute {
+        virtualNode.connectionExecutor.execute {
             try {
                 // Wait for timeout period (60 seconds)
                 Thread.sleep(60_000)
@@ -619,39 +734,53 @@ class BroadcastMessageHandler(
      * @throws IllegalStateException if drop folder not selected
      */
     private fun writeBroadcastFile(fileName: String, fileBytes: ByteArray): String {
-        val dropFolder = getDropFolderCallback() 
-            ?: throw IllegalStateException("Drop folder not selected")
+        logger(Log.DEBUG, "$TAG [SHARED_FOLDER] writeBroadcastFile called: fileName=$fileName, fileSize=${fileBytes.size}")
         
-        logger(Log.INFO, "$TAG Drop folder path: ${dropFolder.absolutePath}")
+        val dropFolder = getDropFolderCallback() 
+        
+        if (dropFolder == null) {
+            logger(Log.ERROR, "$TAG [SHARED_FOLDER] ❌ Drop folder callback returned NULL")
+            throw IllegalStateException("Drop folder not selected")
+        }
+        
+        logger(Log.INFO, "$TAG [SHARED_FOLDER] Drop folder path: ${dropFolder.absolutePath}, exists=${dropFolder.exists()}, isDir=${dropFolder.isDirectory}")
         
         val sharedFolder = File(dropFolder, "SharedWithMe")
-        logger(Log.INFO, "$TAG SharedWithMe folder path: ${sharedFolder.absolutePath}")
+        logger(Log.INFO, "$TAG [SHARED_FOLDER] SharedWithMe path: ${sharedFolder.absolutePath}")
+        logger(Log.DEBUG, "$TAG [SHARED_FOLDER] SharedWithMe exists=${sharedFolder.exists()}, isDir=${sharedFolder.isDirectory}")
         
         if (!sharedFolder.exists()) {
-            logger(Log.INFO, "$TAG Creating SharedWithMe folder: ${sharedFolder.absolutePath}")
+            logger(Log.INFO, "$TAG [SHARED_FOLDER] 📁 Creating SharedWithMe folder: ${sharedFolder.absolutePath}")
             val mkdirResult = sharedFolder.mkdirs()
-            logger(Log.INFO, "$TAG mkdirs() result: $mkdirResult, exists now: ${sharedFolder.exists()}")
+            logger(Log.INFO, "$TAG [SHARED_FOLDER] mkdirs() result=$mkdirResult, exists now=${sharedFolder.exists()}, canWrite=${sharedFolder.canWrite()}")
+            
+            if (!mkdirResult) {
+                logger(Log.ERROR, "$TAG [SHARED_FOLDER] ❌ mkdirs() FAILED - folder creation returned false")
+            }
         } else {
-            logger(Log.INFO, "$TAG SharedWithMe folder already exists")
+            logger(Log.INFO, "$TAG [SHARED_FOLDER] ✓ SharedWithMe folder already exists")
         }
         
         require(sharedFolder.isDirectory) { "SharedWithMe path exists but is not a directory: ${sharedFolder.absolutePath}" }
         
         val outputFile = File(sharedFolder, fileName)
+        logger(Log.DEBUG, "$TAG [SHARED_FOLDER] Target file: ${outputFile.absolutePath}")
         
         // Handle duplicate filenames
         var finalFile = outputFile
         var counter = 1
         while (finalFile.exists()) {
+            logger(Log.DEBUG, "$TAG [SHARED_FOLDER] File exists, trying alternative name (counter=$counter)")
             val nameWithoutExt = fileName.substringBeforeLast(".")
             val ext = fileName.substringAfterLast(".", "")
             finalFile = File(sharedFolder, "${nameWithoutExt}_$counter${if (ext.isNotEmpty()) ".$ext" else ""}")
             counter++
         }
         
+        logger(Log.INFO, "$TAG [SHARED_FOLDER] Writing file: ${finalFile.absolutePath}")
         finalFile.writeBytes(fileBytes)
-        
-        logger(Log.INFO, "$TAG Wrote broadcast file: ${finalFile.absolutePath} (${fileBytes.size} bytes)")
+        logger(Log.INFO, "$TAG [SHARED_FOLDER] ✅ Wrote broadcast file: ${finalFile.absolutePath} (${fileBytes.size} bytes)")
+
         
         return finalFile.absolutePath
     }
@@ -660,7 +789,7 @@ class BroadcastMessageHandler(
      * Cleanup incomplete broadcasts older than timeout
      */
     fun cleanupStaleTransfers() {
-        executor.execute {
+        virtualNode.connectionExecutor.execute {
             val now = System.currentTimeMillis()
             
             incomingBroadcasts.entries.removeIf { (id, state) ->
@@ -674,11 +803,41 @@ class BroadcastMessageHandler(
         }
     }
     
+    
+
     /**
-     * Shutdown executor
+     * Handle completion of text-only broadcast (no file)
      */
-    fun shutdown() {
-        executor.shutdown()
-        executor.awaitTermination(5, TimeUnit.SECONDS)
+    private fun onTextOnlyBroadcastComplete(
+        broadcastId: String,
+        messageText: String,
+        senderNodeId: Int
+    ) {
+        logger(Log.INFO, "$TAG [TEXT_ONLY_COMPLETE] Broadcast $broadcastId: message='$messageText'")
+        
+        // Notify listeners (no file path, no error)
+        val notification = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
+            broadcastId = broadcastId,
+            messageText = messageText,
+            fileId = "",
+            fileName = "",
+            filePath = "",
+            senderNodeId = senderNodeId,
+            receivedAt = System.currentTimeMillis(),
+            hasError = false,
+            errorMessage = null
+        )
+        
+        logger(Log.INFO, "$TAG [TEXT_ONLY_COMPLETE] Notifying ${receiveListeners.size} listeners")
+        synchronized(receiveListeners) {
+            receiveListeners.forEach { listener ->
+                try {
+                    listener(notification)
+                } catch (e: Exception) {
+                    logger(Log.ERROR, "$TAG Broadcast listener exception", e)
+                }
+            }
+        }
+        logger(Log.INFO, "$TAG [TEXT_ONLY_COMPLETE] ✅ All listeners notified")
     }
 }

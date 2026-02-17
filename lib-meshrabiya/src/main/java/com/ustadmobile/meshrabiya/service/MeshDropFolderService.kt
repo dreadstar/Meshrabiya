@@ -341,7 +341,7 @@ class MeshDropFolderService : Service() {
     fun getInheritedRecipientsForFile(file: File, recursive: Boolean): List<RecipientEntry> {
         val recipients = mutableSetOf<RecipientEntry>()
         var currentFolder = file.parentFile
-        val dropFolderPath = MeshrabiyaConstants.getDropFolderPath()
+        val dropFolderPath = dropFolder.absolutePath
         while (currentFolder != null) {
             recipients.addAll(getRecipientsForFolder(currentFolder))
             if (!recursive || currentFolder.absolutePath == dropFolderPath) {

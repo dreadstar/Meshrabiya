@@ -250,7 +250,8 @@ class EmergentRoleManager(
         }
     }
     
-    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(setOf(MeshRole.MESH_PARTICIPANT))
+    // Initialize with empty roles - MESH_PARTICIPANT is added when mesh connects via updateRoles()
+    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(emptySet())
     val currentMeshRoles: StateFlow<Set<MeshRole>> = _currentMeshRoles.asStateFlow()
     
     private val _meshIntelligence = MutableStateFlow(
