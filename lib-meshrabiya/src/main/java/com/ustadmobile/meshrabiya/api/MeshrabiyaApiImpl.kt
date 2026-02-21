@@ -75,6 +75,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var appContext: Context? = null
     override fun provideAppContext(context: Context) {
         appContext = context.applicationContext
+        // Initialize MeshrabiyaConstants with application context for preferences
+        MeshrabiyaConstants.init(context.applicationContext)
     }
 
     override fun getAppContext(): Context? {
@@ -342,17 +344,17 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 loadAndApplyPersistedRolePreferences()
                 
                 // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
-                val node = myNode
-                if (node != null && broadcastHandler == null) {
-                    broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
-                        virtualNode = node,
-                        logger = node.logger,
-                        cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
-                        getDropFolderCallback = { getDropFolderUriAsFile() }
-                    )
-                    // Wire handler to VirtualNode
-                    node.broadcastMessageHandler = broadcastHandler
-                    Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode")
+                                    val node = myNode
+                    if (node != null && broadcastHandler == null) {
+                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = { priority, message -> node.logger(priority, message) },
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode")
                     
                     // Apply any listeners registered before handler was created
                     applyPendingBroadcastListeners()
@@ -723,11 +725,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
                     val node = myNode
                     if (node != null && broadcastHandler == null) {
-                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                                                broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
                             virtualNode = node,
-                            logger = node.logger,
+                            logger = { priority, message -> node.logger(priority, message) },
                             cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
-                            getDropFolderCallback = { getDropFolderUriAsFile() }
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
                         )
                         // Wire handler to VirtualNode
                         node.broadcastMessageHandler = broadcastHandler
@@ -914,11 +916,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     
                     // Initialize broadcast handler if not already done (NETWORK_BROADCAST_v2 implementation)
                     if (broadcastHandler == null) {
-                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                                                broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
                             virtualNode = node,
-                            logger = node.logger,
+                            logger = { priority, message -> node.logger(priority, message) },
                             cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
-                            getDropFolderCallback = { getDropFolderUriAsFile() }
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
                         )
                         // Wire handler to VirtualNode
                         node.broadcastMessageHandler = broadcastHandler
@@ -1310,17 +1312,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return MeshrabiyaConstants.isComputeLayerParticipating()
     }
 
-    private fun getDropFolderUriAsFile(): File? {
+    private fun getDropFolderAsDocumentFile(): DocumentFile? {
         val uriString = getDropFolderUri() ?: return null
         return try {
             val context = appContext ?: return null
             val uri = Uri.parse(uriString)
-            val docFile = DocumentFile.fromTreeUri(context, uri)
-            // For broadcasts storage, use a File wrapper pointing to the URI
-            // Note: This is a compatibility shim - actual file operations should use DocumentFile
-            docFile?.uri?.path?.let { File(it) }
+            DocumentFile.fromTreeUri(context, uri)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to convert drop folder URI to File", e)
+            Log.e(TAG, "Failed to get drop folder DocumentFile", e)
             null
         }
     }

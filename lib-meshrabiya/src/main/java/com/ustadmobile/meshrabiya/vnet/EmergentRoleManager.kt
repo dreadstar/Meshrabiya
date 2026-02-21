@@ -148,9 +148,10 @@ class EmergentRoleManager(
     // Coroutine scope for WiFi state monitoring (lifecycle-managed)
     private val monitoringScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    // Cache WiFi concurrency support (hardware capability, doesn't change at runtime)
-    private val concurrentApStationSupported: Boolean by lazy {
-        try {
+        // Query WiFi concurrency support dynamically (reads current StateFlow value)
+    // Note: MeshrabiyaWifiManagerAndroid detects this asynchronously at startup
+    private val concurrentApStationSupported: Boolean
+        get() = try {
             runBlocking {
                 virtualNode.meshrabiyaWifiManager.state.first().concurrentApStationSupported
             }
@@ -158,7 +159,6 @@ class EmergentRoleManager(
             Log.w(TAG, "Could not determine concurrency support, defaulting to false", e)
             false
         }
-    }
 
     init {
         Log.d("EmergentRoleManager", "Initialized with virtualNode: $virtualNode, context: $context")

@@ -195,11 +195,7 @@ class MeshrabiyaWifiManagerAndroid(
     }
 
     private val _state = MutableStateFlow(MeshrabiyaWifiState(
-        concurrentApStationSupported = if(Build.VERSION.SDK_INT >= 30) {
-            wifiManager.isStaApConcurrencySupported
-        }else {
-            false
-        }
+        concurrentApStationSupported = false  // Start with false, detect asynchronously in init
     ))
 
     override val state: Flow<MeshrabiyaWifiState> = _state.asStateFlow()
@@ -256,8 +252,34 @@ class MeshrabiyaWifiManagerAndroid(
                 // receives packets on all interfaces. OriginatingMessageManager will handle sending
                 // broadcasts appropriately when hotspot is active.
             }
+                }
+
+        // Detect concurrent AP+Station support after WiFi system initialization
+        nodeScope.launch {
+            val supported = detectConcurrentSupport()
+            _state.update { prev ->
+                prev.copy(concurrentApStationSupported = supported)
+            }
+            logger(Log.INFO, "$logPrefix Concurrent AP+Station support detected: $supported")
         }
 
+    }
+
+    /**
+     * Detect if device supports concurrent AP+Station mode.
+     * Delays briefly to ensure WiFi system is fully initialized before querying capability.
+     */
+    private suspend fun detectConcurrentSupport(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 30) {
+            // Brief delay to allow WiFi system to fully initialize
+            delay(200)
+            val supported = wifiManager.isStaApConcurrencySupported
+            logger(Log.INFO, "$logPrefix isStaApConcurrencySupported = $supported (SDK ${Build.VERSION.SDK_INT})")
+            supported
+        } else {
+            logger(Log.INFO, "$logPrefix Concurrent AP+Station not supported (SDK < 30, actual: ${Build.VERSION.SDK_INT})")
+            false
+        }
     }
 
     private fun assertNotClosed() {
