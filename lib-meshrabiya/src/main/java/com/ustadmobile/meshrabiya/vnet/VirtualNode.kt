@@ -936,11 +936,8 @@ abstract class VirtualNode(
                             )
                             val version = payloadBuffer.getInt()
                             
-                            // Version 1 = broadcast message packet
-                            if (version == 1) {
-                                logger(Log.DEBUG, "$logPrefix: Detected broadcast message packet (version=$version), delegating to handler")
-                                broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
-                            }
+                            
+                            
                         } catch (e: Exception) {
                             logger(Log.WARN, "$logPrefix: Failed to check broadcast message packet version", e)
                         }
