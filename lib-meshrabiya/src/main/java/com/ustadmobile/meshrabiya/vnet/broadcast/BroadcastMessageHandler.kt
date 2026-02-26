@@ -173,7 +173,7 @@ class BroadcastMessageHandler(
                 
                 // If text-only (no chunks), complete immediately
                 if (!hasFile) {
-                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId: sending metadata packet only")
+                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId: sending metadata packet to neighbors")
                     
                     // Send single metadata packet (no chunks)
                     val metadataOnly = BroadcastChunkMetadata(
@@ -213,8 +213,27 @@ class BroadcastMessageHandler(
                         payloadOffset = VirtualPacketHeader.HEADER_SIZE
                     )
                     
-                    virtualNode.route(packet)
-                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId sent")
+                    // Send to all neighbors (same as file broadcast)
+                    val neighbors = virtualNode.originatingMessageManager.neighbors()
+                    if (neighbors.isEmpty()) {
+                        logger(Log.WARN, "$TAG Text-only broadcast $broadcastId: No neighbors found")
+                    } else {
+                        logger(Log.DEBUG, "$TAG Text-only broadcast $broadcastId: sending to ${neighbors.size} neighbor(s)")
+                        neighbors.forEach { (neighborAddr, lastMsg) ->
+                            try {
+                                lastMsg.receivedFromSocket.send(
+                                    nextHopAddress = lastMsg.lastHopRealInetAddr,
+                                    nextHopPort = lastMsg.lastHopRealPort,
+                                    virtualPacket = packet
+                                )
+                                logger(Log.VERBOSE, "$TAG Text-only broadcast $broadcastId: sent to neighbor $neighborAddr")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Text-only broadcast $broadcastId: failed to send to neighbor $neighborAddr", e)
+                            }
+                        }
+                    }
+                    
+                    logger(Log.INFO, "$TAG Text-only broadcast $broadcastId sent to all neighbors")
                     
                     // Complete immediately
                     val result = BroadcastResultDto(
@@ -530,11 +549,15 @@ class BroadcastMessageHandler(
                             errorMessage = null
                         )
                         
-                        logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Notifying ${receiveListeners.size} listeners for successful file broadcast: fileName='${state.metadata.fileName}'")
-                        synchronized(receiveListeners) {
-                            receiveListeners.forEach { it(notification) }
+                        if (state.senderNodeId != virtualNode.addressAsInt) {
+                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Notifying ${receiveListeners.size} listeners for successful file broadcast: fileName='${state.metadata.fileName}'")
+                            synchronized(receiveListeners) {
+                                receiveListeners.forEach { it(notification) }
+                            }
+                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] ✅ All ${receiveListeners.size} listeners notified")
+                        } else {
+                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Skipping notification for senderNodeId=${state.senderNodeId} (self)")
                         }
-                        logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] ✅ All ${receiveListeners.size} listeners notified")
                     } else {
                         // Log error but do NOT notify listeners (no dropdown, no count increment)
                         logger(Log.WARN, "${broadcastTag(broadcastId)} [NOTIFICATION] ⏭️ Skipping listener notification for failed file transfer: $errorMessage")
