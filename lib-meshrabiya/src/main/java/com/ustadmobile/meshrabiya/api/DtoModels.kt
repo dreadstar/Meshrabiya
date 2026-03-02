@@ -544,7 +544,7 @@ fun WifiConnectConfigDto.toInternal() = WifiConnectConfig(
 
 // --- MeshRole DTO ---
 enum class MeshRoleDto {
-    MESH_PARTICIPANT, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, TOR_GATEWAY, CLEARNET_GATEWAY, I2P_GATEWAY
+    MESH_PARTICIPANT, STORAGE_NODE, COMPUTE_NODE, MESH_ROUTER, MESH_HUB, TOR_GATEWAY, CLEARNET_GATEWAY, I2P_GATEWAY
 }
 
 fun MeshRole.toDto() = MeshRoleDto.valueOf(this.name)
@@ -649,6 +649,49 @@ data class NeighborInfoDto(
 fun TaskType.toDto(): TaskTypeDto = TaskTypeDto.valueOf(this.name)
 fun TaskTypeDto.toInternal(): TaskType = TaskType.valueOf(this.name)
 
+/**
+ * Result of broadcast send operation
+ */
+data class BroadcastResultDto(
+    val broadcastId: String,
+    val messageText: String,
+    val fileId: String,
+    val fileName: String,
+    val totalChunks: Int,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val successNodeIds: List<Int>,  // Nodes that acknowledged receipt
+    val failedNodeIds: List<Int>,   // Nodes that failed or timed out
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * Notification of received broadcast
+ */
+data class BroadcastReceivedDto(
+    val broadcastId: String,
+    val messageText: String,
+    val fileId: String,
+    val fileName: String,
+    val filePath: String,  // Path in Shared/ folder
+    val senderNodeId: Int,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val receivedAt: Long = System.currentTimeMillis(),
+    val hasError: Boolean = false,
+    val errorMessage: String? = null
+)
+
+/**
+ * Progress update during broadcast send
+ */
+data class BroadcastProgressDto(
+    val broadcastId: String,
+    val chunksSent: Int,
+    val totalChunks: Int,
+    val bytesTransferred: Long,
+    val totalBytes: Long
+)
 
 // data class NetworkOverviewMetricsDto(
 //     val uploadRateBytesPerSec: Long,

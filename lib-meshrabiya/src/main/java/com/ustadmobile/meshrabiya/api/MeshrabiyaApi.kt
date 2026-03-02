@@ -196,8 +196,87 @@ interface MeshrabiyaApi {
     fun enableDistributedStorage()
     fun disableDistributedStorage()
     fun isComputeLayerParticipating(): Boolean
-    fun setDropFolderPath(path: String) 
-    fun getDropFolderPath(): String
+
+    
+    /**
+     * Set the drop folder URI for broadcast file reception.
+     * @param uri The content:// URI from Android's folder picker
+     */
+    fun setDropFolderUri(uri: String)
+    
+    /**
+     * Get the stored drop folder URI.
+     * @return The content:// URI, or null if not set
+     */
+    fun getDropFolderUri(): String?
+    
+    /**
+     * Set the storage quota for mesh participation in bytes.
+     * @param quotaBytes Maximum storage allocation in bytes
+     */
+    fun setStorageQuotaBytes(quotaBytes: Long)
+    
+    /**
+     * Get the configured storage quota in bytes.
+     * @return Quota in bytes (default: 100MB)
+     */
+    fun getStorageQuotaBytes(): Long
+
+    // --- Broadcast Message+File Operations ---
+    /**
+     * Broadcast a message and/or file to all nodes in the mesh (suspend version)
+     * 
+     * Success results are reported via setOnBroadcastSent() handler.
+     * Failures are reported via setOnBroadcastFailed() handler.
+     * 
+     * @param messageText Text message to broadcast (max 500 chars, can be empty if file provided)
+     * @param filePath Absolute path to file to broadcast (can be empty if message provided)
+     * @throws IllegalArgumentException if both messageText and filePath are empty
+     * @throws IllegalArgumentException if message exceeds 500 characters
+     * @throws IllegalStateException if drop folder not selected
+     * @throws IllegalStateException if mesh is not running
+     */
+    suspend fun broadcastMessageAndFile(
+        messageText: String = "",
+        filePath: String = "",
+        latitude: Double? = null,
+        longitude: Double? = null
+    )
+    
+    /**
+     * Register a listener for received broadcasts
+     * 
+     * Listener is called on background thread when broadcast is fully received
+     * and file has been written to Shared/ folder.
+     * 
+     * Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+     * 
+     * @param listener Callback for received broadcasts
+     */
+    fun registerBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit)
+    
+    /**
+     * Unregister a broadcast listener
+     * 
+     * Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+     */
+    fun unregisterBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit)
+
+    /**
+     * Register handler for successful broadcast completion
+     * Handler is invoked on background thread when broadcast is fully sent
+     * 
+     * @param handler Callback with broadcast result details
+     */
+    fun setOnBroadcastSent(handler: (com.ustadmobile.meshrabiya.api.model.BroadcastResultDto) -> Unit)
+
+    /**
+     * Register handler for broadcast failures
+     * Handler is invoked on background thread when broadcast fails
+     * 
+     * @param handler Callback with failure details
+     */
+    fun setOnBroadcastFailed(handler: (broadcastId: String, error: Throwable) -> Unit)
 
     /**
      * Enable or disable the entire compute service (persistent, global).
@@ -205,8 +284,8 @@ interface MeshrabiyaApi {
     fun setComputeLayerParticipatingEnabled(enabled: Boolean)
 
     // --- Drop Folder Management ---
-    fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
-    fun getDropFolder(): File?
+    // fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit)
+    // fun getDropFolder(): File?
     fun getDropFolderFiles(): List<File>
     fun setOnDropFolderUpdate(handler: (List<DropFolderItemDto>) -> Unit)
 

@@ -21,6 +21,74 @@ object MeshrabiyaConstants {
     fun setBroadcastTtlMs(ttl: Long) {
         prefs?.edit()?.putLong("broadcast_ttl_ms", ttl)?.apply()
     }
+
+    // ========================================
+    // BROADCAST MESSAGE+FILE CONSTANTS
+    // ========================================
+
+    /**
+     * Chunk size for broadcast file transfer (bytes).
+     * Balances memory efficiency with packet overhead.
+     * Must be smaller than VirtualPacket max payload (~1500 bytes).
+     */
+    const val BROADCAST_CHUNK_SIZE = 1024
+
+    /**
+     * MMCP message type for broadcast message+file packets.
+     * Uses port 0 (MMCP port) with this type identifier.
+     */
+    const val MMCP_TYPE_BROADCAST_MESSAGE = 6
+
+    /**
+     * Timeout for incomplete broadcast reception (milliseconds).
+     * After this time, incomplete broadcasts are cleaned up.
+     */
+    const val BROADCAST_TIMEOUT_MS = 30_000L
+
+    /**
+     * Maximum length for broadcast message text (characters).
+     * Keeps total packet size within limits.
+     */
+    const val MAX_BROADCAST_MESSAGE_LENGTH = 500
+
+    /**
+     * Delay between sending individual chunks within a batch (milliseconds).
+     * Prevents network flooding while maintaining good throughput.
+     * Lower values = faster transfer but higher network load.
+     */
+    const val BROADCAST_CHUNK_DELAY_MS = 1L
+
+    /**
+     * Delay between sending batches of chunks (milliseconds).
+     * Allows receiver time to process batch and prevents buffer overflow.
+     * Reduced from 10ms to 2ms for faster overall transfer rate.
+     */
+    const val BROADCAST_BATCH_DELAY_MS = 2L
+
+    /**
+     * Maximum time (ms) to wait for a connection from the pool before dropping packet
+     * Used by VirtualNode.route() to prevent indefinite blocking on overload
+     */
+    const val ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS: Long = 5_000L
+
+    /**
+     * Maximum time (ms) allowed for packet processing in route() before timeout
+     * Used to detect and log slow packet handlers
+     */
+    const val ROUTE_PROCESSING_TIMEOUT_MS: Long = 10_000L
+
+    /**
+     * Enable graceful packet dropping when connection pool is exhausted
+     * When true, packets are dropped with warning log instead of blocking
+     */
+    const val ROUTE_DROP_ON_POOL_EXHAUSTION: Boolean = true
+
+    /**
+     * Maximum number of pending listener registrations to queue
+     * Used by MeshrabiyaApiImpl to limit memory usage for deferred listeners
+     */
+    const val DEFERRED_LISTENER_QUEUE_MAX_SIZE: Int = 50
+
     const val LOG_TAG = "Meshrabiya"
     const val VERSION = "0.1d11"
     val UUID_BUSY = UUID(0, 0)
@@ -33,7 +101,10 @@ object MeshrabiyaConstants {
 
     // --- Settings logic migrated from MeshSettings ---
     private var prefs: SharedPreferences? = null
-    private const val KEY_DROP_FOLDER_PATH = "drop_folder_path"
+    
+    private const val KEY_DROP_FOLDER_URI = "drop_folder_uri"
+    private const val KEY_STORAGE_QUOTA_BYTES = "storage_quota_bytes"
+    private const val DEFAULT_STORAGE_QUOTA_BYTES = 100_000_000L // 100MB default
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("mesh_settings", Context.MODE_PRIVATE)
@@ -102,12 +173,22 @@ object MeshrabiyaConstants {
     fun setConnectionPoolSize(size: Int) {
         prefs?.edit()?.putInt("connection_pool_size", size)?.apply()
     }
-    fun setDropFolderPath(path: String) {
-        prefs?.edit()?.putString(KEY_DROP_FOLDER_PATH, path)?.apply()
+    
+    
+    fun setDropFolderUri(uri: String) {
+        prefs?.edit()?.putString(KEY_DROP_FOLDER_URI, uri)?.apply()
     }
-
-    fun getDropFolderPath(): String {
-        return prefs?.getString(KEY_DROP_FOLDER_PATH, "") ?: ""
+    
+    fun getDropFolderUri(): String? {
+        return prefs?.getString(KEY_DROP_FOLDER_URI, null)
+    }
+    
+    fun setStorageQuotaBytes(quotaBytes: Long) {
+        prefs?.edit()?.putLong(KEY_STORAGE_QUOTA_BYTES, quotaBytes)?.apply()
+    }
+    
+    fun getStorageQuotaBytes(): Long {
+        return prefs?.getLong(KEY_STORAGE_QUOTA_BYTES, DEFAULT_STORAGE_QUOTA_BYTES) ?: DEFAULT_STORAGE_QUOTA_BYTES
     }
 
     // Phase 1: Task completion retry constants

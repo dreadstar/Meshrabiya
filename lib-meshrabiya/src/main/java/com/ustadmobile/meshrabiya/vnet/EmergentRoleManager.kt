@@ -1,19 +1,34 @@
 package com.ustadmobile.meshrabiya.vnet
 
 import android.content.Context
+import android.os.PowerManager
+import android.util.Log
+import com.ustadmobile.meshrabiya.ext.addressToDotNotation
+import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiDirectState
+import com.ustadmobile.meshrabiya.vnet.wifi.state.MeshrabiyaWifiState
+import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import com.ustadmobile.meshrabiya.beta.BetaTestLogger
 import com.ustadmobile.meshrabiya.beta.LogLevel
 import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.AndroidDeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.MLCapabilityDetector
+import com.ustadmobile.meshrabiya.vnet.wifi.HotspotStatus
 // UPDATED: MeshRole moved from mmcp to vnet package (canonical location)
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 
@@ -26,7 +41,7 @@ import com.ustadmobile.meshrabiya.vnet.hardware.ChargingSource
 import com.ustadmobile.meshrabiya.vnet.hardware.ThermalState
 import com.ustadmobile.meshrabiya.vnet.hardware.PowerState
 import com.ustadmobile.meshrabiya.vnet.hardware.SerializableNetworkInterfaceInfo
-import android.util.Log
+
 
 // DEPRECATED: MmcpGatewayAnnouncement - part of quorum/announcement false start
 // File moved to MmcpGatewayAnnouncement.md (already deprecated on filesystem)
@@ -125,20 +140,101 @@ class EmergentRoleManager(
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
     private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
 ) {
+    companion object {
+        private const val TAG = "EmergentRoleManager"
+    }
     private val logger = try { BetaTestLogger.getInstance(context) } catch (e: Exception) { null }
 
-    // Cache WiFi concurrency support (hardware capability, doesn't change at runtime)
-    private val concurrentApStationSupported: Boolean by lazy {
-        runBlocking {
-            virtualNode.meshrabiyaWifiManager.state.first().concurrentApStationSupported
+    // Coroutine scope for WiFi state monitoring (lifecycle-managed)
+    private val monitoringScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+        // Query WiFi concurrency support dynamically (reads current StateFlow value)
+    // Note: MeshrabiyaWifiManagerAndroid detects this asynchronously at startup
+    private val concurrentApStationSupported: Boolean
+        get() = try {
+            runBlocking {
+                virtualNode.meshrabiyaWifiManager.state.first().concurrentApStationSupported
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not determine concurrency support, defaulting to false", e)
+            false
         }
-    }
 
     init {
         Log.d("EmergentRoleManager", "Initialized with virtualNode: $virtualNode, context: $context")
         if (context == null) {
             Log.e("EmergentRoleManager", "context is NULL in constructor!")
         }
+
+        
+    }
+
+    /**
+     * Start WiFi state monitoring. Must be called after AndroidVirtualNode fully initializes.
+     * This monitors hotspot state changes and triggers role recalculation when hotspot starts.
+     */
+    fun startWifiStateMonitoring() {
+        Log.d(TAG, "[WIFI_STATE] ===== startWifiStateMonitoring() CALLED =====")
+        
+        // Monitor hotspot state changes
+        monitoringScope.launch {
+            Log.d(TAG, "[WIFI_STATE] Hotspot monitoring coroutine STARTED")
+            try {
+                virtualNode.meshrabiyaWifiManager.state
+                    .map { 
+                        val status = it.localOnlyHotspotState.status
+                        Log.v(TAG, "[WIFI_STATE] Hotspot status: $status")
+                        status
+                    }
+                    .distinctUntilChanged()
+                    .collect { status ->
+                        Log.d(TAG, "[WIFI_STATE] Hotspot status CHANGED to: $status")
+                        if (status == HotspotStatus.STARTED) {
+                            Log.d(TAG, "[WIFI_STATE] Hotspot started, triggering role recalculation")
+                            updateRoles(userInitiated = false)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "[WIFI_STATE] Hotspot monitor FAILED", e)
+            }
+        }
+
+        // Monitor station connection state
+        monitoringScope.launch {
+            Log.d(TAG, "[WIFI_STATE] Station monitoring coroutine STARTED")
+            try {
+                virtualNode.meshrabiyaWifiManager.state
+                    .map { 
+                        val status = it.wifiStationState.status
+                        val isAvailable = status == WifiStationState.Status.AVAILABLE
+                        Log.v(TAG, "[WIFI_STATE] Station status: $status, isAvailable: $isAvailable")
+                        isAvailable
+                    }
+                    .distinctUntilChanged()
+                    .collect { isConnected ->
+                        Log.d(TAG, "[WIFI_STATE] Station connection CHANGED to: isConnected=$isConnected")
+                        if (isConnected) {
+                            Log.d(TAG, "[WIFI_STATE] Station connected (AVAILABLE), triggering role recalculation in 2s")
+                            delay(2000) // Allow neighbors to be discovered
+                            Log.d(TAG, "[WIFI_STATE] Calling updateRoles() after station connection")
+                            updateRoles(userInitiated = false)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "[WIFI_STATE] Station monitor FAILED", e)
+            }
+        }
+        
+        Log.d(TAG, "[WIFI_STATE] Both monitoring coroutines launched successfully")
+    }
+
+    /**
+     * Stop WiFi state monitoring and cleanup coroutines.
+     * Should be called when EmergentRoleManager is no longer needed.
+     */
+    fun stopWifiStateMonitoring() {
+        Log.d(TAG, "[WIFI_STATE] Stopping WiFi state monitoring")
+        monitoringScope.cancel()
     }
     
     // Initialize hardware capability manager if not provided
@@ -154,7 +250,8 @@ class EmergentRoleManager(
         }
     }
     
-    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(setOf(MeshRole.MESH_PARTICIPANT))
+    // Initialize with empty roles - MESH_PARTICIPANT is added when mesh connects via updateRoles()
+    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(emptySet())
     val currentMeshRoles: StateFlow<Set<MeshRole>> = _currentMeshRoles.asStateFlow()
     
     private val _meshIntelligence = MutableStateFlow(
@@ -331,11 +428,39 @@ class EmergentRoleManager(
         // Nodes with AP+Station concurrency can forward traffic while maintaining connections
         val centralityResult = calculateBFSCentrality()
         val centralityThreshold = 3.0f // Minimum centrality score for router role
+        val wifiState = virtualNode.currentNodeState.wifiState
         
-        if (fitness > 0.6 && centralityResult.centralityScore > centralityThreshold && concurrentApStationSupported) {
+        // MESH_ROUTER: High-fitness nodes with good network position and concurrent AP support
+        android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] MESH_ROUTER check: fitness=$fitness, centrality=${centralityResult.centralityScore}, threshold=$centralityThreshold, concurrency=$concurrentApStationSupported")
+        
+        // Special case: Concurrent hotspot nodes get MESH_ROUTER immediately at startup (before neighbors discovered)
+        // Once neighbors exist, use centrality scoring for role assignments
+        if (concurrentApStationSupported && wifiState.hotspotIsStarted && centralityResult.centralityScore == 0.0f) {
+            roles.add(MeshRole.MESH_ROUTER)
+            safeLog(LogLevel.INFO, "Assigned router role (concurrent hotspot at startup, no neighbors yet)")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_ROUTER (concurrent hotspot, startup)")
+        } else if (fitness > 0.6 && centralityResult.centralityScore > centralityThreshold && concurrentApStationSupported) {
             roles.add(MeshRole.MESH_ROUTER)
             safeLog(LogLevel.INFO, "Assigned router role (centrality=${centralityResult.centralityScore}, " +
                 "degree=${centralityResult.degree}, reachable=${centralityResult.reachableNodes}, concurrency=true)")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_ROUTER (centrality check passed)")
+        }
+        
+        // NEW: MESH_HUB role for non-concurrent hotspot nodes
+        // Hotspot nodes WITHOUT AP concurrency need forwarding capability to relay broadcasts
+        // Assignment criteria:
+        // 1. Node started mesh as hotspot (setWifiHotspotEnabled called)
+        // 2. Device does NOT have concurrent AP+Station hardware capability
+        // Note: No stable connection requirement - hotspot IS a hub as soon as it starts
+        // MESH_HUB nodes forward broadcasts but cannot bridge mesh segments (no station mode)
+        
+        if (!concurrentApStationSupported && wifiState.hotspotIsStarted) {
+            roles.add(MeshRole.MESH_HUB)
+            safeLog(LogLevel.INFO, "Assigned MESH_HUB role (hotspot active, no AP concurrency)")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_HUB (non-concurrent hotspot)")
+        } else {
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ MESH_HUB not assigned: concurrency=$concurrentApStationSupported, hotspot=${wifiState.hotspotIsStarted}")
+            safeLog(LogLevel.INFO, "MESH_HUB not assigned: concurrency=$concurrentApStationSupported, hotspot=${wifiState.hotspotIsStarted}")
         }
         
         // COORDINATOR ROLE DEPRECATED - Not in canonical design
@@ -1351,5 +1476,29 @@ class EmergentRoleManager(
         )
         
         return Pair(capabilities, customModelSupport)
+    }
+
+    fun startNeighborMonitoring() {
+        CoroutineScope(Dispatchers.Default).launch {
+            var lastNeighborCount = 0
+            
+            try {
+                while (isActive) {
+                    delay(5000) // Check every 5 seconds
+                    
+                    val currentNeighbors = virtualNode.originatingMessageManager.neighbors().size
+                    
+                    if (currentNeighbors != lastNeighborCount) {
+                        Log.d(TAG, "[NEIGHBORS] Neighbor count changed: $lastNeighborCount → $currentNeighbors")
+                        lastNeighborCount = currentNeighbors
+                        
+                        // Trigger role update on neighbor change
+                        updateRoles(userInitiated = false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "[NEIGHBORS] Failed to monitor neighbor count", e)
+            }
+        }
     }
 }

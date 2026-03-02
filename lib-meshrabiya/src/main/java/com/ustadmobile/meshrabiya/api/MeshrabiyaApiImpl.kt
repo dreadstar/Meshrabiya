@@ -3,7 +3,9 @@ package com.ustadmobile.meshrabiya.api
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
+import android.net.Uri
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.edit
@@ -73,6 +75,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var appContext: Context? = null
     override fun provideAppContext(context: Context) {
         appContext = context.applicationContext
+        // Initialize MeshrabiyaConstants with application context for preferences
+        MeshrabiyaConstants.init(context.applicationContext)
     }
 
     override fun getAppContext(): Context? {
@@ -119,6 +123,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
     // Compute workflows now use DistributedComputeServer + TaskManager directly
     // private var intelligentDistributedComputeService: IntelligentDistributedComputeService? = null
+    
+    /**
+     * Handler for broadcast messages+files
+     * Initialized when mesh starts, cleaned up when mesh stops
+     * Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+     */
+    private var broadcastHandler: com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler? = null
+
+    /**
+     * Queue for listeners registered before broadcastHandler is created
+     * Applied automatically when handler is initialized during joinMesh()
+     * Added: 2026-02-15 for deferred listener registration
+     */
+    private val pendingBroadcastListeners = 
+        java.util.concurrent.ConcurrentLinkedQueue<(com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit>()
 
     // Section 6: Event monitoring scope and jobs
     private val eventMonitoringScope = CoroutineScope(Dispatchers.Default)
@@ -324,6 +343,23 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 // Load persisted role preferences and apply them to EmergentRoleManager
                 loadAndApplyPersistedRolePreferences()
                 
+                // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
+                                    val node = myNode
+                    if (node != null && broadcastHandler == null) {
+                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = { priority, message -> node.logger(priority, message) },
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode")
+                    
+                    // Apply any listeners registered before handler was created
+                    applyPendingBroadcastListeners()
+                }
+                
                 callback(Result.success(Unit))
                 Log.d("MeshrabiyaApiImpl", "startMesh callback invoked with success")
             } catch (e: Exception) {
@@ -355,6 +391,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     hotspotType = HotspotType.AUTO
                 )
                 Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
+                
+                // Cleanup broadcast handler (NETWORK_BROADCAST_v2 implementation)
+                
+                broadcastHandler = null
+                Log.d("MeshrabiyaApiImpl", "Broadcast handler shutdown and cleaned up")
+                
                 callback(Result.success(Unit))
                 Log.d("MeshrabiyaApiImpl", "stopMesh callback invoked with success")
             } catch (e: Exception) {
@@ -679,6 +721,24 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     Log.d(TAG, "[JOIN RESULT] ========== JOIN MESH SUCCESS ==========")
                     Log.d(TAG, "[JOIN RESULT] Mesh join completed successfully")
                     Log.d(TAG, "[JOIN RESULT] New mesh state: ${getMeshStatus()}")
+                    
+                    // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
+                    val node = myNode
+                    if (node != null && broadcastHandler == null) {
+                                                broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = { priority, message -> node.logger(priority, message) },
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode (joinMesh)")
+                        
+                        // Apply any listeners registered before handler was created
+                        applyPendingBroadcastListeners()
+                    }
+                    
                     callback(Result.success(Unit))
                 } else {
                     Log.e(TAG, "[JOIN RESULT] ========== JOIN MESH FAILURE ==========")
@@ -853,6 +913,23 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     Log.d(TAG, "[MERGE RESULT] Two meshes are now unified")
                     Log.d(TAG, "[MERGE RESULT] New mesh state: ${getMeshStatus()}")
                     Log.d(TAG, "[MERGE RESULT] Neighbor count after merge: ${node.currentNodeState.originatorMessages.size}")
+                    
+                    // Initialize broadcast handler if not already done (NETWORK_BROADCAST_v2 implementation)
+                    if (broadcastHandler == null) {
+                                                broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                            virtualNode = node,
+                            logger = { priority, message -> node.logger(priority, message) },
+                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
+                        )
+                        // Wire handler to VirtualNode
+                        node.broadcastMessageHandler = broadcastHandler
+                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode (mergeMesh)")
+                        
+                        // Apply any listeners registered before handler was created
+                        applyPendingBroadcastListeners()
+                    }
+                    
                     callback(Result.success(Unit))
                 } else {
                     Log.e(TAG, "[MERGE RESULT] ========== MERGE MESH FAILURE ==========")
@@ -1220,16 +1297,40 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         onDropFolderUpdateHandler?.invoke(dtos)
     }
 
-    override fun setDropFolderPath(path: String) {
-        MeshrabiyaConstants.setDropFolderPath(path)
-    }
+    
 
-    override fun getDropFolderPath(): String {
-        return MeshrabiyaConstants.getDropFolderPath()
+    override fun setDropFolderUri(uri: String) {
+        MeshrabiyaConstants.setDropFolderUri(uri)
+        Log.d(TAG, "Drop folder URI set: $uri")
+    }
+    
+    override fun getDropFolderUri(): String? {
+        return MeshrabiyaConstants.getDropFolderUri()
     }
     // TODO: Reimplement using TaskManager from canonical workflows (2025-12-04)
     override fun isComputeLayerParticipating(): Boolean {
         return MeshrabiyaConstants.isComputeLayerParticipating()
+    }
+
+    private fun getDropFolderAsDocumentFile(): DocumentFile? {
+        val uriString = getDropFolderUri() ?: return null
+        return try {
+            val context = appContext ?: return null
+            val uri = Uri.parse(uriString)
+            DocumentFile.fromTreeUri(context, uri)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get drop folder DocumentFile", e)
+            null
+        }
+    }
+
+    override fun setStorageQuotaBytes(quotaBytes: Long) {
+        MeshrabiyaConstants.setStorageQuotaBytes(quotaBytes)
+        Log.d(TAG, "Storage quota set: ${quotaBytes / (1024 * 1024)}MB ($quotaBytes bytes)")
+    }
+    
+    override fun getStorageQuotaBytes(): Long {
+        return MeshrabiyaConstants.getStorageQuotaBytes()
     }
 
     override fun setComputeLayerParticipatingEnabled(enabled: Boolean) {
@@ -1238,15 +1339,33 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Drop Folder Management ---
     // TODO: Reimplement using canonical workflows (2025-12-04)
-    override fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit) {
-        // try {
-        //     distributedStorageManager?.selectDropFolder(path)
-            callback(Result.success(Unit))
-        // } catch (e: Exception) {
-        //     callback(Result.failure(e))
-        // }
-    }
-    override fun getDropFolder(): File? = null // distributedStorageManager?.getDropFolder()
+    // override fun selectDropFolder(path: String, callback: (Result<Unit>) -> Unit) {
+    //     try {
+    //         val context = appContext ?: throw IllegalStateException("Context required")
+    //         val folder = File(path)
+            
+    //         // Validate folder
+    //         if (!folder.exists() || !folder.isDirectory) {
+    //             callback(Result.failure(IllegalArgumentException("Invalid folder path: $path")))
+    //             return
+    //         }
+    //         if (!folder.canWrite()) {
+    //             callback(Result.failure(IllegalArgumentException("Folder not writable: $path")))
+    //             return
+    //         }
+            
+    //         // Save to SharedPreferences
+    //         val prefs = context.getSharedPreferences("meshrabiya_prefs", Context.MODE_PRIVATE)
+    //         prefs.edit().putString("drop_folder_path", path).apply()
+            
+    //         Log.i(TAG, "Drop folder set: $path")
+    //         callback(Result.success(Unit))
+    //     } catch (e: Exception) {
+    //         Log.e(TAG, "Failed to set drop folder", e)
+    //         callback(Result.failure(e))
+    //     }
+    // }
+    
     override fun getDropFolderFiles(): List<File> = emptyList() // distributedStorageManager?.getDropFolderFiles() ?: emptyList()
 
     // =========================================================
@@ -1496,6 +1615,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // private var onTaskCompleted: ((taskId: String, result: ExecutionPlan) -> Unit)? = null
     private var onFileShared: ((fileId: String, recipientId: String) -> Unit)? = null
     private var onFileAddedToDropFolder: ((fileId: String, file: File) -> Unit)? = null
+    
+    // Broadcast event handlers (added 2026-02-01)
+    private var onBroadcastSent: ((com.ustadmobile.meshrabiya.api.model.BroadcastResultDto) -> Unit)? = null
+    private var onBroadcastFailed: ((broadcastId: String, error: Throwable) -> Unit)? = null
 
     override fun setOnFileRetrieved(handler: (fileId: String, file: File) -> Unit) {
         onFileRetrieved = handler
@@ -1528,6 +1651,22 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
     override fun setOnFileAddedToDropFolder(handler: (fileId: String, file: File) -> Unit) {
         onFileAddedToDropFolder = handler
+    }
+    
+    override fun setOnBroadcastSent(handler: (com.ustadmobile.meshrabiya.api.model.BroadcastResultDto) -> Unit) {
+        onBroadcastSent = handler
+    }
+    
+    override fun setOnBroadcastFailed(handler: (broadcastId: String, error: Throwable) -> Unit) {
+        onBroadcastFailed = handler
+    }
+    
+    fun getOnBroadcastSent(): ((com.ustadmobile.meshrabiya.api.model.BroadcastResultDto) -> Unit)? {
+        return onBroadcastSent
+    }
+    
+    fun getOnBroadcastFailed(): ((broadcastId: String, error: Throwable) -> Unit)? {
+        return onBroadcastFailed
     }
 
     // --- Settings and State ---
@@ -1732,7 +1871,94 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     //     return meshNodeList.size // or other logic as appropriate
     // }
 
+    // --- Broadcast Message+File Operations ---
+    // Added: 2026-02-01 for NETWORK_BROADCAST_v2 implementation
+    
+    override suspend fun broadcastMessageAndFile(
+        messageText: String,
+        filePath: String,
+        latitude: Double?,
+        longitude: Double?
+    ) {
+        // Validate at least one input provided
+        if (messageText.isEmpty() && filePath.isEmpty()) {
+            val error = IllegalArgumentException("Either message or file must be provided")
+            onBroadcastFailed?.invoke("", error)
+            throw error
+        }
+        
+        // Validate message length
+        if (messageText.length > MeshrabiyaConstants.MAX_BROADCAST_MESSAGE_LENGTH) {
+            val error = IllegalArgumentException(
+                "Message exceeds ${MeshrabiyaConstants.MAX_BROADCAST_MESSAGE_LENGTH} character limit"
+            )
+            onBroadcastFailed?.invoke("", error)
+            throw error
+        }
+        
+        
+        
+        // Validate mesh is running
+        val handler = broadcastHandler
+        if (handler == null) {
+            val error = IllegalStateException("Mesh is not running")
+            onBroadcastFailed?.invoke("", error)
+            throw error
+        }
+        
+        // Delegate to handler with callback that invokes event handlers
+        handler.sendBroadcast(messageText, filePath, latitude, longitude) { result ->
+            if (result.isSuccess) {
+                val broadcastResult = result.getOrNull()
+                if (broadcastResult != null) {
+                    onBroadcastSent?.invoke(broadcastResult)
+                }
+            } else {
+                val error = result.exceptionOrNull() ?: Exception("Unknown error")
+                onBroadcastFailed?.invoke("", error)
+            }
+        }
+    }
+    
+    override fun registerBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit) {
+        val handler = broadcastHandler
+        if (handler != null) {
+            // Handler exists, register immediately
+            handler.addReceiveListener(listener)
+            Log.d(TAG, "Registered broadcast listener immediately")
+        } else {
+            // Handler not yet created, queue for later
+            if (pendingBroadcastListeners.size < MeshrabiyaConstants.DEFERRED_LISTENER_QUEUE_MAX_SIZE) {
+                pendingBroadcastListeners.add(listener)
+                Log.d(TAG, "Queued broadcast listener (pending=${pendingBroadcastListeners.size})")
+            } else {
+                Log.w(TAG, "Cannot queue broadcast listener: queue full (max=${MeshrabiyaConstants.DEFERRED_LISTENER_QUEUE_MAX_SIZE})")
+            }
+        }
+    }
+    
+   override fun unregisterBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit) {
+        broadcastHandler?.removeReceiveListener(listener)
+    }
 
+    /**
+     * Apply all queued listeners to the broadcast handler
+     * Called automatically when broadcastHandler is initialized
+     * Added: 2026-02-15 for deferred listener registration
+     */
+    private fun applyPendingBroadcastListeners() {
+        val handler = broadcastHandler ?: return
+        var appliedCount = 0
+        
+        while (true) {
+            val listener = pendingBroadcastListeners.poll() ?: break
+            handler.addReceiveListener(listener)
+            appliedCount++
+        }
+        
+        if (appliedCount > 0) {
+            Log.d(TAG, "Applied $appliedCount pending broadcast listeners")
+        }
+    }
 
 }
-

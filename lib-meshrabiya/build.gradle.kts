@@ -65,6 +65,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.msgpack:msgpack-core:0.8.22")
     implementation("androidx.appcompat:appcompat:1.6.1")
     // DEPRECATED: LiteRT support deferred to future implementation
