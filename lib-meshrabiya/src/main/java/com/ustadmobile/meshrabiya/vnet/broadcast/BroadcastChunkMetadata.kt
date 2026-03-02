@@ -1,8 +1,6 @@
 package com.ustadmobile.meshrabiya.vnet.broadcast
-
 /**
  * Internal metadata for chunk in transit
- * NOT a DTO - internal protocol class for broadcast chunking
  */
 data class BroadcastChunkMetadata(
     val chunkId: String,
@@ -12,10 +10,19 @@ data class BroadcastChunkMetadata(
     val totalChunks: Int,
     val chunkSize: Long,
     val totalFileSize: Long,
-    val hash: String
+    val hash: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 ) {
     fun toJson(): String {
-        return """{"chunkId":"$chunkId","fileId":"$fileId","fileName":"$fileName","chunkIndex":$chunkIndex,"totalChunks":$totalChunks,"chunkSize":$chunkSize,"totalFileSize":$totalFileSize,"hash":"$hash"}"""
+        // basic fields always present
+        var json = """{"chunkId":"$chunkId","fileId":"$fileId","fileName":"$fileName","chunkIndex":$chunkIndex,"totalChunks":$totalChunks,"chunkSize":$chunkSize,"totalFileSize":$totalFileSize,"hash":"$hash"}"""
+        // append location only when both coordinates are non‑null
+        if (latitude != null && longitude != null) {
+            json = json.removeSuffix("}") +
+                   ""","latitude":$latitude,"longitude":$longitude}"""
+        }
+        return json
     }
     
     companion object {
@@ -30,41 +37,20 @@ data class BroadcastChunkMetadata(
                 totalChunks = map["totalChunks"]?.toInt() ?: error("Missing totalChunks"),
                 chunkSize = map["chunkSize"]?.toLong() ?: error("Missing chunkSize"),
                 totalFileSize = map["totalFileSize"]?.toLong() ?: error("Missing totalFileSize"),
-                hash = map["hash"] ?: error("Missing hash")
+                hash = map["hash"] ?: error("Missing hash"),
+                latitude = map["latitude"]?.toDouble(),
+                longitude = map["longitude"]?.toDouble()
             )
         }
         
         private fun parseSimpleJson(json: String): Map<String, String> {
             // Simplified parser for our controlled JSON format
             val trimmed = json.trim().removePrefix("{").removeSuffix("}")
-            val pairs = mutableMapOf<String, String>()
-            
-            var key = ""
-            var value = ""
-            var inQuotes = false
-            var isKey = true
-            
-            for (char in trimmed) {
-                when {
-                    char == '"' -> inQuotes = !inQuotes
-                    char == ':' && !inQuotes -> isKey = false
-                    char == ',' && !inQuotes -> {
-                        pairs[key.trim()] = value.trim()
-                        key = ""
-                        value = ""
-                        isKey = true
-                    }
-                    else -> {
-                        if (isKey) key += char else value += char
-                    }
-                }
+            val pairs = trimmed.split(",")
+            return pairs.associate { pair ->
+                val (key, value) = pair.split(":")
+                key.trim().removeSurrounding("\"") to value.trim().removeSurrounding("\"")
             }
-            
-            if (key.isNotEmpty()) {
-                pairs[key.trim()] = value.trim()
-            }
-            
-            return pairs
         }
     }
 }

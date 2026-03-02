@@ -12,6 +12,8 @@ data class OutgoingBroadcastState(
     val fileName: String,
     val filePath: String,  // Full path to original file for NACK resend
     val totalChunks: Int,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     var chunksSent: Int = 0,
     val callback: (Result<com.ustadmobile.meshrabiya.api.model.BroadcastResultDto>) -> Unit,
     val startTime: Long = System.currentTimeMillis()

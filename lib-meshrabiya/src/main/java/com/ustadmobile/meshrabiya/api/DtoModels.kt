@@ -658,6 +658,8 @@ data class BroadcastResultDto(
     val fileId: String,
     val fileName: String,
     val totalChunks: Int,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     val successNodeIds: List<Int>,  // Nodes that acknowledged receipt
     val failedNodeIds: List<Int>,   // Nodes that failed or timed out
     val timestamp: Long = System.currentTimeMillis()
@@ -673,6 +675,8 @@ data class BroadcastReceivedDto(
     val fileName: String,
     val filePath: String,  // Path in Shared/ folder
     val senderNodeId: Int,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     val receivedAt: Long = System.currentTimeMillis(),
     val hasError: Boolean = false,
     val errorMessage: String? = null

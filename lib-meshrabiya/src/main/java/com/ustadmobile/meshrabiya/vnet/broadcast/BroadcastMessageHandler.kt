@@ -117,12 +117,14 @@ class BroadcastMessageHandler(
     fun sendBroadcast(
         messageText: String,
         filePath: String,
+        latitude: Double? = null,
+        longitude: Double? = null,
         callback: (Result<BroadcastResultDto>) -> Unit
     ) {
         virtualNode.connectionExecutor.execute {
             acquireWakeLock()  // Acquire CPU WakeLock at start
             try {
-                logger(Log.INFO, "$TAG Starting broadcast: message='$messageText', file='$filePath'")
+                logger(Log.INFO, "$TAG Starting broadcast: message='$messageText', file='$filePath', lat=$latitude, lon=$longitude")
                 
                 // Handle file if provided, otherwise text-only
                 val hasFile = filePath.isNotEmpty()
@@ -167,6 +169,8 @@ class BroadcastMessageHandler(
                     fileName = fileName,
                     filePath = filePath,  // Can be empty for text-only
                     totalChunks = totalChunks,
+                    latitude = latitude,
+                    longitude = longitude,
                     callback = callback
                 )
                 outgoingBroadcasts[broadcastId] = state
@@ -184,7 +188,9 @@ class BroadcastMessageHandler(
                         totalChunks = 0,
                         chunkSize = 0L,
                         totalFileSize = 0L,
-                        hash = ""
+                        hash = "",
+                        latitude = latitude,
+                        longitude = longitude
                     )
                     
                     val packetPayload = BroadcastPacketSerializer.serialize(
@@ -242,6 +248,8 @@ class BroadcastMessageHandler(
                         fileId = fileId,
                         fileName = fileName,
                         totalChunks = 0,
+                        latitude = latitude,
+                        longitude = longitude,
                         successNodeIds = emptyList(),
                         failedNodeIds = emptyList(),
                         timestamp = System.currentTimeMillis()
@@ -297,7 +305,9 @@ class BroadcastMessageHandler(
                         totalChunks = totalChunks,
                         chunkSize = chunkData.size.toLong(),
                         totalFileSize = fileBytes.size.toLong(),
-                        hash = hash
+                        hash = hash,
+                        latitude = latitude,
+                        longitude = longitude
                     )
                     
                     // Serialize packet payload
@@ -394,6 +404,8 @@ class BroadcastMessageHandler(
                     fileId = fileId,
                     fileName = file?.name ?: "",
                     totalChunks = totalChunks,
+                    latitude = latitude,
+                    longitude = longitude,
                     successNodeIds = emptyList(),  // Best effort broadcast, no ACKs
                     failedNodeIds = emptyList(),
                     timestamp = System.currentTimeMillis()
@@ -483,7 +495,7 @@ class BroadcastMessageHandler(
             // If text-only broadcast (totalChunks=0), complete immediately
             if (metadata.totalChunks == 0) {
                 logger(Log.INFO, "${broadcastTag(broadcastId)} ✅ Text-only broadcast received, message='$messageText'")
-                onTextOnlyBroadcastComplete(broadcastId, messageText, packet.header.fromAddr)
+                onTextOnlyBroadcastComplete(broadcastId, messageText, packet.header.fromAddr, metadata.latitude, metadata.longitude)
                 incomingBroadcasts.remove(broadcastId)
                 return
             }
@@ -544,6 +556,8 @@ class BroadcastMessageHandler(
                             fileName = state.metadata.fileName,
                             filePath = filePath ?: "",
                             senderNodeId = state.senderNodeId,
+                            latitude = state.metadata.latitude,
+                            longitude = state.metadata.longitude,
                             receivedAt = System.currentTimeMillis(),
                             hasError = false,
                             errorMessage = null
@@ -714,7 +728,9 @@ class BroadcastMessageHandler(
                         totalChunks = state.totalChunks,
                         chunkSize = chunkData.size.toLong(),
                         totalFileSize = fileBytes.size.toLong(),
-                        hash = hash
+                        hash = hash,
+                        latitude = state.latitude,
+                        longitude = state.longitude
                     )
                     
                     // Serialize packet
@@ -869,9 +885,11 @@ class BroadcastMessageHandler(
     private fun onTextOnlyBroadcastComplete(
         broadcastId: String,
         messageText: String,
-        senderNodeId: Int
+        senderNodeId: Int,
+        latitude: Double?,
+        longitude: Double?
     ) {
-        logger(Log.INFO, "${broadcastTag(broadcastId)} [TEXT_RECEPTION] Text-only broadcast received: message='$messageText', sender=$senderNodeId")
+        logger(Log.INFO, "${broadcastTag(broadcastId)} [TEXT_RECEPTION] Text-only broadcast received: message='$messageText', sender=$senderNodeId, lat=$latitude, lon=$longitude")
         
         // Notify listeners (no file path, no error)
         val notification = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
@@ -881,6 +899,8 @@ class BroadcastMessageHandler(
             fileName = "",
             filePath = "",
             senderNodeId = senderNodeId,
+            latitude = latitude,
+            longitude = longitude,
             receivedAt = System.currentTimeMillis(),
             hasError = false,
             errorMessage = null

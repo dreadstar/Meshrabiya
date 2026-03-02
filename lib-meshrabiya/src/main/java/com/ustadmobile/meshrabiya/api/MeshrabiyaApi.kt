@@ -238,7 +238,9 @@ interface MeshrabiyaApi {
      */
     suspend fun broadcastMessageAndFile(
         messageText: String = "",
-        filePath: String = ""
+        filePath: String = "",
+        latitude: Double? = null,
+        longitude: Double? = null
     )
     
     /**

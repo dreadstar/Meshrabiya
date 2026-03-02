@@ -1876,7 +1876,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     
     override suspend fun broadcastMessageAndFile(
         messageText: String,
-        filePath: String
+        filePath: String,
+        latitude: Double?,
+        longitude: Double?
     ) {
         // Validate at least one input provided
         if (messageText.isEmpty() && filePath.isEmpty()) {
@@ -1905,7 +1907,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
         
         // Delegate to handler with callback that invokes event handlers
-        handler.sendBroadcast(messageText, filePath) { result ->
+        handler.sendBroadcast(messageText, filePath, latitude, longitude) { result ->
             if (result.isSuccess) {
                 val broadcastResult = result.getOrNull()
                 if (broadcastResult != null) {
