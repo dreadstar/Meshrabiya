@@ -62,6 +62,9 @@ import com.ustadmobile.meshrabiya.util.toHash
 import com.ustadmobile.meshrabiya.storage.StorageDeviceType
 import com.ustadmobile.meshrabiya.api.model.User
 import com.ustadmobile.meshrabiya.api.model.*
+
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -302,10 +305,18 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         emergentRoleManager?.getCurrentMeshRoles()?.map { it.name } ?: emptyList()
     
     /**
-     * Expose currentMeshRoles StateFlow for UI observation
+     * Expose currentMeshRoles StateFlow for UI observation as DTOs.
+     * The underlying EmergentRoleManager holds internal MeshRole values;
+     * convert them to MeshRoleDto for the application layer.
      */
-    val currentMeshRolesFlow: kotlinx.coroutines.flow.StateFlow<Set<MeshRole>>?
+    val currentMeshRolesFlow: kotlinx.coroutines.flow.StateFlow<Set<MeshRoleDto>>?
         get() = emergentRoleManager?.currentMeshRoles
+            ?.map { roles -> roles.map { it.toDto() }.toSet() }
+            ?.stateIn(
+                CoroutineScope(Dispatchers.Default),
+                SharingStarted.Eagerly,
+                emptySet()
+            )
 
     override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
     
