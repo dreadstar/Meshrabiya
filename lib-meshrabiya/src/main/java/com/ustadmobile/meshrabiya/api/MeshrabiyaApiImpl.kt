@@ -4,6 +4,8 @@ import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
 import android.content.Context
 import android.net.Uri
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import androidx.datastore.preferences.core.Preferences
@@ -119,6 +121,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // --- Network Overview Metrics StateFlow ---
     private val _networkOverviewMetricsFlow = MutableStateFlow(NetworkOverviewMetricsDto(0L, 0L, 0))
     override val networkOverviewMetricsFlow: StateFlow<NetworkOverviewMetricsDto> = _networkOverviewMetricsFlow.asStateFlow()
+
+    // Non-mesh WiFi connection state Flow — updated by connectToNonMeshWifi/disconnectFromNonMeshWifi
+    private val _nonMeshWifiState = MutableStateFlow(NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE))
 
     private var metricsMonitorJob: Job? = null
     private var distributedStorageManager: DistributedStorageManager? = null
@@ -1970,6 +1975,88 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         if (appliedCount > 0) {
             Log.d(TAG, "Applied $appliedCount pending broadcast listeners")
         }
+    }
+
+    // ========================================
+    // WiFi Internet Connection Implementations (WIFI_AP_CON / 11.5 / S5b)
+    // ========================================
+
+    override suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto {
+        val node = myNode ?: return NonMeshWifiConnectionStateDto(
+            status = NonMeshWifiStatusDto.FAILED,
+            errorMessage = "Mesh not initialized",
+        )
+        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
+        val result = node.meshrabiyaWifiManager.connectToInternetWifi(ssid, passphrase)
+        return result.fold(
+            onSuccess = {
+                val connected = NonMeshWifiConnectionStateDto(
+                    status = NonMeshWifiStatusDto.CONNECTED,
+                    connectedSsid = ssid,
+                )
+                _nonMeshWifiState.value = connected
+                connected
+            },
+            onFailure = { error ->
+                val failed = NonMeshWifiConnectionStateDto(
+                    status = NonMeshWifiStatusDto.FAILED,
+                    errorMessage = error.message,
+                )
+                _nonMeshWifiState.value = failed
+                failed
+            }
+        )
+    }
+
+    override suspend fun disconnectFromNonMeshWifi(): Boolean {
+        val node = myNode ?: return false
+        node.meshrabiyaWifiManager.disconnectFromInternetWifi()
+        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE)
+        return true
+    }
+
+    override fun getNonMeshWifiStateFlow(): StateFlow<NonMeshWifiConnectionStateDto> {
+        return _nonMeshWifiState.asStateFlow()
+    }
+
+    override suspend fun scanAvailableWifiNetworks(): List<NonMeshWifiNetworkDto> {
+        val ctx = appContext ?: return emptyList()
+        val wifiManager = ctx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return emptyList()
+        // Trigger a fresh scan; startScan() is throttled on API 28+ but best-effort.
+        // Wait briefly to allow the OS to update scan results before reading.
+        @Suppress("DEPRECATION")
+        wifiManager.startScan()
+        kotlinx.coroutines.delay(1500)
+        @Suppress("DEPRECATION")
+        val results = wifiManager.scanResults ?: return emptyList()
+        return results
+            .filter { it.SSID.isNotEmpty() }
+            .map { scanResult ->
+                NonMeshWifiNetworkDto(
+                    ssid = scanResult.SSID,
+                    bssid = scanResult.BSSID,
+                    signalStrength = scanResult.level,
+                    isSecured = scanResult.capabilities.contains("WPA") ||
+                                scanResult.capabilities.contains("WEP"),
+                )
+            }
+            .sortedByDescending { it.signalStrength }
+    }
+
+    override fun isInternetWifiFeatureAvailable(): Boolean {
+        val node = myNode ?: return false
+        val wifiState = node.meshrabiyaWifiManager.currentWifiState
+        if (wifiState.hotspotIsStarted && wifiState.concurrentApStationSupported) {
+            return true
+        }
+        if (!wifiState.hotspotIsStarted &&
+            wifiState.wifiStationState.status == com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState.Status.AVAILABLE &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            wifiState.staStaConcurrencySupported) {
+            return true
+        }
+        return false
     }
 
 }

@@ -7,6 +7,7 @@ import com.ustadmobile.meshrabiya.ext.addressToByteArray
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.ext.requireAddressAsInt
 import com.ustadmobile.meshrabiya.log.MNetLogger
+import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.vnet.Protocol
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
@@ -141,7 +142,7 @@ open class VirtualDatagramSocketImpl(
                 //For now, use null (will fallback to global preference)
                 val resolvedType = resolver.resolveGatewayType(virtualPacket, sourcePackageName = null)
                 //Update packet header in-place
-                virtualPacket.data[VirtualPacketHeader.HEADER_SIZE - 3] = resolvedType //gatewayType at offset 18
+                virtualPacket.data[MeshrabiyaConstants.VIRTUAL_PACKET_GATEWAY_TYPE_OFFSET] = resolvedType //gatewayType offset (HEADER_SIZE - 3 = 18)
             }
 
             // === METRICS: Increment uploadBytes using public method ===

@@ -64,6 +64,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import android.net.wifi.WifiNetworkSuggestion
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  *
@@ -88,14 +91,7 @@ class MeshrabiyaWifiManagerAndroid(
         ioExecutorService = ioExecutor,
     ),
 
-    private val localOnlyHotspotManager: LocalOnlyHotspotManager = LocalOnlyHotspotManager(
-        appContext = appContext,
-        logger = logger,
-        name = localNodeAddr.addressToDotNotation(),
-        localNodeAddr = localNodeAddr,
-        router = router,
-        dataStore = dataStore,
-    )
+    
 ) : Closeable, MeshrabiyaWifiManager {
 
     private val logPrefix = "[MeshrabiyaWifiManagerAndroid: ${localNodeAddr.addressToDotNotation()}] "
@@ -198,6 +194,16 @@ class MeshrabiyaWifiManagerAndroid(
         concurrentApStationSupported = false  // Start with false, detect asynchronously in init
     ))
 
+    private val localOnlyHotspotManager: LocalOnlyHotspotManager = LocalOnlyHotspotManager(
+        appContext = appContext,
+        logger = logger,
+        name = localNodeAddr.addressToDotNotation(),
+        localNodeAddr = localNodeAddr,
+        router = router,
+        dataStore = dataStore,
+        concurrentApStationSupported = { _state.value.concurrentApStationSupported },
+    )
+
     override val state: Flow<MeshrabiyaWifiState> = _state.asStateFlow()
 
     /**
@@ -207,6 +213,31 @@ class MeshrabiyaWifiManagerAndroid(
      * (e.g. Android will see activity on the network).
      */
     private val stationBoundSockets = AtomicReference<Pair<VirtualNodeDatagramSocket, ChainSocketServer>?>()
+
+    /** Synchronous read of AP+STA concurrency support flag (API 30+). */
+    val concurrentApStationSupported: Boolean
+        get() = _state.value.concurrentApStationSupported
+
+    /** Synchronous read of STA/STA concurrency support flag (API 31+). */
+    val staStaConcurrencySupported: Boolean
+        get() = _state.value.staStaConcurrencySupported
+
+    /** Synchronous snapshot of the current WiFi state. */
+    val currentWifiState: MeshrabiyaWifiState
+        get() = _state.value
+
+    /**
+     * Holds the Network object for the current internet WiFi connection.
+     * Set by connectToInternetWifi() and cleared by disconnectFromInternetWifi().
+     * Used by ClearnetGatewayForwarder to bind outbound sockets to the internet interface.
+     */
+    @Volatile
+    var internetWifiNetwork: Network? = null
+        private set
+
+    /** NetworkCallback registered for the internet WiFi connection. Cleared on disconnect. */
+    @Volatile
+    private var internetWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val closed = AtomicBoolean(false)
 
@@ -256,11 +287,14 @@ class MeshrabiyaWifiManagerAndroid(
 
         // Detect concurrent AP+Station support after WiFi system initialization
         nodeScope.launch {
-            val supported = detectConcurrentSupport()
+            val (apStaSupported, staStaSupported) = detectWifiConcurrencyCapabilities()
             _state.update { prev ->
-                prev.copy(concurrentApStationSupported = supported)
+                prev.copy(
+                    concurrentApStationSupported = apStaSupported,
+                    staStaConcurrencySupported = staStaSupported,
+                )
             }
-            logger(Log.INFO, "$logPrefix Concurrent AP+Station support detected: $supported")
+            logger(Log.INFO, "$logPrefix WiFi concurrency: AP+STA=$apStaSupported, STA+STA=$staStaSupported")
         }
 
     }
@@ -269,17 +303,32 @@ class MeshrabiyaWifiManagerAndroid(
      * Detect if device supports concurrent AP+Station mode.
      * Delays briefly to ensure WiFi system is fully initialized before querying capability.
      */
-    private suspend fun detectConcurrentSupport(): Boolean {
-        return if (Build.VERSION.SDK_INT >= 30) {
-            // Brief delay to allow WiFi system to fully initialize
-            delay(200)
-            val supported = wifiManager.isStaApConcurrencySupported
-            logger(Log.INFO, "$logPrefix isStaApConcurrencySupported = $supported (SDK ${Build.VERSION.SDK_INT})")
-            supported
+    /**
+     * Detect device WiFi concurrency capabilities.
+     * Returns Pair(concurrentApStationSupported, staStaConcurrencySupported).
+     */
+    private suspend fun detectWifiConcurrencyCapabilities(): Pair<Boolean, Boolean> {
+        delay(WIFI_CONCURRENCY_DETECT_INIT_DELAY_ANDROID_MS) // brief delay for WiFi system initialization
+
+        val apStaSupported = if (Build.VERSION.SDK_INT >= 30) {
+            val result = wifiManager.isStaApConcurrencySupported
+            logger(Log.INFO, "$logPrefix isStaApConcurrencySupported = $result (SDK ${Build.VERSION.SDK_INT})")
+            result
         } else {
-            logger(Log.INFO, "$logPrefix Concurrent AP+Station not supported (SDK < 30, actual: ${Build.VERSION.SDK_INT})")
+            logger(Log.INFO, "$logPrefix AP+STA not supported: SDK ${Build.VERSION.SDK_INT} < 30")
             false
         }
+
+        val staStaSupported = if (Build.VERSION.SDK_INT >= 31) {
+            val result = wifiManager.isStaConcurrencyForLocalOnlyConnectionsSupported
+            logger(Log.INFO, "$logPrefix isStaConcurrencyForLocalOnlyConnectionsSupported = $result (SDK ${Build.VERSION.SDK_INT})")
+            result
+        } else {
+            logger(Log.INFO, "$logPrefix STA/STA not supported: SDK ${Build.VERSION.SDK_INT} < 31")
+            false
+        }
+
+        return apStaSupported to staStaSupported
     }
 
     private fun assertNotClosed() {
@@ -309,7 +358,7 @@ class MeshrabiyaWifiManagerAndroid(
                     wifiManager.disconnect()
                     logger(Log.DEBUG, "$logPrefix WiFi disconnected successfully", null)
                     // Give it a moment to disconnect
-                    delay(500)
+                    delay(WIFI_CLIENT_DISCONNECT_SETTLE_DELAY_ANDROID_MS)
                 } catch (e: Exception) {
                     logger(Log.WARN, "$logPrefix Failed to disconnect WiFi: ${e.message}", e)
                 }
@@ -494,11 +543,19 @@ class MeshrabiyaWifiManagerAndroid(
         if (resultState.network != null) {
             logger(Log.INFO, "$logPrefix connectToHotspot: ${config.ssid} - success status=${resultState.status}")
             
-            // CRITICAL: Bind all app sockets to this mesh network to prevent switching back to regular WiFi
-            val bindSuccess = connectivityManager.bindProcessToNetwork(resultState.network)
-            logger(Log.INFO, "$logPrefix connectToHotspot: bindProcessToNetwork result=$bindSuccess", null)
-            if (!bindSuccess) {
-                logger(Log.WARN, "$logPrefix connectToHotspot: Failed to bind process to mesh network - device may switch networks", null)
+            // Bind process to mesh network EXCEPT in AP+STA mode (hotspot running + concurrent device),
+            // where a process-wide bind would redirect internet-forwarding sockets onto the mesh,
+            // creating a routing loop. In STA/STA mode the process bind is safe and needed.
+            val hotspotRunning = _state.value.hotspotIsStarted
+            val skipProcessBinding = hotspotRunning && _state.value.concurrentApStationSupported
+            if (!skipProcessBinding) {
+                val bindSuccess = connectivityManager.bindProcessToNetwork(resultState.network)
+                logger(Log.INFO, "$logPrefix connectToHotspot: bindProcessToNetwork result=$bindSuccess (hotspotRunning=$hotspotRunning)", null)
+                if (!bindSuccess) {
+                    logger(Log.WARN, "$logPrefix connectToHotspot: Failed to bind process to mesh network - device may switch networks", null)
+                }
+            } else {
+                logger(Log.INFO, "$logPrefix connectToHotspot: AP+STA mode — skipping process-wide binding", null)
             }
             
             return resultState.network
@@ -506,6 +563,122 @@ class MeshrabiyaWifiManagerAndroid(
             logger(Log.ERROR, "$logPrefix connectToHotspot: ${config.ssid} - fail status=${resultState.status}")
             throw WifiConnectException("ConnectToHotspot: ${config.ssid} status=${resultState.status} network=null")
         }
+    }
+
+    /**
+     * Connect to an internet (non-mesh) WiFi network while the mesh remains active.
+     *
+     * AP+STA mode (hotspot running): requires API 30 + isStaApConcurrencySupported = true.
+     * STA/STA mode (Join Mesh, no hotspot): requires API 31 + isStaStaConcurrencySupported = true.
+     *
+     * On success: stores the resulting Network in [internetWifiNetwork] for per-socket binding
+     * by ClearnetGatewayForwarder. Does NOT call bindProcessToNetwork.
+     */
+    suspend fun connectToInternetWifi(ssid: String, passphrase: String): Result<Network> {
+        val currentState = _state.value
+        val hotspotRunning = currentState.hotspotIsStarted
+
+        if (hotspotRunning) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                return Result.failure(IllegalStateException(
+                    "Internet WiFi while hotspot running requires API 30+ (AP+STA). Device SDK: ${Build.VERSION.SDK_INT}"
+                ))
+            }
+            if (!currentState.concurrentApStationSupported) {
+                return Result.failure(IllegalStateException(
+                    "This device does not support concurrent AP+STA mode (isStaApConcurrencySupported = false)"
+                ))
+            }
+        } else {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return Result.failure(IllegalStateException(
+                    "Internet WiFi while in Join Mesh mode requires API 31+ (STA/STA). Device SDK: ${Build.VERSION.SDK_INT}"
+                ))
+            }
+            if (!currentState.staStaConcurrencySupported) {
+                return Result.failure(IllegalStateException(
+                    "This device does not support simultaneous dual-STA mode (isStaStaConcurrencySupported = false)"
+                ))
+            }
+        }
+
+        val suggestion = if (passphrase.isEmpty()) {
+            WifiNetworkSuggestion.Builder()
+                .setSsid(ssid)
+                .build()
+        } else {
+            WifiNetworkSuggestion.Builder()
+                .setSsid(ssid)
+                .setWpa2Passphrase(passphrase)
+                .build()
+        }
+
+        val suggestionList = listOf(suggestion)
+        val addStatus = wifiManager.addNetworkSuggestions(suggestionList)
+        if (addStatus != WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+            return Result.failure(IllegalStateException(
+                "addNetworkSuggestions failed: status=$addStatus for SSID=$ssid"
+            ))
+        }
+
+        logger(Log.INFO, "$logPrefix connectToInternetWifi: suggestion added for SSID=$ssid, hotspotRunning=$hotspotRunning")
+
+        return suspendCancellableCoroutine { continuation ->
+            val networkRequest = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .build()
+
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    logger(Log.INFO, "$logPrefix connectToInternetWifi: onAvailable: SSID=$ssid network=$network")
+                    internetWifiNetwork = network
+                    if (continuation.isActive) {
+                        continuation.resume(Result.success(network))
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    logger(Log.WARN, "$logPrefix connectToInternetWifi: onLost: network=$network")
+                    if (internetWifiNetwork == network) {
+                        internetWifiNetwork = null
+                    }
+                }
+
+                override fun onUnavailable() {
+                    logger(Log.WARN, "$logPrefix connectToInternetWifi: onUnavailable for SSID=$ssid")
+                    if (continuation.isActive) {
+                        continuation.resume(Result.failure(IllegalStateException(
+                            "Internet WiFi network unavailable for SSID=$ssid"
+                        )))
+                    }
+                }
+            }
+
+            internetWifiNetworkCallback = callback
+            connectivityManager.requestNetwork(networkRequest, callback)
+
+            continuation.invokeOnCancellation {
+                connectivityManager.unregisterNetworkCallback(callback)
+                wifiManager.removeNetworkSuggestions(suggestionList)
+                internetWifiNetwork = null
+                internetWifiNetworkCallback = null
+            }
+        }
+    }
+
+    /**
+     * Disconnect from the internet WiFi connection and clear all tracking state.
+     */
+    fun disconnectFromInternetWifi() {
+        val callback = internetWifiNetworkCallback
+        if (callback != null) {
+            connectivityManager.unregisterNetworkCallback(callback)
+            internetWifiNetworkCallback = null
+        }
+        internetWifiNetwork = null
+        logger(Log.INFO, "$logPrefix disconnectFromInternetWifi: cleared internet WiFi network and callback")
     }
 
     override suspend fun connectToHotspot(
@@ -622,7 +795,7 @@ class MeshrabiyaWifiManagerAndroid(
                     logger(Log.INFO, "$logPrefix disconnectStation: Disabling WiFi subsystem to prevent reconnection")
                     try {
                         wifiManager.isWifiEnabled = false
-                        delay(500)
+                        delay(WIFI_SUBSYSTEM_DISABLE_SETTLE_DELAY_ANDROID_MS)
                         logger(Log.INFO, "$logPrefix disconnectStation: WiFi subsystem disabled successfully")
                     } catch (e: SecurityException) {
                         logger(Log.ERROR, "$logPrefix disconnectStation: PERMISSION DENIED - Cannot disable WiFi", e)
@@ -658,7 +831,7 @@ class MeshrabiyaWifiManagerAndroid(
         port: Int, bindAddress:
         InetAddress?,
         maxAttempts: Int,
-        interval: Long = 200,
+        interval: Long = SOCKET_BIND_RETRY_INTERVAL_ANDROID_MS,
     ): DatagramSocket {
         for(i in 0 until maxAttempts) {
             try {
@@ -716,7 +889,7 @@ class MeshrabiyaWifiManagerAndroid(
                  * link local address.
                  */
                 try {
-                    createBoundSocket(socketPort, netAddress, 10).also {
+                    createBoundSocket(socketPort, netAddress, WIFI_DIRECT_SOCKET_BIND_MAX_ATTEMPTS_ANDROID).also {
                         logger(Log.DEBUG, "$logPrefix : createStationNetworkBoundSockets : succeeded on retry")
                     }
                 }catch(e: IOException) {
@@ -870,6 +1043,44 @@ class MeshrabiyaWifiManagerAndroid(
         const val HOTSPOT_TIMEOUT = 10000L
 
         const val WIFI_DIRECT_SERVICE_TYPE = "_meshr._tcp"
+
+        /**
+         * Settle delay (ms) before querying Android WiFi concurrency APIs in
+         * detectWifiConcurrencyCapabilities(). Gives WifiManager time to fully initialize
+         * before isStaApConcurrencySupported / isStaStaConcurrencySupported are called.
+         * _ANDROID suffix: Android-platform-specific timing, not a mesh protocol value.
+         */
+        const val WIFI_CONCURRENCY_DETECT_INIT_DELAY_ANDROID_MS = 200L
+
+        /**
+         * Settle delay (ms) after `wifiManager.disconnect()` in requestHotspot().
+         * Allows the Android WiFi client association to fully drop before the hotspot starts.
+         * _ANDROID suffix: Android-platform-specific timing, not a mesh protocol value.
+         */
+        const val WIFI_CLIENT_DISCONNECT_SETTLE_DELAY_ANDROID_MS = 500L
+
+        /**
+         * Settle delay (ms) after `wifiManager.isWifiEnabled = false` in disconnectStation().
+         * Allows the Android WiFi subsystem to fully shut down before continuing.
+         * _ANDROID suffix: Android-platform-specific timing, not a mesh protocol value.
+         */
+        const val WIFI_SUBSYSTEM_DISABLE_SETTLE_DELAY_ANDROID_MS = 500L
+
+        /**
+         * Default retry interval (ms) between socket bind attempts in createBoundSocket().
+         * On Android, link-local IPv6 addresses on the WiFi Direct station interface may not
+         * be immediately available after network bring-up; short retries cover the window.
+         * _ANDROID suffix: Android-platform-specific timing, not a mesh protocol value.
+         */
+        const val SOCKET_BIND_RETRY_INTERVAL_ANDROID_MS = 200L
+
+        /**
+         * Maximum socket bind attempts in createBoundSocket() for WiFi Direct connections.
+         * Android 13+ may delay link-local IPv6 address assignment on the station interface;
+         * retrying at SOCKET_BIND_RETRY_INTERVAL_ANDROID_MS intervals covers the window.
+         * _ANDROID suffix: Android-platform-specific count, not a mesh protocol value.
+         */
+        const val WIFI_DIRECT_SOCKET_BIND_MAX_ATTEMPTS_ANDROID = 10
 
     }
 

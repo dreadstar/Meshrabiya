@@ -698,3 +698,54 @@ data class BroadcastProgressDto(
 //     val downloadRateBytesPerSec: Long,
 //     val activeNodeCount: Int
 // )
+
+// ========================================
+// WiFi Internet Connection DTOs
+// Added for WIFI_AP_CON feature (11.4)
+// ========================================
+
+/**
+ * Represents a discovered WiFi network available for internet connection.
+ * Returned by MeshrabiyaApi.scanAvailableWifiNetworks().
+ */
+data class NonMeshWifiNetworkDto(
+    val ssid: String,
+    val bssid: String,
+    val signalStrength: Int,
+    val isSecured: Boolean,
+)
+
+/**
+ * Request to connect to a non-mesh WiFi network.
+ * Used internally; the API takes ssid + passphrase directly.
+ */
+data class WifiConnectionRequestDto(
+    val ssid: String,
+    val passphrase: String,
+)
+
+/**
+ * State of the current non-mesh WiFi internet connection.
+ * Observed via MeshrabiyaApi.getNonMeshWifiStateFlow().
+ */
+data class NonMeshWifiConnectionStateDto(
+    val status: NonMeshWifiStatusDto,
+    val connectedSsid: String? = null,
+    val errorMessage: String? = null,
+)
+
+/**
+ * Status values for the non-mesh WiFi internet connection lifecycle.
+ * Named with Dto suffix following [MeshStateDto] convention — observed-state enum in api.model.
+ * Contrast with [GatewayPreference] (api package) which is a user policy enum.
+ */
+enum class NonMeshWifiStatusDto {
+    /** No internet WiFi connection active or attempted. */
+    IDLE,
+    /** Connection attempt is in progress (WifiNetworkSuggestion submitted, awaiting onAvailable). */
+    CONNECTING,
+    /** Connected and internet WiFi Network object is available. */
+    CONNECTED,
+    /** Connection attempt failed (onUnavailable or addNetworkSuggestions returned error). */
+    FAILED,
+}

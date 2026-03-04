@@ -41,6 +41,11 @@ class LocalOnlyHotspotManager(
     private val localNodeAddr: Int,
     private val router: VirtualRouter,
     private val dataStore: DataStore<Preferences>,
+    // Returns true when the device supports concurrent AP+STA.
+    // When true, active WiFi connections are intentional (internet WiFi in MESH_ROUTER mode)
+    // and must not be suppressed by the hotspot monitor.
+    // Read at runtime (not construction time) to reflect live detection state.
+    private val concurrentApStationSupported: () -> Boolean = { false },
 ) {
     private val appContext = appContext
     private val logPrefix: String = "[LocalOnlyHotspotManager: $name]"
@@ -178,29 +183,36 @@ class LocalOnlyHotspotManager(
                 
                 logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR #$checkCount] Hotspot: $currentStatus | WiFi: $isWifiConnected | SSID: $wifiSSID")
                 
-                // PHASE 2: Continuous WiFi Suppression - actively prevent reconnection
+                // PHASE 2: Continuous WiFi Suppression - actively prevent reconnection.
+                // SKIP suppression when concurrent AP+STA is supported: the WiFi connection
+                // is the intentional MESH_ROUTER internet link and must not be removed.
                 if (currentStatus == HotspotStatus.STARTED && isWifiConnected && wifiSSID != "<unknown ssid>") {
-                    wifiReconnectCount++
-                    logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: WiFi reconnected (#$wifiReconnectCount) to $wifiSSID! Forcing disconnect...")
-                    
-                    try {
-                        // Use removeNetwork() to force disconnection
-                        val reconnectedNetworkId = wifiInfo.networkId
-                        wifiManager.disconnect()
-                        wifiManager.removeNetwork(reconnectedNetworkId)
-                        wifiManager.configuredNetworks?.forEach { config ->
-                            wifiManager.disableNetwork(config.networkId)
-                        }
-                        logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] WiFi disconnected, removed network, and disabled all networks")
+                    if (concurrentApStationSupported()) {
+                        // AP+STA mode: WiFi connection is the internet link. Log and do NOT suppress.
+                        logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR] AP+STA mode: WiFi ($wifiSSID) is internet link \u2014 suppression skipped")
+                    } else {
+                        wifiReconnectCount++
+                        logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: WiFi reconnected (#$wifiReconnectCount) to $wifiSSID! Forcing disconnect...")
                         
-                        // Alert every 3 reconnections
-                        if (wifiReconnectCount % 3 == 0) {
-                            logger(Log.WARN, "$logPrefix [HOTSPOT MONITOR] WiFi interference: $wifiReconnectCount reconnection attempts suppressed")
-                            // Trigger UI notification
-                            router.notifyHotspotInterference(wifiReconnectCount)
+                        try {
+                            // Use removeNetwork() to force disconnection
+                            val reconnectedNetworkId = wifiInfo.networkId
+                            wifiManager.disconnect()
+                            wifiManager.removeNetwork(reconnectedNetworkId)
+                            wifiManager.configuredNetworks?.forEach { config ->
+                                wifiManager.disableNetwork(config.networkId)
+                            }
+                            logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] WiFi disconnected, removed network, and disabled all networks")
+                            
+                            // Alert every 3 reconnections
+                            if (wifiReconnectCount % 3 == 0) {
+                                logger(Log.WARN, "$logPrefix [HOTSPOT MONITOR] WiFi interference: $wifiReconnectCount reconnection attempts suppressed")
+                                // Trigger UI notification
+                                router.notifyHotspotInterference(wifiReconnectCount)
+                            }
+                        } catch (e: Exception) {
+                            logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] Failed to disconnect WiFi", e)
                         }
-                    } catch (e: Exception) {
-                        logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] Failed to disconnect WiFi", e)
                     }
                 }
                 

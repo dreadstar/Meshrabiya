@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 
 
 
@@ -79,6 +80,11 @@ class AndroidVirtualNode(
         dataStore = dataStore,
         json = json,
         onNewWifiConnectionListener = newWifiConnectionListener,
+    )
+
+    private val clearnetGatewayForwarder: ClearnetGatewayForwarder = ClearnetGatewayForwarder(
+        logger = logger,
+        logPrefix = "ClearnetGateway",
     )
 
     init {
@@ -174,18 +180,20 @@ class AndroidVirtualNode(
     ): LocalHotspotResponse? {
         updateBluetoothState()
         
-        // CRITICAL: Disconnect from regular WiFi before starting hotspot
-        // Even on devices with concurrent AP+STA support, we MUST be on the hotspot network
-        // to receive packets from joining devices. If we stay on regular WiFi, we'll be on
-        // a different subnet (e.g., 192.168.1.x vs 192.168.121.x) and can't communicate.
         if (enabled) {
-            logger(Log.INFO, "setWifiHotspotEnabled: Disconnecting from station (regular WiFi) before starting hotspot", null)
-            meshrabiyaWifiManager.disconnectStation()
-            
-            // CRITICAL: Wait for WiFi disconnect to complete and verify
-            logger(Log.INFO, "setWifiHotspotEnabled: Waiting 2 seconds for WiFi disconnect to stabilize...", null)
-            kotlinx.coroutines.delay(2000)
-            logger(Log.INFO, "setWifiHotspotEnabled: Proceeding with hotspot creation", null)
+            // On concurrent AP+STA capable devices (API 30+), do NOT disconnect the station.
+            // The station WiFi is the internet connection that MESH_ROUTER is designed to keep.
+            // On non-concurrent devices (or devices where this hasn't been detected yet),
+            // the existing disconnect-before-hotspot behavior is preserved.
+            if (!meshrabiyaWifiManager.currentWifiState.concurrentApStationSupported) {
+                logger(Log.INFO, "setWifiHotspotEnabled: Disconnecting from station (non-concurrent device)", null)
+                meshrabiyaWifiManager.disconnectStation()
+                logger(Log.INFO, "setWifiHotspotEnabled: Waiting 2 seconds for WiFi disconnect to stabilize...", null)
+                kotlinx.coroutines.delay(2000)
+                logger(Log.INFO, "setWifiHotspotEnabled: Proceeding with hotspot creation", null)
+            } else {
+                logger(Log.INFO, "setWifiHotspotEnabled: AP+STA concurrent device \u2014 keeping internet WiFi, proceeding directly", null)
+            }
         }
         
         return super.setWifiHotspotEnabled(enabled, preferredBand, hotspotType)
@@ -219,6 +227,17 @@ class AndroidVirtualNode(
     override fun notifyHotspotLost(reason: String) {
         super.notifyHotspotLost(reason)
         logger(Log.ERROR, "[HOTSPOT ALERT] Hotspot lost: $reason", null)
+    }
+
+    override fun onClearnetGatewayPacket(packet: VirtualPacket): Boolean {
+        val internetNetwork = meshrabiyaWifiManager.internetWifiNetwork
+        return if (internetNetwork != null) {
+            clearnetGatewayForwarder.forward(packet, internetNetwork)
+            true
+        } else {
+            logger(Log.WARN, "$logPrefix CLEARNET gateway: no internet WiFi network bound, dropping packet", null)
+            false
+        }
     }
 
     

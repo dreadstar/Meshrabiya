@@ -521,7 +521,7 @@ abstract class VirtualNode(
     }
 
     fun createDatagramSocket(): DatagramSocket {
-        return VirtualDatagramSocket2(this, addressAsInt, logger, this)
+        return VirtualDatagramSocket2(this, addressAsInt, logger, this, appContext)
     }
 
     fun createBoundDatagramSocket(port: Int): DatagramSocket {
@@ -878,6 +878,11 @@ abstract class VirtualNode(
                 logger(Log.INFO, "$logPrefix Routed packet via proxy $proxyHost:$proxyPort", null)
                 return
             }
+        }
+
+        // --- CLEARNET GATEWAY DISPATCH ---
+        if (currentRoles.contains(MeshRole.CLEARNET_GATEWAY) && shouldRouteViaProxy(packet)) {
+            if (onClearnetGatewayPacket(packet)) return
         }
 
         if(packet.header.toAddr == addressAsInt) {
@@ -1399,13 +1404,17 @@ abstract class VirtualNode(
     }
 
     // --- Helper: Should route via proxy ---
-    private fun shouldRouteViaProxy(packet: VirtualPacket): Boolean {
-        // Define logic for which packets should go via proxy (Tor)
-        // Example: packets destined for Internet (not mesh addresses)
-        // Here, you may want to check packet.header.toAddr or other fields
-        // For now, route all non-mesh traffic if proxy is active and TOR_GATEWAY role is present
-        return true
+    protected open fun shouldRouteViaProxy(packet: VirtualPacket): Boolean {
+        val destInetAddress = getInetAddressFor(packet.header.toAddr)
+        return !destInetAddress.prefixMatches(networkPrefixLength, address)
     }
+
+    /**
+     * Called when this node is a CLEARNET_GATEWAY and a non-mesh packet arrives.
+     * Override in AndroidVirtualNode to forward via the internet WiFi network.
+     * @return true if the packet was handled (caller should return), false to fall through.
+     */
+    protected open fun onClearnetGatewayPacket(packet: VirtualPacket): Boolean = false
 
     // === Gateway Routing Methods (Phase 4) ===
     

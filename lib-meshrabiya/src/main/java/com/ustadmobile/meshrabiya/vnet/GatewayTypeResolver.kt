@@ -104,8 +104,15 @@ class GatewayTypeResolver(
             }
         }
 
-        // Precedence 3: Global gateway preference (fallback)
-        val preference = MeshrabiyaApiImpl.getInstance().getGatewayPreference()
+        // Precedence 3: Global gateway preference (fallback).
+        // runCatching guards against MeshrabiyaApiImpl singleton not yet initialized.
+        // Default to GATEWAY_TYPE_NONE to prevent a crash during the startup window.
+        val preference = runCatching { MeshrabiyaApiImpl.getInstance().getGatewayPreference() }
+            .getOrNull()
+        if (preference == null) {
+            Log.w(TAG, "resolveGatewayType: MeshrabiyaApiImpl not initialized — defaulting to GATEWAY_TYPE_NONE")
+            return VirtualPacketHeader.GATEWAY_TYPE_NONE
+        }
         val gatewayType = applyGlobalPreference(preference)
         Log.d(TAG, "No VPN rule for package, using global preference $preference → gatewayType=$gatewayType")
         return gatewayType

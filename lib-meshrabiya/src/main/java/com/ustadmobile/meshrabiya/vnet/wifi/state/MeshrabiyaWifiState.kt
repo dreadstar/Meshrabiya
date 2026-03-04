@@ -13,6 +13,12 @@ data class MeshrabiyaWifiState(
     val localOnlyHotspotState: LocalOnlyHotspotState = LocalOnlyHotspotState(),
     val errorCode: Int = 0,
     val concurrentApStationSupported: Boolean = false,
+    // True if the device can hold two simultaneous WiFi station (STA) connections.
+    // Detected via WifiManager.isStaStaConcurrencySupported() at API 31+.
+    // When true, a device in pure station mode (Join Mesh) can simultaneously connect
+    // to an internet WiFi network via WifiNetworkSuggestion without dropping the mesh.
+    // When false (default), the STA/STA path in connectToInternetWifi() is unavailable.
+    val staStaConcurrencySupported: Boolean = false,
 ) {
 
     /**

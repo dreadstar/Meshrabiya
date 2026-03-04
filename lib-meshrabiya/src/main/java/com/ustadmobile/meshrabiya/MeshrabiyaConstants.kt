@@ -83,6 +83,28 @@ object MeshrabiyaConstants {
      */
     const val ROUTE_DROP_ON_POOL_EXHAUSTION: Boolean = true
 
+    // ========================================
+    // VIRTUAL PACKET HEADER LAYOUT CONSTANTS
+    // ========================================
+
+    /**
+     * Byte offset of the gatewayType field within VirtualPacketHeader.
+     * VirtualPacketHeader.HEADER_SIZE = 21 bytes.
+     * gatewayType byte is at index 18 (HEADER_SIZE - 3).
+     *
+     * Layout (bytes 0-20):
+     *   [0-3]   fromAddr (Int)
+     *   [4-7]   toAddr (Int)
+     *   [8-11]  fromPort (Int, as 2 bytes) + toPort (Int, as 2 bytes)
+     *   [12-15] hopCount + maxHops + protocol + flags
+     *   [16-17] payloadSize (Short)
+     *   [18]    gatewayType  ← this constant
+     *   [19-20] reserved
+     *
+     * Verified: VirtualDatagramSocketImpl.kt line 143 uses HEADER_SIZE - 3 = 18.
+     */
+    const val VIRTUAL_PACKET_GATEWAY_TYPE_OFFSET = 18
+
     /**
      * Maximum number of pending listener registrations to queue
      * Used by MeshrabiyaApiImpl to limit memory usage for deferred listeners
