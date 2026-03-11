@@ -1281,6 +1281,7 @@ abstract class VirtualNode(
         enabled: Boolean,
         preferredBand: ConnectBand = ConnectBand.BAND_2GHZ,
         hotspotType: HotspotType = HotspotType.AUTO,
+        preferredPassphrase: String? = null,
     ): LocalHotspotResponse? {
         return if(enabled){
              meshrabiyaWifiManager.requestHotspot(
@@ -1288,6 +1289,7 @@ abstract class VirtualNode(
                 request = LocalHotspotRequest(
                     preferredBand = preferredBand,
                     preferredType = hotspotType,
+                    preferredPassphrase = preferredPassphrase,
                 )
             )
         }else {

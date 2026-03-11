@@ -67,6 +67,9 @@ import com.ustadmobile.meshrabiya.api.model.*
 
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeout
+import android.content.pm.PackageManager
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -86,6 +89,19 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     override fun getAppContext(): Context? {
         return appContext
+    }
+
+    override fun isApCapable(): Boolean {
+        // delegate entirely to the WifiManager flag – no logic here
+        return myNode?.meshrabiyaWifiManager?.apCapable == true
+    }
+
+    override fun isApStaConcurrentCapable(): Boolean {
+        return myNode?.meshrabiyaWifiManager?.concurrentApStationSupported == true
+    }
+
+    override fun isStaStaConcurrentCapable(): Boolean {
+        return myNode?.meshrabiyaWifiManager?.staStaConcurrencySupported == true
     }
 
     companion object {
@@ -124,6 +140,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // Non-mesh WiFi connection state Flow — updated by connectToNonMeshWifi/disconnectFromNonMeshWifi
     private val _nonMeshWifiState = MutableStateFlow(NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE))
+
+    private val _meshExtenderHotspotState = MutableStateFlow(MeshExtenderHotspotStateDto.INACTIVE)
+    override val meshExtenderHotspotStateFlow: StateFlow<MeshExtenderHotspotStateDto> = _meshExtenderHotspotState.asStateFlow()
+
+    @Volatile
+    private var lastJoinedMeshPassphrase: String? = null
 
     private var metricsMonitorJob: Job? = null
     private var distributedStorageManager: DistributedStorageManager? = null
@@ -424,6 +446,53 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         Log.d("MeshrabiyaApiImpl", "stopMesh() returning (coroutine launched)")
     }
 
+    override fun startMeshExtenderHotspot(callback: (Result<Unit>) -> Unit) {
+        val pw = lastJoinedMeshPassphrase
+        if (pw == null) {
+            Log.w(TAG, "[EXTENDER] Cannot start mesh extender hotspot: no passphrase stored from joinMesh()")
+            callback(Result.failure(IllegalStateException("No passphrase available — scan a mesh QR code first")))
+            return
+        }
+        _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.STARTING
+        eventMonitoringScope.launch {
+            try {
+                myNode?.setWifiHotspotEnabled(
+                    enabled = true,
+                    preferredBand = ConnectBand.BAND_5GHZ,
+                    hotspotType = HotspotType.AUTO,
+                    preferredPassphrase = pw
+                )
+                _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.ACTIVE
+                Log.i(TAG, "[EXTENDER] Mesh extender hotspot started with stored passphrase")
+                callback(Result.success(Unit))
+            } catch (e: Exception) {
+                _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.INACTIVE
+                Log.e(TAG, "[EXTENDER] Failed to start mesh extender hotspot", e)
+                callback(Result.failure(e))
+            }
+        }
+    }
+
+    override fun stopMeshExtenderHotspot(callback: (Result<Unit>) -> Unit) {
+        _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.STOPPING
+        eventMonitoringScope.launch {
+            try {
+                myNode?.setWifiHotspotEnabled(
+                    enabled = false,
+                    preferredBand = ConnectBand.BAND_5GHZ,
+                    hotspotType = HotspotType.AUTO
+                )
+                _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.INACTIVE
+                Log.i(TAG, "[EXTENDER] Mesh extender hotspot stopped")
+                callback(Result.success(Unit))
+            } catch (e: Exception) {
+                _meshExtenderHotspotState.value = MeshExtenderHotspotStateDto.INACTIVE
+                Log.e(TAG, "[EXTENDER] Error stopping mesh extender hotspot", e)
+                callback(Result.failure(e))
+            }
+        }
+    }
+
     override fun getMeshStatus(): MeshStateDto {
         Log.d("MeshrabiyaApiImpl", "getMeshStatus() called - myNode is null: ${myNode == null}")
         val node = myNode ?: run {
@@ -490,7 +559,20 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
         
         Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - returning NetworkInfoDto with connectedPeers=$connectedNeighbors")
-        
+
+        // if the node has a non-mesh connection, include it
+        val nonMeshState = _nonMeshWifiState.value
+        val nonMeshSsid = nonMeshState.connectedSsid
+        // IP address comes from the WifiManager's internetWifiNetworkStateFlow so that
+        // MeshrabiyaApiImpl contains no networking logic of its own.
+        val nonMeshIp = node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.value.ipAddress
+        val nonMeshHasInternet = nonMeshState.hasInternetAccess
+            .takeIf { nonMeshState.status == NonMeshWifiStatusDto.CONNECTED }
+
+        if (nonMeshSsid != null) {
+            Log.d(TAG, "[NETWORKINFO] non-mesh connected ssid=$nonMeshSsid ip=$nonMeshIp internet=$nonMeshHasInternet")
+        }
+
         return NetworkInfoDto(
             bssid = "",
             ssid = "",
@@ -499,6 +581,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             connectedPeers = connectedNeighbors,
             torGateways = torGateways,
             clearnetGateways = clearnetGateways,
+            nonMeshSsid = nonMeshSsid,
+            nonMeshIpAddress = nonMeshIp,
+            nonMeshHasInternet = nonMeshHasInternet
         )
     }
     override fun getNodeId(): Int {
@@ -641,6 +726,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 // Parse QR code JSON data
                 val qrJson = org.json.JSONObject(jsonQrData)
                 val password = qrJson.getString("password")
+                lastJoinedMeshPassphrase = password
+                Log.d(TAG, "[JOIN] Stored mesh passphrase for AP extension (${password.length} chars)")
                 val ssidPattern = qrJson.optString("ssidPattern", "meshr-")  // Default to "meshr-"
                 val bootstrapSsid = qrJson.optString("bootstrapSSID", null)  // Optional hint
                 
@@ -1978,40 +2065,70 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // ========================================
-    // WiFi Internet Connection Implementations (WIFI_AP_CON / 11.5 / S5b)
-    // ========================================
-
     override suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto {
-        val node = myNode ?: return NonMeshWifiConnectionStateDto(
-            status = NonMeshWifiStatusDto.FAILED,
-            errorMessage = "Mesh not initialized",
-        )
-        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
-        val result = node.meshrabiyaWifiManager.connectToInternetWifi(ssid, passphrase)
-        return result.fold(
-            onSuccess = {
-                val connected = NonMeshWifiConnectionStateDto(
-                    status = NonMeshWifiStatusDto.CONNECTED,
-                    connectedSsid = ssid,
-                )
-                _nonMeshWifiState.value = connected
-                connected
-            },
-            onFailure = { error ->
+        Log.i(TAG, "[NONMESH] connectToNonMeshWifi start ssid='$ssid' passphrasePresent=${passphrase.isNotEmpty()} meshInitialized=${myNode != null}")
+
+        // do **not** abort just because the mesh hasn’t been started;
+        // the caller asked for a plain Wi‑Fi connection.
+        // keep the hotspot‑self check though.
+        getHotspotInfo()?.ssid?.let { current ->
+            if (current == ssid) {
                 val failed = NonMeshWifiConnectionStateDto(
                     status = NonMeshWifiStatusDto.FAILED,
-                    errorMessage = error.message,
+                    errorMessage = "Cannot connect to own hotspot"
                 )
+                Log.w(TAG, "[NONMESH] abort – cannot connect to own hotspot ($ssid)")
                 _nonMeshWifiState.value = failed
-                failed
+                return failed
             }
-        )
+        }
+
+        _nonMeshWifiState.value =
+            NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
+        val result = try {
+            myNode?.meshrabiyaWifiManager
+                ?.connectToInternetWifi(ssid, passphrase)
+                ?: Result.failure(IllegalStateException("Mesh node unavailable"))
+        } catch (e: Exception) {
+            Log.e(TAG, "[NONMESH] exception from manager", e)
+            Result.failure(e)
+        }
+
+        if (result.isSuccess) {
+            Log.i(TAG, "[NONMESH] manager reported success for $ssid")
+            _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(
+                status = NonMeshWifiStatusDto.CONNECTED,
+                connectedSsid = ssid,
+            )
+            val finalState = try {
+                withTimeout(10_000) {
+                    _nonMeshWifiState.first { it.hasInternetAccess }
+                }
+            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                Log.w(TAG, "[NONMESH] validation timeout for $ssid")
+                _nonMeshWifiState.value
+            }
+            Log.i(TAG, "[NONMESH] final state for $ssid = $finalState")
+            _networkInfoFlow.value = getNetworkInfo()   // immediate UI update
+            return finalState
+        } else {
+            val error = result.exceptionOrNull()
+            Log.w(TAG, "[NONMESH] connection failed for $ssid", error)
+            val failed = NonMeshWifiConnectionStateDto(
+                status = NonMeshWifiStatusDto.FAILED,
+                errorMessage = error?.message,
+            )
+            _nonMeshWifiState.value = failed
+            _networkInfoFlow.value = getNetworkInfo()
+            return failed
+        }
     }
 
     override suspend fun disconnectFromNonMeshWifi(): Boolean {
         val node = myNode ?: return false
         node.meshrabiyaWifiManager.disconnectFromInternetWifi()
         _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE)
+        _networkInfoFlow.value = getNetworkInfo()
         return true
     }
 
@@ -2030,7 +2147,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         kotlinx.coroutines.delay(1500)
         @Suppress("DEPRECATION")
         val results = wifiManager.scanResults ?: return emptyList()
-        return results
+        val list = results
             .filter { it.SSID.isNotEmpty() }
             .map { scanResult ->
                 NonMeshWifiNetworkDto(
@@ -2042,6 +2159,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 )
             }
             .sortedByDescending { it.signalStrength }
+        Log.i(TAG, "scanAvailableWifiNetworks: found ${list.size} SSIDs ${list.map{it.ssid}}")
+        return list
     }
 
     override fun isInternetWifiFeatureAvailable(): Boolean {
@@ -2057,6 +2176,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             return true
         }
         return false
+    }
+
+    override fun isWifiEnabled(): Boolean {
+        return myNode?.meshrabiyaWifiManager?.isWifiEnabled() ?: false
     }
 
 }

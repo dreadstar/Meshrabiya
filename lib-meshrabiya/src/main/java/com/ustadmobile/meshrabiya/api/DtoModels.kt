@@ -75,21 +75,44 @@ fun MeshFileDto.toInternal() = MeshFile(
 )
 
 // NetworkInfo DTO
- data class NetworkInfoDto(
+data class NetworkInfoDto(
     val ssid: String,
     val bssid: String,
     val ipAddress: String,
     val connectedPeers: Int,
     val isConnected: Boolean,
+    val nonMeshSsid: String? = null,
+    val nonMeshIpAddress: String? = null,
+    val nonMeshHasInternet: Boolean? = null,
     val torGateways: Int,
     val clearnetGateways: Int
 )
 
-fun NetworkInfo.toDto() = NetworkInfoDto(
-    ssid, bssid, ipAddress, connectedPeers, isConnected, torGateways, clearnetGateways
+fun NetworkInfo.toDto(
+    nonMeshSsid: String? = null,
+    nonMeshIpAddress: String? = null,
+    nonMeshHasInternet: Boolean? = null
+) = NetworkInfoDto(
+    ssid,
+    bssid,
+    ipAddress,
+    connectedPeers,
+    isConnected,
+    nonMeshSsid,
+    nonMeshIpAddress,
+    nonMeshHasInternet,
+    torGateways,
+    clearnetGateways
 )
+
 fun NetworkInfoDto.toInternal() = NetworkInfo(
-    ssid, bssid, ipAddress, connectedPeers, isConnected, torGateways, clearnetGateways
+    ssid,
+    bssid,
+    ipAddress,
+    connectedPeers,
+    isConnected,
+    torGateways,
+    clearnetGateways
 )
 
 // NodeInfo DTO
@@ -205,17 +228,18 @@ fun LocalNodeStateDto.toInternal(): LocalNodeState = LocalNodeState(
 )
 
 // MeshrabiyaWifiState DTO
- data class MeshrabiyaWifiStateDto(
+data class MeshrabiyaWifiStateDto(
     val wifiRole: String,
     val wifiDirectState: WifiDirectStateDto,
     val wifiStationState: WifiStationStateDto,
     val localOnlyHotspotState: LocalOnlyHotspotStateDto,
     val errorCode: Int,
-    val concurrentApStationSupported: Boolean
+    val concurrentApStationSupported: Boolean,
+    val apCapable: Boolean                 
 )
 
 // MeshrabiyaBluetoothState DTO
- data class MeshrabiyaBluetoothStateDto(
+data class MeshrabiyaBluetoothStateDto(
     val deviceName: String?
 )
 
@@ -391,31 +415,14 @@ StorageDeviceDto(
     type = type.toDto()
 )
 
-// --- Conversion functions for LocalNodeState and nested DTOs ---
-
-// fun LocalNodeState.toDto() = LocalNodeStateDto(
-//     address = address,
-//     wifiState = wifiState.toDto(),
-//     bluetoothState = bluetoothState.toDto(),
-//     connectUri = connectUri,
-//     originatorMessages = originatorMessages.mapValues { it.value.toDto() }
-// )
-
-// fun LocalNodeStateDto.toInternal() = LocalNodeState(
-//     address = address,
-//     wifiState = wifiState.toInternal(),
-//     bluetoothState = bluetoothState.toInternal(),
-//     connectUri = connectUri,
-//     originatorMessages = originatorMessages.mapValues { it.value.toInternal() }
-// )
-
 fun MeshrabiyaWifiState.toDto() = MeshrabiyaWifiStateDto(
     wifiRole = wifiRole.name,
     wifiDirectState = wifiDirectState.toDto(),
     wifiStationState = wifiStationState.toDto(),
     localOnlyHotspotState = localOnlyHotspotState.toDto(),
     errorCode = errorCode,
-    concurrentApStationSupported = concurrentApStationSupported
+    concurrentApStationSupported = concurrentApStationSupported,
+    apCapable = apCapable                   // propagate flag
 )
 
 fun MeshrabiyaWifiStateDto.toInternal() = MeshrabiyaWifiState(
@@ -424,7 +431,8 @@ fun MeshrabiyaWifiStateDto.toInternal() = MeshrabiyaWifiState(
     wifiStationState = wifiStationState.toInternal(),
     localOnlyHotspotState = localOnlyHotspotState.toInternal(),
     errorCode = errorCode,
-    concurrentApStationSupported = concurrentApStationSupported
+    concurrentApStationSupported = concurrentApStationSupported,
+    apCapable = apCapable                   // round‑trip in converter
 )
 
 fun MeshrabiyaBluetoothState.toDto() = MeshrabiyaBluetoothStateDto(
@@ -732,6 +740,17 @@ data class NonMeshWifiConnectionStateDto(
     val status: NonMeshWifiStatusDto,
     val connectedSsid: String? = null,
     val errorMessage: String? = null,
+    /**
+     * True when Android's ConnectivityService has confirmed this network has internet access
+     * via NET_CAPABILITY_VALIDATED (HTTP 204 probe to connectivitycheck.gstatic.com succeeded).
+     * Updated asynchronously after onCapabilitiesChanged() fires following connection.
+     */
+    val hasInternetAccess: Boolean = false,
+    /**
+     * IPv4 address assigned to the device on this internet WiFi connection, or null if
+     * not yet available or not connected. Extracted from LinkProperties.linkAddresses.
+     */
+    val internetConnectionIpAddress: String? = null,
 )
 
 /**
@@ -748,4 +767,18 @@ enum class NonMeshWifiStatusDto {
     CONNECTED,
     /** Connection attempt failed (onUnavailable or addNetworkSuggestions returned error). */
     FAILED,
+}
+
+/**
+ * Represents the current state of the mesh extender (AP extension) hotspot.
+ * INACTIVE: Not started.
+ * STARTING: Hotspot start in progress.
+ * ACTIVE: Hotspot is running and accessible.
+ * STOPPING: Hotspot stop in progress.
+ */
+enum class MeshExtenderHotspotStateDto {
+    INACTIVE,
+    STARTING,
+    ACTIVE,
+    STOPPING
 }

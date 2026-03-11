@@ -67,6 +67,9 @@ import com.ustadmobile.meshrabiya.vnet.VirtualNode
 import android.net.wifi.WifiNetworkSuggestion
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import android.net.LinkProperties
+import java.net.Inet4Address
+import android.content.pm.PackageManager
 
 /**
  *
@@ -111,7 +114,6 @@ class MeshrabiyaWifiManagerAndroid(
                     )
                 )
             }
-
             nodeScope.launch {
                 try {
                     createStationNetworkBoundSockets(network, config)
@@ -122,7 +124,7 @@ class MeshrabiyaWifiManagerAndroid(
         }
 
         override fun onUnavailable() {
-            logger(Log.DEBUG, "$logPrefix connectToHotspot: connection unavailable", null)
+            logger(Log.WARN, "$logPrefix [NET_CB] onUnavailable: ssid=${config.ssid} sdk=${Build.VERSION.SDK_INT}")
             _state.update { prev ->
                 prev.copy(
                     wifiStationState = prev.wifiStationState.copy(
@@ -133,6 +135,7 @@ class MeshrabiyaWifiManagerAndroid(
         }
 
         override fun onLost(network: Network) {
+            logger(Log.WARN, "$logPrefix [NET_CB] onLost: ssid=${config.ssid} network=$network")
             _state.update { prev ->
                 prev.copy(
                     wifiStationState = prev.wifiStationState.copy(
@@ -204,6 +207,10 @@ class MeshrabiyaWifiManagerAndroid(
         concurrentApStationSupported = { _state.value.concurrentApStationSupported },
     )
 
+    // implement required interface property
+    override val apCapable: Boolean
+        get() = _state.value.apCapable
+
     override val state: Flow<MeshrabiyaWifiState> = _state.asStateFlow()
 
     /**
@@ -222,6 +229,10 @@ class MeshrabiyaWifiManagerAndroid(
     val staStaConcurrencySupported: Boolean
         get() = _state.value.staStaConcurrencySupported
 
+    /** Returns true if the Android WiFi radio is currently enabled. All SDK versions. */
+    fun isWifiEnabled(): Boolean = wifiManager.isWifiEnabled
+
+
     /** Synchronous snapshot of the current WiFi state. */
     val currentWifiState: MeshrabiyaWifiState
         get() = _state.value
@@ -238,6 +249,17 @@ class MeshrabiyaWifiManagerAndroid(
     /** NetworkCallback registered for the internet WiFi connection. Cleared on disconnect. */
     @Volatile
     private var internetWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    data class InternetWifiNetworkState(
+        val network: Network? = null,
+        val hasInternetAccess: Boolean = false,
+        val ipAddress: String? = null,
+    )
+
+    private val _internetWifiNetworkState = MutableStateFlow(InternetWifiNetworkState())
+
+    val internetWifiNetworkStateFlow: kotlinx.coroutines.flow.StateFlow<InternetWifiNetworkState> =
+        _internetWifiNetworkState.asStateFlow()
 
     private val closed = AtomicBoolean(false)
 
@@ -283,18 +305,20 @@ class MeshrabiyaWifiManagerAndroid(
                 // receives packets on all interfaces. OriginatingMessageManager will handle sending
                 // broadcasts appropriately when hotspot is active.
             }
-                }
+        }
 
-        // Detect concurrent AP+Station support after WiFi system initialization
+        // Detect concurrent AP+Station support and AP capability after WiFi system initialization
         nodeScope.launch {
             val (apStaSupported, staStaSupported) = detectWifiConcurrencyCapabilities()
+            val apCap = detectApCapability()
             _state.update { prev ->
                 prev.copy(
                     concurrentApStationSupported = apStaSupported,
                     staStaConcurrencySupported = staStaSupported,
+                    apCapable = apCap,
                 )
             }
-            logger(Log.INFO, "$logPrefix WiFi concurrency: AP+STA=$apStaSupported, STA+STA=$staStaSupported")
+            logger(Log.INFO, "$logPrefix WiFi concurrency: AP+STA=$apStaSupported, STA+STA=$staStaSupported, APcapable=$apCap")
         }
 
     }
@@ -329,6 +353,35 @@ class MeshrabiyaWifiManagerAndroid(
         }
 
         return apStaSupported to staStaSupported
+    }
+
+    // helper added in MeshrabiyaWifiManagerAndroid class
+    private suspend fun detectApCapability(): Boolean {
+        // check hardware/OS feature – compile SDK may not declare FEATURE_WIFI_AP
+        val hasFeature = appContext.packageManager
+            .hasSystemFeature("android.hardware.wifi.accesspoint")
+        logger(Log.INFO, "$logPrefix detectApCapability: hasSystemFeature(wifi.accesspoint)=$hasFeature")
+        if (hasFeature) return true
+
+        // Fallback: query the AP state machine via reflection.
+        // IMPORTANT: use getWifiApState() NOT isWifiApEnabled().
+        // isWifiApEnabled() returns current-on/off state (false at boot even on capable devices).
+        // getWifiApState() returns a state constant (10–14) even when AP is off:
+        //   DISABLING=10, DISABLED=11, ENABLING=12, ENABLED=13, FAILED=14
+        // Any value in that range means the device has AP hardware support.
+        val wifiManager = appContext.getSystemService(WifiManager::class.java)
+            ?: return false
+        return try {
+            val method = WifiManager::class.java.getDeclaredMethod("getWifiApState")
+            method.isAccessible = true
+            val apState = method.invoke(wifiManager) as? Int ?: -1
+            val capable = apState in 10..14
+            logger(Log.INFO, "$logPrefix detectApCapability: getWifiApState()=$apState, apCapable=$capable")
+            capable
+        } catch (e: Exception) {
+            logger(Log.WARN, "$logPrefix detectApCapability: reflection failed (${e.javaClass.simpleName}: ${e.message}), assuming not AP-capable")
+            false
+        }
     }
 
     private fun assertNotClosed() {
@@ -397,7 +450,7 @@ class MeshrabiyaWifiManagerAndroid(
                 }
                 HotspotType.LOCALONLY_HOTSPOT -> {
                     wifiDirectManager.stopWifiDirectGroup()
-                    localOnlyHotspotManager.startLocalOnlyHotspot(request.preferredBand)
+                    localOnlyHotspotManager.startLocalOnlyHotspot(request.preferredBand, request.preferredPassphrase)
                 }
                 else -> {
                     //Do nothing
@@ -484,14 +537,6 @@ class MeshrabiyaWifiManagerAndroid(
             val wifiConfig = WifiConfiguration().apply {
                 SSID =  "\"${config.ssid}\""
                 preSharedKey = "\"${config.passphrase}\""
-
-                /* Setting hiddenSSID = true is necessary, even though the network we are connecting
-                 * to is not hidden...
-                 * Android won't connect to an SSID if it thinks the SSID is not there. The SSID
-                 * might have created only a few ms ago by the other peer, and therefor won't be
-                 * in the scan list. Setting hiddenSSID to true will ensure that Android attempts to
-                 * connect whether or not the network is in currently known scan results.
-                 */
                 hiddenSSID = true
             }
             val configNetworkId = wifiManager.addOrLookupNetwork(wifiConfig, logger)
@@ -520,9 +565,14 @@ class MeshrabiyaWifiManagerAndroid(
 
         prevRequest?.second?.also {
             logger(Log.DEBUG, "$logPrefix connectToHotspot: unregister previous callback: $it")
-            connectivityManager.unregisterNetworkCallback(it)
+            try {
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (e: IllegalArgumentException) {
+                logger(Log.WARN, "$logPrefix connectToHotspot: previous callback already unregistered (watchdog or prior failure) — continuing")
+            }
         }
 
+        logger(Log.INFO, "$logPrefix [NET_CB] registering requestNetwork: ssid=${config.ssid} sdk=${Build.VERSION.SDK_INT}")
         connectivityManager.requestNetwork(networkRequest, networkCallback)
 
         _state.update { prev ->
@@ -542,22 +592,13 @@ class MeshrabiyaWifiManagerAndroid(
 
         if (resultState.network != null) {
             logger(Log.INFO, "$logPrefix connectToHotspot: ${config.ssid} - success status=${resultState.status}")
-            
-            // Bind process to mesh network EXCEPT in AP+STA mode (hotspot running + concurrent device),
-            // where a process-wide bind would redirect internet-forwarding sockets onto the mesh,
-            // creating a routing loop. In STA/STA mode the process bind is safe and needed.
-            val hotspotRunning = _state.value.hotspotIsStarted
-            val skipProcessBinding = hotspotRunning && _state.value.concurrentApStationSupported
-            if (!skipProcessBinding) {
-                val bindSuccess = connectivityManager.bindProcessToNetwork(resultState.network)
-                logger(Log.INFO, "$logPrefix connectToHotspot: bindProcessToNetwork result=$bindSuccess (hotspotRunning=$hotspotRunning)", null)
-                if (!bindSuccess) {
-                    logger(Log.WARN, "$logPrefix connectToHotspot: Failed to bind process to mesh network - device may switch networks", null)
-                }
-            } else {
-                logger(Log.INFO, "$logPrefix connectToHotspot: AP+STA mode — skipping process-wide binding", null)
+
+            val bindSuccess = connectivityManager.bindProcessToNetwork(resultState.network)
+            logger(Log.INFO, "$logPrefix connectToHotspot: bindProcessToNetwork result=$bindSuccess", null)
+            if (!bindSuccess) {
+                logger(Log.WARN, "$logPrefix connectToHotspot: Failed to bind process to mesh network - device may switch networks", null)
             }
-            
+
             return resultState.network
         }else {
             logger(Log.ERROR, "$logPrefix connectToHotspot: ${config.ssid} - fail status=${resultState.status}")
@@ -634,8 +675,37 @@ class MeshrabiyaWifiManagerAndroid(
                 override fun onAvailable(network: Network) {
                     logger(Log.INFO, "$logPrefix connectToInternetWifi: onAvailable: SSID=$ssid network=$network")
                     internetWifiNetwork = network
+                    val ipAddress = connectivityManager.getLinkProperties(network)
+                        ?.linkAddresses
+                        ?.firstOrNull { it.address is Inet4Address && !it.address.isLinkLocalAddress }
+                        ?.address?.hostAddress
+                    _internetWifiNetworkState.value = InternetWifiNetworkState(
+                        network = network,
+                        hasInternetAccess = false,
+                        ipAddress = ipAddress,
+                    )
                     if (continuation.isActive) {
                         continuation.resume(Result.success(network))
+                    }
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities
+                ) {
+                    val validated = networkCapabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                    )
+                    logger(Log.INFO, "$logPrefix connectToInternetWifi: onCapabilitiesChanged: SSID=$ssid validated=$validated")
+                    val ipAddress = connectivityManager.getLinkProperties(network)
+                        ?.linkAddresses
+                        ?.firstOrNull { it.address is Inet4Address && !it.address.isLinkLocalAddress }
+                        ?.address?.hostAddress
+                    _internetWifiNetworkState.update { prev ->
+                        prev.copy(
+                            hasInternetAccess = validated,
+                            ipAddress = ipAddress ?: prev.ipAddress,
+                        )
                     }
                 }
 
@@ -644,10 +714,12 @@ class MeshrabiyaWifiManagerAndroid(
                     if (internetWifiNetwork == network) {
                         internetWifiNetwork = null
                     }
+                    _internetWifiNetworkState.value = InternetWifiNetworkState()
                 }
 
                 override fun onUnavailable() {
                     logger(Log.WARN, "$logPrefix connectToInternetWifi: onUnavailable for SSID=$ssid")
+                    _internetWifiNetworkState.value = InternetWifiNetworkState()
                     if (continuation.isActive) {
                         continuation.resume(Result.failure(IllegalStateException(
                             "Internet WiFi network unavailable for SSID=$ssid"
@@ -678,6 +750,7 @@ class MeshrabiyaWifiManagerAndroid(
             internetWifiNetworkCallback = null
         }
         internetWifiNetwork = null
+        _internetWifiNetworkState.value = InternetWifiNetworkState()
         logger(Log.INFO, "$logPrefix disconnectFromInternetWifi: cleared internet WiFi network and callback")
     }
 
@@ -872,7 +945,7 @@ class MeshrabiyaWifiManagerAndroid(
             logger(Log.INFO, "$logPrefix : connectToHotspot: Got link local address = " +
                     "$netAddress on interface ${linkProperties?.interfaceName}", null)
 
-            val socketPort = config.port
+            val socketPort = findFreePort(0)
 
             val socket = if(config.hotspotType == HotspotType.WIFIDIRECT_GROUP) {
                 /**

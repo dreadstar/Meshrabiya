@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import android.annotation.SuppressLint
+import android.net.wifi.WifiConfiguration
 
 class LocalOnlyHotspotManager(
     appContext: Context,
@@ -111,8 +113,9 @@ class LocalOnlyHotspotManager(
 
     suspend fun startLocalOnlyHotspot(
         preferredBand: ConnectBand,
+        passphrase: String? = null,
     ) {
-        logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: band=$preferredBand")
+        logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: band=$preferredBand passphrase=${if (passphrase != null) "***provided***" else "default(meshtest12)"}")
         if(Build.VERSION.SDK_INT >= 33) {
             val macAddr = dataStore.data.map {
                 it[macAddrPrefKey]
@@ -132,7 +135,7 @@ class LocalOnlyHotspotManager(
                     }
                 }
                 .setSsid("meshr-${localNodeAddr.encodeAsHex()}")
-                .setPassphrase("meshtest12", SECURITY_TYPE_WPA2_PSK)
+                .setPassphrase(passphrase ?: "meshtest12", SECURITY_TYPE_WPA2_PSK)
                 .setBssid(macAddr)
                 .setMacRandomizationSetting(RANDOMIZATION_NONE)
                 .build()
@@ -147,7 +150,7 @@ class LocalOnlyHotspotManager(
             wifiManager.startLocalOnlyHotspotWithConfig(config, null, localOnlyHotspotCallback)
             logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: request submitted")
             _state.filter { it.status.isSettled() }.first()
-        }else {
+        } else {
             _state.update { prev ->
                 prev.copy(
                     status = HotspotStatus.STARTING
@@ -155,14 +158,65 @@ class LocalOnlyHotspotManager(
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.CHANGE_WIFI_STATE) == PackageManager.PERMISSION_GRANTED) {
+                if (ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.CHANGE_WIFI_STATE) != PackageManager.PERMISSION_GRANTED) {
+                    logger(Log.ERROR, "$logPrefix Missing CHANGE_WIFI_STATE permission for startLocalOnlyHotspot", null)
+                } else if (Build.VERSION.SDK_INT >= 28 && passphrase != null) {
+                    // Tier 2 (SDK 28–32): reflection to access the hidden @SystemApi overload
+                    // WifiManager#startLocalOnlyHotspot(WifiConfiguration, Handler, Callback)
+                    // This is the only path on SDK 28–32 to set SSID + passphrase so all
+                    // mesh extender nodes share the same credentials for seamless roaming.
+                    startLocalOnlyHotspotWithWifiConfig(passphrase)
+                } else if (passphrase == null) {
+                    // Tier 3a (passphrase not provided): OS assigns SSID/passphrase.
+                    // The system-assigned credentials are captured from SoftApConfiguration
+                    // in onStarted and used for the QR code. Extender roaming requires re-scan.
+                    logger(Log.INFO, "$logPrefix SDK ${Build.VERSION.SDK_INT}: no passphrase provided — OS will assign SSID/passphrase")
                     wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
                 } else {
-                    logger(Log.ERROR, "$logPrefix Missing CHANGE_WIFI_STATE permission for startLocalOnlyHotspot", null)
+                    // Tier 3b (SDK 26–27, passphrase provided but cannot be set):
+                    // API < 28 has no way to set custom SSID/passphrase for LOHS.
+                    logger(Log.WARN, "$logPrefix SDK ${Build.VERSION.SDK_INT} < 28: cannot set SSID/passphrase — extender roaming degraded")
+                    wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
                 }
             } else {
                 logger(Log.ERROR, "$logPrefix startLocalOnlyHotspot requires API 26+", null)
             }
+        }
+    }
+
+    /**
+     * Tier 2 SSID/passphrase path for SDK 28–32.
+     *
+     * Calls the hidden @SystemApi method:
+     *   WifiManager#startLocalOnlyHotspot(WifiConfiguration, Handler, LocalOnlyHotspotCallback)
+     * via reflection. This method exists on API 28+ but was not made public until API 33.
+     * It may be blocked by non-SDK interface restrictions on some SDK 29+ devices; if so,
+     * we fall back to the OS-assigned LOHS.
+     */
+    @SuppressLint("PrivateApi")
+    @androidx.annotation.RequiresApi(28)
+    private fun startLocalOnlyHotspotWithWifiConfig(passphrase: String) {
+        val ssid = "meshr-${localNodeAddr.encodeAsHex()}"
+        try {
+            @Suppress("DEPRECATION")
+            val wifiConfig = WifiConfiguration().apply {
+                SSID = "\"$ssid\""
+                preSharedKey = "\"$passphrase\""
+                allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA2_PSK)
+                allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
+            }
+            val method = WifiManager::class.java.getDeclaredMethod(
+                "startLocalOnlyHotspot",
+                WifiConfiguration::class.java,
+                android.os.Handler::class.java,
+                WifiManager.LocalOnlyHotspotCallback::class.java,
+            )
+            method.isAccessible = true
+            method.invoke(wifiManager, wifiConfig, null, localOnlyHotspotCallback)
+            logger(Log.INFO, "$logPrefix Tier-2 reflection LOHS invoked: SSID=$ssid")
+        } catch (e: Exception) {
+            logger(Log.WARN, "$logPrefix Tier-2 reflection LOHS failed (${e.message}) — falling back to OS-assigned SSID")
+            wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
         }
     }
 

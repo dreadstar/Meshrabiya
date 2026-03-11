@@ -218,8 +218,27 @@ class EmergentRoleManager(
                 Log.e(TAG, "[WIFI_STATE] Station monitor FAILED", e)
             }
         }
-        
-        Log.d(TAG, "[WIFI_STATE] Both monitoring coroutines launched successfully")
+
+        // Monitor hotspot state – triggers MESH_HUB assignment when hotspot starts
+        monitoringScope.launch {
+            Log.d(TAG, "[HOTSPOT_STATE] Hotspot monitoring coroutine STARTED")
+            try {
+                virtualNode.meshrabiyaWifiManager.state
+                    .map { it.hotspotIsStarted }
+                    .distinctUntilChanged()
+                    .collect { isStarted ->
+                        Log.d(TAG, "[HOTSPOT_STATE] hotspotIsStarted changed to: $isStarted")
+                        if (isStarted) {
+                            Log.d(TAG, "[HOTSPOT_STATE] Hotspot started, recalculating roles")
+                            updateRoles(userInitiated = false)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "[HOTSPOT_STATE] Hotspot monitor FAILED", e)
+            }
+        }
+
+        Log.d(TAG, "[WIFI_STATE] All monitoring coroutines launched successfully")
     }
 
     /**
@@ -245,7 +264,7 @@ class EmergentRoleManager(
     }
     
     // Initialize with empty roles - MESH_PARTICIPANT is added when mesh connects via updateRoles()
-    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(emptySet())
+    private val _currentMeshRoles = MutableStateFlow<Set<MeshRole>>(setOf(MeshRole.MESH_PARTICIPANT))
     val currentMeshRoles: StateFlow<Set<MeshRole>> = _currentMeshRoles.asStateFlow()
     
     private val _meshIntelligence = MutableStateFlow(
@@ -435,21 +454,17 @@ class EmergentRoleManager(
             safeLog(LogLevel.INFO, "[ROLE_CALC] No router – concurrency=false")
         }
         
-        // NEW: MESH_HUB role for non-concurrent hotspot nodes
-        // Hotspot nodes WITHOUT AP concurrency need forwarding capability to relay broadcasts
-        // Assignment criteria:
-        // 1. Node started mesh as hotspot (setWifiHotspotEnabled called)
-        // 2. Device does NOT have concurrent AP+Station hardware capability
-        // Note: No stable connection requirement - hotspot IS a hub as soon as it starts
-        // MESH_HUB nodes forward broadcasts but cannot bridge mesh segments (no station mode)
+        // MESH_HUB role: assigned to any node running a mesh hotspot, regardless of AP+STA concurrency.
+        // Concurrent devices (MESH_ROUTER) also act as MESH_HUB since they run a hotspot.
+        // Non-concurrent devices get MESH_HUB only (no MESH_ROUTER since they can't run station simultaneously).
         
-        if (!concurrentApStationSupported && wifiState.hotspotIsStarted) {
+        if (wifiState.hotspotIsStarted) {
             roles.add(MeshRole.MESH_HUB)
-            safeLog(LogLevel.INFO, "Assigned MESH_HUB role (hotspot active, no AP concurrency)")
-            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_HUB (non-concurrent hotspot)")
+            safeLog(LogLevel.INFO, "Assigned MESH_HUB role (hotspot active, concurrency=$concurrentApStationSupported)")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✓ Adding MESH_HUB (hotspot active, concurrency=$concurrentApStationSupported)")
         } else {
-            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ MESH_HUB not assigned: concurrency=$concurrentApStationSupported, hotspot=${wifiState.hotspotIsStarted}")
-            safeLog(LogLevel.INFO, "MESH_HUB not assigned: concurrency=$concurrentApStationSupported, hotspot=${wifiState.hotspotIsStarted}")
+            android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] ✗ MESH_HUB not assigned: hotspot=${wifiState.hotspotIsStarted}")
+            safeLog(LogLevel.INFO, "MESH_HUB not assigned: hotspot=${wifiState.hotspotIsStarted}")
         }
         
         // COORDINATOR ROLE DEPRECATED - Not in canonical design

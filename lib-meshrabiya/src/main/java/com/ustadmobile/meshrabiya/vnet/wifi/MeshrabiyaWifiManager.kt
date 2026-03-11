@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 interface MeshrabiyaWifiManager {
 
     val state: Flow<MeshrabiyaWifiState>
+    val apCapable: Boolean  
 
     val is5GhzSupported: Boolean
 

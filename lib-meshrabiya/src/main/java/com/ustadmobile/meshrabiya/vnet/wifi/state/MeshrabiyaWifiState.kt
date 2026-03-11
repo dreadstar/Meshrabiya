@@ -19,6 +19,7 @@ data class MeshrabiyaWifiState(
     // to an internet WiFi network via WifiNetworkSuggestion without dropping the mesh.
     // When false (default), the STA/STA path in connectToInternetWifi() is unavailable.
     val staStaConcurrencySupported: Boolean = false,
+    val apCapable: Boolean = false, // new capability flag
 ) {
 
     /**

@@ -177,6 +177,7 @@ class AndroidVirtualNode(
         enabled: Boolean,
         preferredBand: ConnectBand,
         hotspotType: HotspotType,
+        preferredPassphrase: String?,
     ): LocalHotspotResponse? {
         updateBluetoothState()
         
@@ -196,7 +197,7 @@ class AndroidVirtualNode(
             }
         }
         
-        return super.setWifiHotspotEnabled(enabled, preferredBand, hotspotType)
+        return super.setWifiHotspotEnabled(enabled, preferredBand, hotspotType, preferredPassphrase)
     }
 
     suspend fun lookupStoredBssid(ssid: String): String? {

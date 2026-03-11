@@ -405,11 +405,51 @@ interface MeshrabiyaApi {
     suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto
 
     /**
+     * Returns true if this device is capable of hosting a Wi‑Fi hotspot / AP.
+     * This check is performed once during initialization; callers may also watch
+     * the `state` flow for live updates.
+     */
+    fun isApCapable(): Boolean
+
+    /**
+     * Returns true if this device supports concurrent AP+Station mode
+     * (hotspot running while simultaneously connected as a WiFi client).
+     * Requires API 30+ and hardware support (isStaApConcurrencySupported).
+     * Distinct from [isApCapable] — a device may be AP-capable but NOT support concurrent AP+STA.
+     */
+    fun isApStaConcurrentCapable(): Boolean
+
+    /**
+     * Returns true if this device supports simultaneous dual-STA mode
+     * (connected to two WiFi networks at the same time as a client).
+     * Requires API 31+ and hardware support (isStaConcurrencyForLocalOnlyConnectionsSupported).
+     * Distinct from both [isApCapable] and [isApStaConcurrentCapable].
+     */
+    fun isStaStaConcurrentCapable(): Boolean
+
+    /**
      * Disconnect from the non-mesh internet WiFi.
      * Removes the WifiNetworkSuggestion and releases the internet Network object.
      * @return true if disconnection was performed, false if no connection was active.
      */
     suspend fun disconnectFromNonMeshWifi(): Boolean
+
+    /**
+     * Starts a local-only hotspot using the passphrase stored from the most recent joinMesh() QR scan.
+     * This allows nearby devices to join this node's AP and reach the mesh (AP extension mode).
+     * Only works reliably on API 33+; on older devices the OS assigns a random passphrase.
+     */
+    fun startMeshExtenderHotspot(callback: (Result<Unit>) -> Unit)
+
+    /**
+     * Stops the mesh extender hotspot started via [startMeshExtenderHotspot].
+     */
+    fun stopMeshExtenderHotspot(callback: (Result<Unit>) -> Unit)
+
+    /**
+     * StateFlow emitting the current state of the mesh extender hotspot.
+     */
+    val meshExtenderHotspotStateFlow: StateFlow<MeshExtenderHotspotStateDto>
 
     /**
      * Observe the current non-mesh WiFi connection state.
@@ -434,6 +474,14 @@ interface MeshrabiyaApi {
      * Returns false when mesh is not initialized, API < 30, or neither capability is present.
      */
     fun isInternetWifiFeatureAvailable(): Boolean
+
+    /**
+     * Returns true if the Android WiFi radio is currently enabled (WifiManager.isWifiEnabled).
+     * Works on all SDK versions — the getter is not deprecated.
+     * Used as a pre-flight gate before the Join Mesh flow.
+     * Returns false if the mesh node is not yet initialized.
+     */
+    fun isWifiEnabled(): Boolean
 }
 
 
