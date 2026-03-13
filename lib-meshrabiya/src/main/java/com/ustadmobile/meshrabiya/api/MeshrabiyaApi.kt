@@ -452,6 +452,14 @@ interface MeshrabiyaApi {
     val meshExtenderHotspotStateFlow: StateFlow<MeshExtenderHotspotStateDto>
 
     /**
+     * StateFlow emitting true when the local mesh AP (LocalOnlyHotspot or WifiDirect)
+     * is fully started. This is the authoritative trigger for showing the QR/join pane.
+     * Independent of mesh network status (CONNECTING/CONNECTED) — a joining station
+     * should never emit true here.
+     */
+    val meshApActiveFlow: StateFlow<Boolean>
+
+    /**
      * Observe the current non-mesh WiFi connection state.
      * Emits [NonMeshWifiConnectionStateDto] updates as connection state changes.
      */

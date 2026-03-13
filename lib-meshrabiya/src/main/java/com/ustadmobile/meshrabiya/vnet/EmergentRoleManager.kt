@@ -156,6 +156,12 @@ class EmergentRoleManager(
     private val concurrentApStationSupported: Boolean
         get() = _concurrencySupported.value
 
+    // Authoritative wifi state snapshot — updated by the hotspot monitor coroutine BEFORE
+    // calling updateRoles(). Prevents race with AndroidVirtualNode's combine() coroutine,
+    // which may not have flushed the new state into currentNodeState.wifiState yet.
+    @Volatile
+    private var _cachedWifiState: MeshrabiyaWifiState? = null
+
     init {
         Log.d("EmergentRoleManager", "Initialized with virtualNode: $virtualNode, context: $context")
         if (context == null) {
@@ -224,11 +230,14 @@ class EmergentRoleManager(
             Log.d(TAG, "[HOTSPOT_STATE] Hotspot monitoring coroutine STARTED")
             try {
                 virtualNode.meshrabiyaWifiManager.state
-                    .map { it.hotspotIsStarted }
-                    .distinctUntilChanged()
-                    .collect { isStarted ->
-                        Log.d(TAG, "[HOTSPOT_STATE] hotspotIsStarted changed to: $isStarted")
-                        if (isStarted) {
+                    .distinctUntilChanged { a, b -> a.hotspotIsStarted == b.hotspotIsStarted }
+                    .collect { wifiState ->
+                        // Cache BEFORE calling updateRoles() so calculateTargetRoles()
+                        // sees the state that triggered this event, not the stale
+                        // currentNodeState.wifiState from AndroidVirtualNode's coroutine.
+                        _cachedWifiState = wifiState
+                        Log.d(TAG, "[HOTSPOT_STATE] hotspotIsStarted changed to: ${wifiState.hotspotIsStarted}")
+                        if (wifiState.hotspotIsStarted) {
                             Log.d(TAG, "[HOTSPOT_STATE] Hotspot started, recalculating roles")
                             updateRoles(userInitiated = false)
                         }
@@ -441,7 +450,10 @@ class EmergentRoleManager(
         // Nodes with AP+Station concurrency can forward traffic while maintaining connections
         val centralityResult = calculateBFSCentrality()
         val centralityThreshold = 3.0f // Minimum centrality score for router role
-        val wifiState = virtualNode.currentNodeState.wifiState
+        // Use _cachedWifiState (set by hotspot monitor before calling updateRoles) as the
+        // authoritative source. Falls back to currentNodeState only if called before
+        // the first hotspot event (e.g., initial MESH_PARTICIPANT assignment).
+        val wifiState = _cachedWifiState ?: virtualNode.currentNodeState.wifiState
         
         // MESH_ROUTER: assign whenever AP+Station concurrency support is true
         android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] MESH_ROUTER check: concurrency=$concurrentApStationSupported")

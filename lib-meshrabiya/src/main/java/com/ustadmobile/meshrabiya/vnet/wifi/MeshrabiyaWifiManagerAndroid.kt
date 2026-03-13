@@ -667,8 +667,6 @@ class MeshrabiyaWifiManagerAndroid(
         return suspendCancellableCoroutine { continuation ->
             val networkRequest = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .build()
 
             val callback = object : ConnectivityManager.NetworkCallback() {
@@ -729,7 +727,7 @@ class MeshrabiyaWifiManagerAndroid(
             }
 
             internetWifiNetworkCallback = callback
-            connectivityManager.requestNetwork(networkRequest, callback)
+            connectivityManager.requestNetwork(networkRequest, callback, 30_000)
 
             continuation.invokeOnCancellation {
                 connectivityManager.unregisterNetworkCallback(callback)

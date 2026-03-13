@@ -16,6 +16,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import com.ustadmobile.meshrabiya.vnet.MeshFile
@@ -41,6 +43,7 @@ import com.ustadmobile.meshrabiya.vnet.MeshRole
 import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
+import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
@@ -130,6 +133,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // StateFlow for network info - updated every 2 seconds
     private val _networkInfoFlow = MutableStateFlow<NetworkInfoDto?>(null)
     val networkInfoFlow: StateFlow<NetworkInfoDto?> = _networkInfoFlow.asStateFlow()
+    private val _wifiStateFlow = MutableStateFlow<MeshrabiyaWifiStateDto?>(null)
+    val wifiStateFlow: StateFlow<MeshrabiyaWifiStateDto?> = _wifiStateFlow.asStateFlow()
     // StateFlow for mesh status
     private val _meshStatusFlow = MutableStateFlow(getMeshStatus())
     override val meshStatusFlow: StateFlow<MeshStateDto> get() = _meshStatusFlow
@@ -143,6 +148,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     private val _meshExtenderHotspotState = MutableStateFlow(MeshExtenderHotspotStateDto.INACTIVE)
     override val meshExtenderHotspotStateFlow: StateFlow<MeshExtenderHotspotStateDto> = _meshExtenderHotspotState.asStateFlow()
+
+    private val _meshApActiveFlow = MutableStateFlow(false)
+    override val meshApActiveFlow: StateFlow<Boolean> = _meshApActiveFlow.asStateFlow()
+
+    // Stable, always-non-null roles flow. Fragment's setupRoleObserver() always has
+    // a flow to collect from — even before initMesh() is called. Populated by
+    // startEventMonitoring() once emergentRoleManager is available.
+    private val _currentMeshRolesFlow = MutableStateFlow<Set<MeshRoleDto>>(emptySet())
+    val currentMeshRolesFlow: StateFlow<Set<MeshRoleDto>> = _currentMeshRolesFlow.asStateFlow()
 
     @Volatile
     private var lastJoinedMeshPassphrase: String? = null
@@ -241,48 +255,103 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Invokes registered callbacks when changes are detected
      */
     private fun startEventMonitoring() {
-        // Monitor mesh state changes
-        stateMonitorJob = eventMonitoringScope.launch {
-            var previousState = getMeshStatus()
-            while (true) {
-                delay(1000) // Check every second
-                val currentState = getMeshStatus()
-                if (currentState != previousState) {
-                    previousState = currentState
-                    onMeshStateChanged?.invoke(currentState)
-                    // Update meshStatusFlow when mesh status changes
-                    _meshStatusFlow.value = currentState
-                }
-            }
-        }
-        
-        // Monitor peer count changes
+        val node = checkNotNull(myNode) { "startEventMonitoring called before myNode was set" }
+
+        // Reactively derive peer count from neighbor list — no polling
         peerMonitorJob = eventMonitoringScope.launch {
-            var previousCount = getPeerCount()
-            while (true) {
-                delay(1000) // Check every second
-                val currentCount = getPeerCount()
-                if (currentCount != previousCount) {
-                    // Call the peer count changed callback if present
+            node.state
+                .map { localState ->
+                    localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
+                }
+                .distinctUntilChanged()
+                .collect { currentCount ->
                     onPeerCountChanged?.invoke(currentCount)
-                    // If peer count transitions from 0 to 1, update meshStatusFlow to CONNECTED
-                    if (previousCount == 0 && currentCount > 0) {
+                    // Keep meshStatusFlow in sync with peer count transitions
+                    if (currentCount > 0 && _meshStatusFlow.value == MeshStateDto.CONNECTING) {
                         _meshStatusFlow.value = MeshStateDto.CONNECTED
-                    }
-                    // If peer count transitions from >=1 to 0, update meshStatusFlow to CONNECTING
-                    if (previousCount > 0 && currentCount == 0) {
+                    } else if (currentCount == 0 && _meshStatusFlow.value == MeshStateDto.CONNECTED) {
                         _meshStatusFlow.value = MeshStateDto.CONNECTING
                     }
-                    previousCount = currentCount
                 }
-            }
         }
-        
-        // Update network info Flow every 2 seconds for UI
+
+        // Reactively derive NetworkInfoDto from topology + wifi + non-mesh state — no polling
         eventMonitoringScope.launch {
-            while (true) {
-                _networkInfoFlow.value = getNetworkInfo()
-                delay(2000) // Update every 2 seconds
+            combine(
+                node.state,
+                node.originatingMessageManager.topologyMapFlow,
+                _nonMeshWifiState,
+                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow
+            ) { localState, topology, nonMeshWifi, internetWifiState ->
+                val neighborCount = localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
+                val torGateways = topology.values.count { nodeInfo ->
+                    nodeInfo.hasRole(MeshRole.TOR_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+                }
+                val clearnetGateways = topology.values.count { nodeInfo ->
+                    nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+                }
+                val nonMeshSsid = nonMeshWifi.connectedSsid
+                val nonMeshHasInternet = nonMeshWifi.hasInternetAccess
+                    .takeIf { nonMeshWifi.status == NonMeshWifiStatusDto.CONNECTED }
+                NetworkInfoDto(
+                    bssid = "",
+                    ssid = "",
+                    ipAddress = localState.address.addressToDotNotation(),
+                    isConnected = true,
+                    connectedPeers = neighborCount,
+                    torGateways = torGateways,
+                    clearnetGateways = clearnetGateways,
+                    nonMeshSsid = nonMeshSsid,
+                    nonMeshIpAddress = internetWifiState.ipAddress,
+                    nonMeshHasInternet = nonMeshHasInternet
+                )
+            }
+            .distinctUntilChanged()
+            .collect { _networkInfoFlow.value = it }
+        }
+
+        // Reactively expose wifiState for chip UI — no polling
+        eventMonitoringScope.launch {
+            node.meshrabiyaWifiManager.state
+                .map { it.toDto() }
+                .distinctUntilChanged()
+                .collect { _wifiStateFlow.value = it }
+        }
+
+        // Reactively track local mesh AP hardware state.
+        // This is the single source of truth for whether THIS device is hosting
+        // a mesh AP (LocalOnlyHotspot or WifiDirect group is STARTED).
+        // Also drives meshStatusFlow: AP up → CONNECTING, AP down → DISCONNECTED.
+        // Peer count transitions between CONNECTING ↔ CONNECTED are handled above.
+        eventMonitoringScope.launch {
+            node.meshrabiyaWifiManager.state
+                .map { wifiState ->
+                    val apActive = wifiState.hotspotIsStarted
+                    val staActive = wifiState.wifiStationState.status == WifiStationState.Status.AVAILABLE
+                    Pair(apActive, staActive)
+                }
+                .distinctUntilChanged()
+                .collect { (apActive, staActive) ->
+                    _meshApActiveFlow.value = apActive
+                    val hasPhysicalLink = apActive || staActive
+                    if (hasPhysicalLink && _meshStatusFlow.value == MeshStateDto.DISCONNECTED) {
+                        _meshStatusFlow.value = MeshStateDto.CONNECTING
+                    } else if (!hasPhysicalLink &&
+                        (_meshStatusFlow.value == MeshStateDto.CONNECTING ||
+                         _meshStatusFlow.value == MeshStateDto.CONNECTED)) {
+                        _meshStatusFlow.value = MeshStateDto.DISCONNECTED
+                    }
+                }
+        }
+
+        // Forward EmergentRoleManager roles → stable _currentMeshRolesFlow so
+        // the Fragment's setupRoleObserver() always has a live, non-null collector.
+        emergentRoleManager?.let { rm ->
+            eventMonitoringScope.launch {
+                rm.currentMeshRoles
+                    .map { roles -> roles.map { it.toDto() }.toSet() }
+                    .distinctUntilChanged()
+                    .collect { _currentMeshRolesFlow.value = it }
             }
         }
 
@@ -331,19 +400,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getNodeRoleNames(): List<String> =
         emergentRoleManager?.getCurrentMeshRoles()?.map { it.name } ?: emptyList()
     
-    /**
-     * Expose currentMeshRoles StateFlow for UI observation as DTOs.
-     * The underlying EmergentRoleManager holds internal MeshRole values;
-     * convert them to MeshRoleDto for the application layer.
-     */
-    val currentMeshRolesFlow: kotlinx.coroutines.flow.StateFlow<Set<MeshRoleDto>>?
-        get() = emergentRoleManager?.currentMeshRoles
-            ?.map { roles -> roles.map { it.toDto() }.toSet() }
-            ?.stateIn(
-                CoroutineScope(Dispatchers.Default),
-                SharingStarted.Eagerly,
-                emptySet()
-            )
 
     override fun getFitnessScore(): Float = emergentRoleManager?.getFitnessScore() ?: 0f
     
