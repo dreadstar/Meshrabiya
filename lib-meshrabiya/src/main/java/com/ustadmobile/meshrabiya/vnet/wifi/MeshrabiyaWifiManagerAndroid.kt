@@ -12,6 +12,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+
 import android.os.Build
 import android.util.Log
 import androidx.datastore.core.DataStore
@@ -38,7 +39,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -142,6 +143,22 @@ class MeshrabiyaWifiManagerAndroid(
                         status = WifiStationState.Status.LOST,
                     )
                 )
+            }
+            // Auto-reconnect after a brief settling delay to handle sleep/wake disconnects.
+            // WifiNetworkSpecifier requests may not re-fire onAvailable automatically on all
+            // devices/OEM builds when WiFi reconnects at the OS level after sleep.
+            if (!closed.get()) {
+                nodeScope.launch {
+                    delay(3000)
+                    if (!closed.get() && _state.value.wifiStationState.status == WifiStationState.Status.LOST) {
+                        logger(Log.INFO, "$logPrefix [NET_CB] onLost: auto-reconnect attempt for ${config.ssid}")
+                        try {
+                            connectToHotspotInternal(config)
+                        } catch (e: Exception) {
+                            logger(Log.WARN, "$logPrefix [NET_CB] onLost: auto-reconnect failed: ${e.message}")
+                        }
+                    }
+                }
             }
         }
     }
@@ -249,6 +266,9 @@ class MeshrabiyaWifiManagerAndroid(
     /** NetworkCallback registered for the internet WiFi connection. Cleared on disconnect. */
     @Volatile
     private var internetWifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /** Active network suggestions for internet WiFi; stored for removal in disconnectFromInternetWifi(). */
+    private var activeInternetWifiSuggestions: List<WifiNetworkSuggestion> = emptyList()
 
     data class InternetWifiNetworkState(
         val network: Network? = null,
@@ -643,32 +663,35 @@ class MeshrabiyaWifiManagerAndroid(
             }
         }
 
-        val suggestion = if (passphrase.isEmpty()) {
-            WifiNetworkSuggestion.Builder()
-                .setSsid(ssid)
-                .build()
-        } else {
-            WifiNetworkSuggestion.Builder()
-                .setSsid(ssid)
-                .setWpa2Passphrase(passphrase)
-                .build()
-        }
+        val suggestion = WifiNetworkSuggestion.Builder()
+            .setSsid(ssid)
+            .apply {
+                if (passphrase.isNotEmpty()) {
+                    setWpa2Passphrase(passphrase)
+                }
+            }
+            .build()
 
         val suggestionList = listOf(suggestion)
-        val addStatus = wifiManager.addNetworkSuggestions(suggestionList)
-        if (addStatus != WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+        wifiManager.removeNetworkSuggestions(activeInternetWifiSuggestions) // clear any stale suggestion
+        val addResult = wifiManager.addNetworkSuggestions(suggestionList)
+        if (addResult != WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS &&
+            addResult != WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE) {
             return Result.failure(IllegalStateException(
-                "addNetworkSuggestions failed: status=$addStatus for SSID=$ssid"
+                "connectToInternetWifi: addNetworkSuggestions failed, status=$addResult"
             ))
         }
+        activeInternetWifiSuggestions = suggestionList
+        wifiManager.startScan() // request immediate scan so suggestion is acted upon quickly
 
-        logger(Log.INFO, "$logPrefix connectToInternetWifi: suggestion added for SSID=$ssid, hotspotRunning=$hotspotRunning")
+        val networkRequest = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        logger(Log.INFO, "$logPrefix connectToInternetWifi: suggestion added for SSID=$ssid, awaiting primary STA connection, hotspotRunning=$hotspotRunning")
 
         return suspendCancellableCoroutine { continuation ->
-            val networkRequest = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .build()
-
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     logger(Log.INFO, "$logPrefix connectToInternetWifi: onAvailable: SSID=$ssid network=$network")
@@ -720,18 +743,19 @@ class MeshrabiyaWifiManagerAndroid(
                     _internetWifiNetworkState.value = InternetWifiNetworkState()
                     if (continuation.isActive) {
                         continuation.resume(Result.failure(IllegalStateException(
-                            "Internet WiFi network unavailable for SSID=$ssid"
+                            "connectToInternetWifi: network unavailable for SSID=$ssid after 60s"
                         )))
                     }
                 }
             }
 
             internetWifiNetworkCallback = callback
-            connectivityManager.requestNetwork(networkRequest, callback, 30_000)
+            connectivityManager.requestNetwork(networkRequest, callback, 60_000)
 
             continuation.invokeOnCancellation {
                 connectivityManager.unregisterNetworkCallback(callback)
-                wifiManager.removeNetworkSuggestions(suggestionList)
+                wifiManager.removeNetworkSuggestions(activeInternetWifiSuggestions)
+                activeInternetWifiSuggestions = emptyList()
                 internetWifiNetwork = null
                 internetWifiNetworkCallback = null
             }
@@ -742,6 +766,10 @@ class MeshrabiyaWifiManagerAndroid(
      * Disconnect from the internet WiFi connection and clear all tracking state.
      */
     fun disconnectFromInternetWifi() {
+        if (activeInternetWifiSuggestions.isNotEmpty()) {
+            wifiManager.removeNetworkSuggestions(activeInternetWifiSuggestions)
+            activeInternetWifiSuggestions = emptyList()
+        }
         val callback = internetWifiNetworkCallback
         if (callback != null) {
             connectivityManager.unregisterNetworkCallback(callback)
@@ -749,7 +777,7 @@ class MeshrabiyaWifiManagerAndroid(
         }
         internetWifiNetwork = null
         _internetWifiNetworkState.value = InternetWifiNetworkState()
-        logger(Log.INFO, "$logPrefix disconnectFromInternetWifi: cleared internet WiFi network and callback")
+        logger(Log.INFO, "$logPrefix disconnectFromInternetWifi: removed suggestion, cleared internet WiFi network and callback")
     }
 
     override suspend fun connectToHotspot(
