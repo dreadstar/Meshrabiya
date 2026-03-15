@@ -63,6 +63,7 @@ interface MeshrabiyaApi {
     fun startMesh(callback: (Result<Unit>) -> Unit)
     fun stopMesh(callback: (Result<Unit>) -> Unit)
     fun getMeshStatus(): MeshStateDto
+    fun refreshMeshStatus()
     fun getPeerCount(): Int
     fun getNetworkInfo(): NetworkInfoDto?
     fun getNodeInfo(nodeId: String): NodeInfoDto?

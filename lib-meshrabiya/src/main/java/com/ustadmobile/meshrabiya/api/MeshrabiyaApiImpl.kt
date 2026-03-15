@@ -71,8 +71,18 @@ import com.ustadmobile.meshrabiya.api.model.*
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import java.net.URL
+import java.net.HttpURLConnection
+import kotlinx.coroutines.withContext
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -124,6 +134,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
          * Phase 3B: Used to filter stale gateways from statistics
          */
         private const val GATEWAY_STALE_TIMEOUT_MS = 30_000L  // 30 seconds
+        /** Interval between periodic non-mesh internet connectivity probes. */
+        private const val NONMESH_INTERNET_CHECK_INTERVAL_MS = 30_000L
     }
 
     // Internal managers, initialized in initMesh
@@ -180,13 +192,16 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Applied automatically when handler is initialized during joinMesh()
      * Added: 2026-02-15 for deferred listener registration
      */
-    private val pendingBroadcastListeners = 
-        java.util.concurrent.ConcurrentLinkedQueue<(com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit>()
+    private val pendingBroadcastListeners =
+        java.util.concurrent.CopyOnWriteArrayList<(com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit>()
 
     // Section 6: Event monitoring scope and jobs
     private val eventMonitoringScope = CoroutineScope(Dispatchers.Default)
     private var stateMonitorJob: Job? = null
     private var peerMonitorJob: Job? = null
+    // Confirmed internet access on non-mesh WiFi; persists across transient VALIDATED dropouts
+    private val _nonMeshInternetConfirmed = MutableStateFlow(false)
+    private var nonMeshInternetCheckJob: Job? = null
     
     // V3: Gateway preference state
     @Volatile
@@ -276,13 +291,15 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
 
         // Reactively derive NetworkInfoDto from topology + wifi + non-mesh state — no polling
+        // _nonMeshInternetConfirmed is the 5th input: persists green dot through transient VALIDATED dropouts
         eventMonitoringScope.launch {
             combine(
                 node.state,
                 node.originatingMessageManager.topologyMapFlow,
                 _nonMeshWifiState,
-                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow
-            ) { localState, topology, nonMeshWifi, internetWifiState ->
+                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow,
+                _nonMeshInternetConfirmed
+            ) { localState, topology, nonMeshWifi, internetWifiState, internetConfirmed ->
                 val neighborCount = localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
                 val torGateways = topology.values.count { nodeInfo ->
                     nodeInfo.hasRole(MeshRole.TOR_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
@@ -291,7 +308,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
                 }
                 val nonMeshSsid = nonMeshWifi.connectedSsid
-                val nonMeshHasInternet = nonMeshWifi.hasInternetAccess
+                val nonMeshHasInternet = (internetWifiState.hasInternetAccess || internetConfirmed)
                     .takeIf { nonMeshWifi.status == NonMeshWifiStatusDto.CONNECTED }
                 NetworkInfoDto(
                     bssid = "",
@@ -382,6 +399,35 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
             }
         }
+
+        // Immediately confirm internet when OS validates (for fast initial green dot appearance)
+        eventMonitoringScope.launch {
+            node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.collect { state ->
+                if (state.hasInternetAccess) {
+                    _nonMeshInternetConfirmed.value = true
+                }
+            }
+        }
+
+        // Periodic active internet probe: keeps green dot alive through transient VALIDATED dropouts
+        // (e.g., caused by VPN activation). Cancels and resets on disconnect.
+        eventMonitoringScope.launch {
+            _nonMeshWifiState.collect { nonMeshState ->
+                nonMeshInternetCheckJob?.cancel()
+                nonMeshInternetCheckJob = null
+                if (nonMeshState.status == NonMeshWifiStatusDto.CONNECTED) {
+                    nonMeshInternetCheckJob = launch {
+                        while (true) {
+                            delay(NONMESH_INTERNET_CHECK_INTERVAL_MS)
+                            val confirmed = checkNonMeshInternetAccess(node)
+                            _nonMeshInternetConfirmed.value = confirmed
+                        }
+                    }
+                } else {
+                    _nonMeshInternetConfirmed.value = false
+                }
+            }
+        }
     }
     
     /**
@@ -393,6 +439,33 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         stateMonitorJob = null
         peerMonitorJob = null
     }
+
+    /**
+     * Probe internet access on the non-mesh WiFi network.
+     * Sends an HTTP HEAD to Google's generate_204 endpoint via the bound [internetWifiNetwork],
+     * bypassing any active VPN. Falls back to ConnectivityManager VALIDATED check on failure.
+     */
+    private suspend fun checkNonMeshInternetAccess(node: AndroidVirtualNode): Boolean =
+        withContext(Dispatchers.IO) {
+            val network = node.meshrabiyaWifiManager.internetWifiNetwork ?: return@withContext false
+            try {
+                val url = URL("http://connectivitycheck.gstatic.com/generate_204")
+                val conn = network.openConnection(url) as HttpURLConnection
+                conn.connectTimeout = 5_000
+                conn.readTimeout = 5_000
+                conn.requestMethod = "HEAD"
+                conn.connect()
+                val code = conn.responseCode
+                conn.disconnect()
+                code == 204 || code == 200
+            } catch (e: Exception) {
+                Log.d(TAG, "[NONMESH] internet probe failed (${e.javaClass.simpleName}), trying VALIDATED")
+                val ctx = appContext ?: return@withContext false
+                val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return@withContext false
+                cm.getNetworkCapabilities(network)
+                    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+            }
+        }
 
     // --- Mesh State & Network Info ---
     // override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
@@ -586,6 +659,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return status
     }
     override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
+
+    override fun refreshMeshStatus() {
+        _meshStatusFlow.value = getMeshStatus()
+    }
     
     /**
      * Phase 3B: Enhanced getNetworkInfo() with gateway statistics
@@ -1476,7 +1553,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         return try {
             val context = appContext ?: return null
             val uri = Uri.parse(uriString)
-            DocumentFile.fromTreeUri(context, uri)
+            if (uri.scheme == "file") {
+                DocumentFile.fromFile(java.io.File(uri.path ?: return null))
+            } else {
+                DocumentFile.fromTreeUri(context, uri)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get drop folder DocumentFile", e)
             null
@@ -2079,24 +2160,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
     
-    override fun registerBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit) {
-        val handler = broadcastHandler
-        if (handler != null) {
-            // Handler exists, register immediately
-            handler.addReceiveListener(listener)
-            Log.d(TAG, "Registered broadcast listener immediately")
-        } else {
-            // Handler not yet created, queue for later
-            if (pendingBroadcastListeners.size < MeshrabiyaConstants.DEFERRED_LISTENER_QUEUE_MAX_SIZE) {
-                pendingBroadcastListeners.add(listener)
-                Log.d(TAG, "Queued broadcast listener (pending=${pendingBroadcastListeners.size})")
-            } else {
-                Log.w(TAG, "Cannot queue broadcast listener: queue full (max=${MeshrabiyaConstants.DEFERRED_LISTENER_QUEUE_MAX_SIZE})")
-            }
-        }
+   override fun registerBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit) {
+        pendingBroadcastListeners.add(listener)
+        broadcastHandler?.addReceiveListener(listener)
+        Log.d(TAG, "Registered broadcast listener (persistent=${pendingBroadcastListeners.size})")
     }
     
    override fun unregisterBroadcastListener(listener: (com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto) -> Unit) {
+        pendingBroadcastListeners.remove(listener)
         broadcastHandler?.removeReceiveListener(listener)
     }
 
@@ -2107,16 +2178,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      */
     private fun applyPendingBroadcastListeners() {
         val handler = broadcastHandler ?: return
-        var appliedCount = 0
-        
-        while (true) {
-            val listener = pendingBroadcastListeners.poll() ?: break
-            handler.addReceiveListener(listener)
-            appliedCount++
-        }
-        
-        if (appliedCount > 0) {
-            Log.d(TAG, "Applied $appliedCount pending broadcast listeners")
+        pendingBroadcastListeners.forEach { handler.addReceiveListener(it) }
+        if (pendingBroadcastListeners.isNotEmpty()) {
+            Log.d(TAG, "Applied ${pendingBroadcastListeners.size} persistent broadcast listeners to new handler")
         }
     }
 
@@ -2196,11 +2260,27 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         val ctx = appContext ?: return emptyList()
         val wifiManager = ctx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             ?: return emptyList()
-        // Trigger a fresh scan; startScan() is throttled on API 28+ but best-effort.
-        // Wait briefly to allow the OS to update scan results before reading.
-        @Suppress("DEPRECATION")
-        wifiManager.startScan()
-        kotlinx.coroutines.delay(1500)
+        // Block until the OS signals SCAN_RESULTS_AVAILABLE (guarantees fresh results).
+        // Falls back to cached results if broadcast doesn't arrive within 5 s.
+        val scanCompleted = withTimeoutOrNull(5_000) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context, intent: Intent) {
+                        try { ctx.unregisterReceiver(this) } catch (_: Exception) {}
+                        if (cont.isActive) cont.resumeWith(Result.success(Unit))
+                    }
+                }
+                ctx.registerReceiver(receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
+                cont.invokeOnCancellation {
+                    try { ctx.unregisterReceiver(receiver) } catch (_: Exception) {}
+                }
+                @Suppress("DEPRECATION")
+                wifiManager.startScan()
+            }
+        }
+        if (scanCompleted == null) {
+            Log.w(TAG, "scanAvailableWifiNetworks: scan broadcast timed out, using cached results")
+        }
         @Suppress("DEPRECATION")
         val results = wifiManager.scanResults ?: return emptyList()
         val list = results
