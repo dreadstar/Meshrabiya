@@ -120,6 +120,8 @@ object MeshrabiyaConstants {
     const val KEY_CLEARNET_GATEWAY_ENABLED = "clearnet_gateway_enabled"
     const val KEY_STORAGE_PARTICIPATION_ENABLED = "storage_participation_enabled"
     const val KEY_SERVICE_PARTICIPATION_ENABLED = "service_participation_enabled"
+    const val KEY_MESH_PROXY_APP_PACKAGES = "mesh_proxy_app_packages"  // Set<String> of package names
+    const val MESH_INTERNET_RELAY_PORT = 9080  // TCP relay port on CLEARNET_GATEWAY nodes
 
     // --- Settings logic migrated from MeshSettings ---
     private var prefs: SharedPreferences? = null

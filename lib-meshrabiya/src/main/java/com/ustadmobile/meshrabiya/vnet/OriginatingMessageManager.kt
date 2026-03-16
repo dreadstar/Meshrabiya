@@ -57,7 +57,8 @@ class OriginatingMessageManager(
     private val getCentralityScore: (() -> Float)? = null,
     private val getMeshRoles: (() -> Set<MeshRole>)? = null,
     private val getFitnessScore: (() -> Float)? = null,  // Changed from () -> Int
-    
+    private val getInternetSignalInfo: (() -> Pair<Int, Int>)? = null,
+
     // === EXISTING PARAMS ===
     private val pingTimeout: Int = 15_000,
     private val originatingMessageNodeLostThreshold: Int = 10000,
@@ -340,6 +341,8 @@ class OriginatingMessageManager(
             centralityScore = centralityScore,  // NEW: From callback
             fitnessScore = fitnessScore,  // NEW: From callback
             meshRoles = meshRoles,  // NEW: From callback
+            internetSignalStrengthDbm = getInternetSignalInfo?.invoke()?.first ?: 0,
+            internetLinkSpeedMbps = getInternetSignalInfo?.invoke()?.second ?: 0,
         )
     }
 
@@ -428,7 +431,9 @@ class OriginatingMessageManager(
                 centralityScore = mmcpMessage.centralityScore,
                 fitnessScore = mmcpMessage.fitnessScore,
                 lastSeen = System.currentTimeMillis(),
-                pingTime = mmcpMessage.pingTimeSum
+                pingTime = mmcpMessage.pingTimeSum,
+                internetSignalStrengthDbm = mmcpMessage.internetSignalStrengthDbm,
+                internetLinkSpeedMbps = mmcpMessage.internetLinkSpeedMbps,
             )
             
             _topologyMapInfo[virtualPacket.header.fromAddr] = nodeInfo
@@ -805,9 +810,22 @@ class OriginatingMessageManager(
         }
     }
 
-    // Expose the current originatorMessages map for state updates
-    fun getOriginatorMessages(): Map<Int, VirtualNode.LastOriginatorMessage> = originatorMessages
-}
+        // Expose the current originatorMessages map for state updates
+        fun getOriginatorMessages(): Map<Int, VirtualNode.LastOriginatorMessage> = originatorMessages
+
+        /**
+         * Immediately clears gateway roles for a node on receipt of a GATEWAY_DOWN message.
+         * Prevents stale routing to a gateway that has lost its internet connection.
+         */
+        fun markNodeGatewayDown(addr: Int) {
+            val existing = _topologyMapInfo[addr] ?: return
+            _topologyMapInfo[addr] = existing.copy(
+                meshRoles = existing.meshRoles - MeshRole.TOR_GATEWAY - MeshRole.CLEARNET_GATEWAY
+            )
+            _topologyMapFlow.value = _topologyMapInfo.toMap()
+            logger(Log.INFO, "$logPrefix markNodeGatewayDown: cleared gateway roles for ${addr.addressToDotNotation()}", null)
+        }
+    }
 
 /**
  * Tracks a message sent via gateway for return path routing.

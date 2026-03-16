@@ -23,7 +23,11 @@ data class NodeTopologyInfo(
     val centralityScore: Float,
     val fitnessScore: Float,
     val lastSeen: Long = System.currentTimeMillis(),
-    val pingTime: Short = 0  // Latency to reach this node (ms)
+    val pingTime: Short = 0,  // Latency to reach this node (ms)
+    /** RSSI of non-mesh WiFi to internet AP, dBm. 0 = unknown. */
+    val internetSignalStrengthDbm: Int = 0,
+    /** Link speed of non-mesh WiFi, Mbps. 0 = unknown. */
+    val internetLinkSpeedMbps: Int = 0,
 ) {
     /**
      * Check if node offers a specific role (gateway or intelligence)
@@ -57,18 +61,20 @@ data class NodeTopologyInfo(
      */
     fun calculateGatewaySuitability(gatewayType: MeshRole): Float {
         if (!hasRole(gatewayType)) return 0f
-        
-        // Weighted combination of factors
-        val centralityWeight = 0.3f
-        val fitnessWeight = 0.4f
-        val latencyWeight = 0.3f
-        
+
         // Normalize latency: 0ms = 1.0, 1000ms = 0.0
         val normalizedLatency = 1f - (pingTime / 1000f).coerceIn(0f, 1f)
-        
-        return (centralityScore * centralityWeight) +
-               (fitnessScore * fitnessWeight) +
-               (normalizedLatency * latencyWeight)
+
+        // Normalize RSSI [-90,-30] dBm → [0.0,1.0]; 0 (unknown) = 0.5 neutral
+        val signalQuality = if (internetSignalStrengthDbm != 0) {
+            ((internetSignalStrengthDbm.toFloat() + 90f) / 60f).coerceIn(0f, 1f)
+        } else 0.5f
+
+        // Weights: 25% centrality + 35% fitness + 25% latency + 15% signal
+        return (centralityScore * 0.25f) +
+               (fitnessScore * 0.35f) +
+               (normalizedLatency * 0.25f) +
+               (signalQuality * 0.15f)
     }
     
     /**

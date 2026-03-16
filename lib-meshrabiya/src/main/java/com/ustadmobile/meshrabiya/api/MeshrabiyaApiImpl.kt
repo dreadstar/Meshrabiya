@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -324,7 +325,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 )
             }
             .distinctUntilChanged()
-            .collect { _networkInfoFlow.value = it }
+            .collect { dto ->
+                _networkInfoFlow.value = dto
+                _meshInternetGatewayAvailableFlow.value =
+                    dto.nonMeshHasInternet != true && dto.clearnetGateways > 0
+            }
         }
 
         // Reactively expose wifiState for chip UI — no polling
@@ -1244,6 +1249,61 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         }
     }
     
+    // === MESH PROXY APPS (Phase 2) ===
+
+    private val _meshProxyActiveFlow = MutableStateFlow(false)
+
+    override fun getMeshProxyActiveFlow(): StateFlow<Boolean> = _meshProxyActiveFlow
+
+    private val _meshInternetGatewayAvailableFlow = MutableStateFlow(false)
+
+    override fun getMeshInternetGatewayAvailableFlow(): StateFlow<Boolean> =
+        _meshInternetGatewayAvailableFlow
+
+    override suspend fun setMeshProxyApps(packageNames: Set<String>) {
+        val context = appContext ?: throw IllegalStateException("App context not provided")
+        context.dataStore.edit { prefs ->
+            prefs[stringSetPreferencesKey(MeshrabiyaConstants.KEY_MESH_PROXY_APP_PACKAGES)] = packageNames
+        }
+        Log.i(TAG, "[MESH_PROXY] Saved ${packageNames.size} proxy app packages")
+    }
+
+    override suspend fun getMeshProxyApps(): Set<String> {
+        val context = appContext ?: return emptySet()
+        val prefs = context.dataStore.data.first()
+        return prefs[stringSetPreferencesKey(MeshrabiyaConstants.KEY_MESH_PROXY_APP_PACKAGES)]
+            ?: emptySet()
+    }
+
+    @Volatile private var meshLocalSocksProxy: com.ustadmobile.meshrabiya.vnet.MeshLocalSocksProxy? = null
+
+    override fun getMeshProxySocksPort(): Int = meshLocalSocksProxy?.localPort ?: 0
+
+    override fun startMeshProxyServer() {
+        val node = myNode ?: return
+        if (meshLocalSocksProxy != null) return
+        val proxy = com.ustadmobile.meshrabiya.vnet.MeshLocalSocksProxy(
+            logger = node.logger,
+            logPrefix = "[MeshProxy]",
+            meshSocketFactory = node.socketFactory,
+            getGatewayAddress = {
+                val gateways = node.getAvailableClearnetGatewayAddresses()
+                gateways.firstOrNull()?.let { addr -> node.getInetAddressFor(addr) }
+            }
+        )
+        proxy.start()
+        meshLocalSocksProxy = proxy
+        _meshProxyActiveFlow.value = true
+        Log.i(TAG, "[MESH_PROXY] MeshLocalSocksProxy started on port ${proxy.localPort}")
+    }
+
+    override fun stopMeshProxyServer() {
+        meshLocalSocksProxy?.stop()
+        meshLocalSocksProxy = null
+        _meshProxyActiveFlow.value = false
+        Log.i(TAG, "[MESH_PROXY] MeshLocalSocksProxy stopped")
+    }
+
     override fun setTorGatewayEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
         val roleManager = myNode?.emergentRoleManager
         if (roleManager == null) {
@@ -2246,6 +2306,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     override suspend fun disconnectFromNonMeshWifi(): Boolean {
         val node = myNode ?: return false
+        // Notify mesh peers before dropping internet WiFi if this node acts as a gateway
+        val roles = emergentRoleManager?.getCurrentMeshRoles() ?: emptySet()
+        if (roles.any { it == MeshRole.TOR_GATEWAY || it == MeshRole.CLEARNET_GATEWAY }) {
+            node.broadcastGatewayDown()
+        }
         node.meshrabiyaWifiManager.disconnectFromInternetWifi()
         _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE)
         _networkInfoFlow.value = getNetworkInfo()

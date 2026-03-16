@@ -38,7 +38,9 @@ class MmcpOriginatorMessage(
     val centralityScore: Float = 0f,         // BFS centrality score
     val fitnessScore: Float = 0f,            // Node fitness (0.0-1.0)
     val meshRoles: Set<MeshRole> = emptySet(), // Current mesh roles
-    
+    val internetSignalStrengthDbm: Int = 0,  // RSSI of internet WiFi network (0 = unknown)
+    val internetLinkSpeedMbps: Int = 0,      // Link speed of internet WiFi network (0 = unknown)
+
 ) : MmcpMessage(WHAT_ORIGINATOR, messageId) {
 
     /**
@@ -58,7 +60,9 @@ class MmcpOriginatorMessage(
             neighbors = neighbors,
             centralityScore = centralityScore,
             fitnessScore = fitnessScore,
-            meshRoles = meshRoles
+            meshRoles = meshRoles,
+            internetSignalStrengthDbm = internetSignalStrengthDbm,
+            internetLinkSpeedMbps = internetLinkSpeedMbps,
         )
     }
 
@@ -87,7 +91,10 @@ class MmcpOriginatorMessage(
         
         dos.writeInt(meshRoles.size)
         meshRoles.forEach { dos.writeByte(it.ordinal) }
-        
+
+        dos.writeInt(internetSignalStrengthDbm)
+        dos.writeInt(internetLinkSpeedMbps)
+
         val payload = baos.toByteArray()
         return headerAndPayloadToBytes(header, payload)
     }
@@ -134,7 +141,9 @@ class MmcpOriginatorMessage(
                 neighbors = neighbors,
                 centralityScore = centralityScore,
                 fitnessScore = fitnessScore,
-                meshRoles = meshRoles
+                meshRoles = meshRoles,
+                internetSignalStrengthDbm = if (buffer.hasRemaining()) buffer.int else 0,
+                internetLinkSpeedMbps = if (buffer.hasRemaining()) buffer.int else 0,
             )
         }
     }

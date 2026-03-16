@@ -85,7 +85,19 @@ class AndroidVirtualNode(
     private val clearnetGatewayForwarder: ClearnetGatewayForwarder = ClearnetGatewayForwarder(
         logger = logger,
         logPrefix = "ClearnetGateway",
+        onResponsePacket = { packet -> route(packet, null, null) },
     )
+
+    private val torGatewayForwarder: TorGatewayForwarder = TorGatewayForwarder(
+        logger = logger,
+        logPrefix = "TorGateway",
+        onResponsePacket = { packet -> route(packet, null, null) },
+    )
+
+    override fun onTorGatewayPacket(packet: VirtualPacket): Boolean {
+        torGatewayForwarder.forward(packet)
+        return true
+    }
 
     init {
         // Start WiFi state monitoring after all properties initialized

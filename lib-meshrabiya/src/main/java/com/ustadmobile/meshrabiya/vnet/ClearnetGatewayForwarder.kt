@@ -3,59 +3,88 @@ package com.ustadmobile.meshrabiya.vnet
 import android.net.Network
 import android.util.Log
 import com.ustadmobile.meshrabiya.log.MNetLogger
-import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.IOException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
- * Forwards CLEARNET-routed VirtualPackets to the internet via the provided Network object.
- *
- * The [internetWifiNetwork] is the Network obtained from ConnectivityManager when
- * connectToInternetWifi() succeeds. Sockets created via its socketFactory are automatically
- * routed through the internet WiFi interface, bypassing the mesh.
- *
- * Usage: instantiate one instance; call [forward] when GATEWAY_TYPE_CLEARNET packets arrive.
- * Call [close] when the internet WiFi connection is lost to release resources.
- *
- * NOTE: This is a functional skeleton. The full implementation requires:
- * - Parsing the VirtualPacket IP payload to extract destination IP + port
- * - Creating a TCP or UDP socket via internetWifiNetwork.socketFactory
- * - Binding the socket to the network via internetWifiNetwork.bindSocket(socket) for UDP
- * - Streaming the payload, collecting the response, and injecting it back into the mesh
- *
- * The ChainSocketServer pattern (already used in MeshrabiyaWifiManagerAndroid for station
- * bound sockets) is the recommended approach for the forwarding implementation.
+ * Forwards CLEARNET-routed VirtualPackets to the internet via [Network.bindSocket].
+ * Uses the provided [Network] object (the internet WiFi interface) so sockets bypass the
+ * active Orbot VPN tunnel. UDP-only in Phase 1 (covers DNS, NTP, QUIC/HTTP3).
  */
 class ClearnetGatewayForwarder(
     private val logger: MNetLogger,
     private val logPrefix: String,
+    private val onResponsePacket: (VirtualPacket) -> Unit,
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val job = SupervisorJob()
+    private val scope = CoroutineScope(Dispatchers.IO + job)
 
-    /**
-     * Forward a CLEARNET-tagged VirtualPacket via the provided internet WiFi network.
-     * @param packet The VirtualPacket with gatewayType == GATEWAY_TYPE_CLEARNET.
-     * @param internetWifiNetwork The Network object for the internet WiFi connection.
-     */
     fun forward(packet: VirtualPacket, internetWifiNetwork: Network) {
         scope.launch {
             try {
-                // TODO: Parse VirtualPacket IP payload, extract destination address and port.
-                // TODO: Create socket via internetWifiNetwork.socketFactory.
-                // TODO: internetWifiNetwork.bindSocket(socket) for UDP sockets.
-                // TODO: Write payload, read response, inject back into virtual network.
-                logger(Log.DEBUG, "$logPrefix ClearnetGatewayForwarder: forward() — implementation pending")
+                val header = packet.header
+                val destIpBytes = ByteBuffer.allocate(4)
+                    .order(ByteOrder.BIG_ENDIAN)
+                    .putInt(header.toAddr)
+                    .array()
+                val destInetAddr = InetAddress.getByAddress(destIpBytes)
+                val destPort = header.toPort.toInt() and 0xFFFF
+                val payloadSize = header.payloadSize
+                val payload = packet.data.copyOfRange(
+                    packet.payloadOffset,
+                    packet.payloadOffset + payloadSize
+                )
+
+                logger(Log.DEBUG, "$logPrefix forward: dst=${destInetAddr.hostAddress}:$destPort payloadSize=$payloadSize")
+
+                val socket = DatagramSocket()
+                internetWifiNetwork.bindSocket(socket)
+                socket.soTimeout = 5_000
+                socket.send(DatagramPacket(payload, payload.size, InetSocketAddress(destInetAddr, destPort)))
+
+                val responseBuffer = ByteArray(65_535)
+                val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+                try {
+                    socket.receive(responsePacket)
+                    val responseData = responsePacket.data.copyOf(responsePacket.length)
+                    val returnHeader = VirtualPacketHeader(
+                        toAddr = header.fromAddr,
+                        toPort = header.fromPort,
+                        fromAddr = header.toAddr,
+                        fromPort = destPort,
+                        lastHopAddr = 0,
+                        hopCount = 0,
+                        maxHops = header.maxHops,
+                        gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
+                        payloadSize = responseData.size,
+                    )
+                    onResponsePacket(VirtualPacket.fromHeaderAndPayloadData(returnHeader, responseData, 0))
+                    logger(Log.DEBUG, "$logPrefix response ${responsePacket.length} bytes → ${header.fromAddr}")
+                } catch (e: java.net.SocketTimeoutException) {
+                    logger(Log.WARN, "$logPrefix response timeout for $destInetAddr:$destPort")
+                } finally {
+                    socket.close()
+                }
             } catch (e: IOException) {
-                logger(Log.WARN, "$logPrefix ClearnetGatewayForwarder: forward error: ${e.message}")
+                logger(Log.WARN, "$logPrefix forward error: ${e.message}")
+            } catch (e: Exception) {
+                logger(Log.ERROR, "$logPrefix unexpected error: ${e.message}", e)
             }
         }
     }
 
     fun close() {
-        // Cancel scope and release resources when internet WiFi disconnects.
-        // scope.cancel() can be added when a SupervisorJob is provided.
+        job.cancel()
         logger(Log.INFO, "$logPrefix ClearnetGatewayForwarder: closed")
     }
 }

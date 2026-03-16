@@ -780,6 +780,21 @@ class MeshrabiyaWifiManagerAndroid(
         logger(Log.INFO, "$logPrefix disconnectFromInternetWifi: removed suggestion, cleared internet WiFi network and callback")
     }
 
+    data class InternetWifiSignalInfo(
+        val rssiDbm: Int = 0,
+        val linkSpeedMbps: Int = 0,
+    )
+
+    @Suppress("DEPRECATION")
+    fun getInternetWifiSignalInfo(): InternetWifiSignalInfo {
+        if (internetWifiNetwork == null) return InternetWifiSignalInfo()
+        val info = wifiManager.connectionInfo ?: return InternetWifiSignalInfo()
+        return InternetWifiSignalInfo(
+            rssiDbm = info.rssi,
+            linkSpeedMbps = info.linkSpeed,
+        )
+    }
+
     override suspend fun connectToHotspot(
         config: WifiConnectConfig,
         timeout: Long,

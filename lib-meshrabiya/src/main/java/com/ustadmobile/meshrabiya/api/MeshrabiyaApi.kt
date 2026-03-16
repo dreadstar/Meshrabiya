@@ -491,6 +491,47 @@ interface MeshrabiyaApi {
      * Returns false if the mesh node is not yet initialized.
      */
     fun isWifiEnabled(): Boolean
+
+    // === MESH PROXY APPS (Phase 2) ===
+
+    /**
+     * Persist the set of package names whose traffic this node will proxy through its
+     * internet connection on behalf of remote mesh peers.
+     * Stored via DataStore using [MeshrabiyaConstants.KEY_MESH_PROXY_APP_PACKAGES].
+     */
+    suspend fun setMeshProxyApps(packageNames: Set<String>)
+
+    /**
+     * Return the currently persisted set of package names for mesh proxy.
+     * Returns empty set if none configured.
+     */
+    suspend fun getMeshProxyApps(): Set<String>
+
+    /**
+     * Observe whether mesh proxy is currently active (i.e. the proxy VPN service is running
+     * and at least one package is configured). Emits false when not active.
+     */
+    fun getMeshProxyActiveFlow(): StateFlow<Boolean>
+
+    /**
+     * Emits true when BOTH conditions hold simultaneously:
+     *   1. The local device does NOT have direct internet (nonMeshHasInternet == false), AND
+     *   2. At least one CLEARNET_GATEWAY node is reachable in the mesh topology.
+     * Used by [MeshProxyController] to decide when to activate mesh-proxy VPN mode.
+     */
+    fun getMeshInternetGatewayAvailableFlow(): StateFlow<Boolean>
+
+    /**
+     * The loopback TCP port on which [MeshLocalSocksProxy] is currently listening.
+     * Returns 0 if the proxy server has not been started via [startMeshProxyServer].
+     */
+    fun getMeshProxySocksPort(): Int
+
+    /** Start the local SOCKS5 mesh-proxy server. Idempotent. */
+    fun startMeshProxyServer()
+
+    /** Stop the local SOCKS5 mesh-proxy server. Idempotent. */
+    fun stopMeshProxyServer()
 }
 
 

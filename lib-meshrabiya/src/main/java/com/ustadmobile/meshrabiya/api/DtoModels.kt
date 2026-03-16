@@ -85,13 +85,15 @@ data class NetworkInfoDto(
     val nonMeshIpAddress: String? = null,
     val nonMeshHasInternet: Boolean? = null,
     val torGateways: Int,
-    val clearnetGateways: Int
+    val clearnetGateways: Int,
+    val meshProxyActive: Boolean = false,
 )
 
 fun NetworkInfo.toDto(
     nonMeshSsid: String? = null,
     nonMeshIpAddress: String? = null,
-    nonMeshHasInternet: Boolean? = null
+    nonMeshHasInternet: Boolean? = null,
+    meshProxyActive: Boolean = false,
 ) = NetworkInfoDto(
     ssid,
     bssid,
@@ -102,7 +104,8 @@ fun NetworkInfo.toDto(
     nonMeshIpAddress,
     nonMeshHasInternet,
     torGateways,
-    clearnetGateways
+    clearnetGateways,
+    meshProxyActive,
 )
 
 fun NetworkInfoDto.toInternal() = NetworkInfo(

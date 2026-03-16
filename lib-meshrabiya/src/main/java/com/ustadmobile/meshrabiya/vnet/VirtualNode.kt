@@ -290,7 +290,13 @@ abstract class VirtualNode(
         getFitnessScore = { 
             emergentRoleManager.calculateNormalizedFitness(getCurrentNodeCapabilities()) 
         },
-        
+        getInternetSignalInfo = {
+            (meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
+                ?.getInternetWifiSignalInfo()
+                ?.let { Pair(it.rssiDbm, it.linkSpeedMbps) }
+                ?: Pair(0, 0)
+        },
+
         // === EXISTING PARAMS ===
         pingTimeout = 15_000,
         originatingMessageNodeLostThreshold = 10_000,
@@ -655,6 +661,17 @@ abstract class VirtualNode(
         } else {
             logger(Log.WARN, "$logPrefix: [PKT_CHECK] ❌ BOUNDS CHECK FAILED - payloadSize=$payloadSize, offset=$offset, dataSize=${payload.size}, boundsOK=${if (offset >= 0 && offset + 4 < payload.size) offset + payloadSize <= payload.size else false}")
         }
+
+        // Handle GATEWAY_DOWN before full MMCP parsing — what=18 is not a registered MMCP class
+        // and would throw IllegalArgumentException in fromVirtualPacket().
+        val payloadOff = virtualPacket.payloadOffset
+        if (payload.size > payloadOff && payload[payloadOff] == MmcpMessage.WHAT_GATEWAY_DOWN) {
+            val senderAddr = virtualPacket.header.fromAddr
+            logger(Log.INFO, "$logPrefix GATEWAY_DOWN from ${senderAddr.addressToDotNotation()}: clearing gateway roles")
+            originatingMessageManager.markNodeGatewayDown(senderAddr)
+            emergentRoleManager.updateRoles()
+            return false
+        }
         
         try {
             val mmcpMessage = MmcpMessage.fromVirtualPacket(virtualPacket)
@@ -885,6 +902,11 @@ abstract class VirtualNode(
             if (onClearnetGatewayPacket(packet)) return
         }
 
+        // --- TOR GATEWAY DISPATCH ---
+        if (currentRoles.contains(MeshRole.TOR_GATEWAY) && packet.header.gatewayType == VirtualPacketHeader.GATEWAY_TYPE_TOR) {
+            if (onTorGatewayPacket(packet)) return
+        }
+
         if(packet.header.toAddr == addressAsInt) {
             val listeningSocket = activeSockets[packet.header.toPort]
             if(listeningSocket != null) {
@@ -1058,6 +1080,14 @@ abstract class VirtualNode(
         return originatingMessageManager.getNodesWithRole(MeshRole.CLEARNET_GATEWAY)
             .filter { !it.isStale(GATEWAY_STALE_TIMEOUT_MS) }
     }
+
+    /**
+     * Returns integer virtual addresses of all known CLEARNET_GATEWAY peers.
+     * Used by MeshLocalSocksProxy to resolve the best gateway to route traffic through.
+     */
+    fun getAvailableClearnetGatewayAddresses(): List<Int> =
+        getAvailableClearnetGateways().map { it.nodeAddress }
+
 
     /**
      * Selects best gateway from available list.
@@ -1417,6 +1447,32 @@ abstract class VirtualNode(
      * @return true if the packet was handled (caller should return), false to fall through.
      */
     protected open fun onClearnetGatewayPacket(packet: VirtualPacket): Boolean = false
+
+    protected open fun onTorGatewayPacket(packet: VirtualPacket): Boolean = false
+
+    fun broadcastGatewayDown() {
+        val mmcpPayload = byteArrayOf(MmcpMessage.WHAT_GATEWAY_DOWN)
+        val header = VirtualPacketHeader(
+            toAddr = ADDR_BROADCAST,
+            toPort = 0,
+            fromAddr = addressAsInt,
+            fromPort = 0,
+            lastHopAddr = addressAsInt,
+            hopCount = 0,
+            maxHops = 3,
+            gatewayType = VirtualPacketHeader.GATEWAY_TYPE_NONE,
+            payloadSize = mmcpPayload.size,
+        )
+        val pkt = VirtualPacket.fromHeaderAndPayloadData(header, mmcpPayload, 0)
+        originatingMessageManager.neighbors().forEach { (_, neighbor) ->
+            neighbor.receivedFromSocket.send(
+                nextHopAddress = neighbor.lastHopRealInetAddr,
+                nextHopPort = neighbor.lastHopRealPort,
+                virtualPacket = pkt,
+            )
+        }
+        logger(Log.INFO, "$logPrefix broadcastGatewayDown: sent to ${originatingMessageManager.neighbors().size} neighbors")
+    }
 
     // === Gateway Routing Methods (Phase 4) ===
     

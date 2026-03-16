@@ -29,6 +29,8 @@ import com.ustadmobile.meshrabiya.vnet.hardware.DeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.AndroidDeviceCapabilityManager
 import com.ustadmobile.meshrabiya.vnet.hardware.MLCapabilityDetector
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotStatus
+import com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManagerAndroid
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 // UPDATED: MeshRole moved from mmcp to vnet package (canonical location)
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 
@@ -61,7 +63,9 @@ data class NodeCapabilitySnapshot(
     val thermalState: ThermalState,
     val networkQuality: Float, // 0.0-1.0
     val stability: Float, // 0.0-1.0 based on uptime/connectivity history
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    /** True if device has non-mesh WiFi with validated internet access. */
+    val hasNonMeshInternetAccess: Boolean = false,
 ) {
     fun hasStableConnection(): Boolean = networkQuality > 0.7f && stability > 0.6f
     
@@ -138,7 +142,8 @@ class EmergentRoleManager(
     private val getCurrentNodeCapabilities: (() -> NodeCapabilitySnapshot)? = null,  // NEW: Callback
     private val meshTrafficRouter: Any? = null, // Accept any traffic router for integration
     private val distributedStorageManager: Any? = null, // Accept storage manager for integration
-    private val deviceCapabilityManager: DeviceCapabilityManager? = null // Hardware metrics collector
+    private val deviceCapabilityManager: DeviceCapabilityManager? = null, // Hardware metrics collector
+    private val meshInternetRelayServer: com.ustadmobile.meshrabiya.vnet.gateway.MeshInternetRelayServer? = null
 ) {
     companion object {
         private const val TAG = "EmergentRoleManager"
@@ -374,7 +379,7 @@ class EmergentRoleManager(
         
         // Gateway roles: respect user preferences as filters
         // Only assign gateway roles if user has enabled them AND device meets criteria
-        if (node.hasStableConnection() && fitness > 0.8 && mesh.needsMoreGateways) {
+        if (node.hasStableConnection() && node.hasNonMeshInternetAccess && fitness > 0.8 && mesh.needsMoreGateways) {
             android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Gateway criteria MET, checking user preferences...")
             safeLog(LogLevel.INFO, "[ROLE_CALC] Gateway criteria met, checking user preferences...")
             // Check each gateway type individually
@@ -684,7 +689,9 @@ class EmergentRoleManager(
                 batteryInfo = batteryInfo,
                 thermalState = ThermalState.COOL, // Fallback: assume cool
                 networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
-                stability = 0.8f // Fallback: assume good stability
+                stability = 0.8f, // Fallback: assume good stability
+                hasNonMeshInternetAccess = (virtualNode.meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
+                    ?.internetWifiNetworkStateFlow?.value?.hasInternetAccess ?: false,
             )
         }
     }
@@ -1012,6 +1019,11 @@ class EmergentRoleManager(
                     activateGatewayRouting(GatewayMode.CLEARNET_GATEWAY)
                     // DEPRECATED: announceGatewayCapability() - part of quorum/announcement false start
                     // CoroutineScope(Dispatchers.IO).launch { announceGatewayCapability() }
+                    val internetNetwork = (virtualNode.meshrabiyaWifiManager as?
+                        com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManagerAndroid)
+                        ?.internetWifiNetworkStateFlow?.value?.network
+                    meshInternetRelayServer?.start(internetNetwork)
+                    safeLog(LogLevel.INFO, "EmergentRole: MeshInternetRelayServer started")
                 }
             }
             
@@ -1023,6 +1035,10 @@ class EmergentRoleManager(
             if (gatewayRolesRemoved.isNotEmpty()) {
                 safeLog(LogLevel.INFO, "EmergentRole: Deactivating gateway routing")
                 deactivateGatewayRouting()
+                if (MeshRole.CLEARNET_GATEWAY in removedRoles) {
+                    meshInternetRelayServer?.stop()
+                    safeLog(LogLevel.INFO, "EmergentRole: MeshInternetRelayServer stopped")
+                }
             }
             
         } catch (e: Exception) {
