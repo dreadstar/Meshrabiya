@@ -546,35 +546,31 @@ class BroadcastMessageHandler(
                         Log.e(broadcastTag(broadcastId), "❌ [FILE_WRITE] Failed: ${e.message}", e)
                     }
                     
-                    // ONLY notify listeners if file write succeeded (do NOT increment notification count for errors)
-                    if (!hasError) {
-                        logger(Log.DEBUG, "${broadcastTag(broadcastId)} [NOTIFICATION] Creating notification DTO for successful file transfer")
-                        val notification = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
-                            broadcastId = broadcastId,
-                            messageText = state.messageText,
-                            fileId = state.metadata.fileId,
-                            fileName = state.metadata.fileName,
-                            filePath = filePath ?: "",
-                            senderNodeId = state.senderNodeId,
-                            latitude = state.metadata.latitude,
-                            longitude = state.metadata.longitude,
-                            receivedAt = System.currentTimeMillis(),
-                            hasError = false,
-                            errorMessage = null
-                        )
-                        
-                        if (state.senderNodeId != virtualNode.addressAsInt) {
-                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Notifying ${receiveListeners.size} listeners for successful file broadcast: fileName='${state.metadata.fileName}'")
-                            synchronized(receiveListeners) {
-                                receiveListeners.forEach { it(notification) }
-                            }
-                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] ✅ All ${receiveListeners.size} listeners notified")
-                        } else {
-                            logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Skipping notification for senderNodeId=${state.senderNodeId} (self)")
+                    // Always notify listeners — pass hasError flag so the UI error branch
+                    // actually fires (previously the hasError -> branch was unreachable dead code)
+                    logger(Log.DEBUG, "${broadcastTag(broadcastId)} [NOTIFICATION] Creating notification DTO (hasError=$hasError)")
+                    val notification = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
+                        broadcastId = broadcastId,
+                        messageText = state.messageText,
+                        fileId = state.metadata.fileId,
+                        fileName = state.metadata.fileName,
+                        filePath = filePath ?: "",
+                        senderNodeId = state.senderNodeId,
+                        latitude = state.metadata.latitude,
+                        longitude = state.metadata.longitude,
+                        receivedAt = System.currentTimeMillis(),
+                        hasError = hasError,
+                        errorMessage = errorMessage
+                    )
+
+                    if (state.senderNodeId != virtualNode.addressAsInt) {
+                        logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Notifying ${receiveListeners.size} listeners (hasError=$hasError): fileName='${state.metadata.fileName}'")
+                        synchronized(receiveListeners) {
+                            receiveListeners.forEach { it(notification) }
                         }
+                        logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] ✅ All ${receiveListeners.size} listeners notified")
                     } else {
-                        // Log error but do NOT notify listeners (no dropdown, no count increment)
-                        logger(Log.WARN, "${broadcastTag(broadcastId)} [NOTIFICATION] ⏭️ Skipping listener notification for failed file transfer: $errorMessage")
+                        logger(Log.INFO, "${broadcastTag(broadcastId)} [NOTIFICATION] Skipping notification for senderNodeId=${state.senderNodeId} (self)")
                     }
                     
                     // Cleanup
@@ -800,7 +796,16 @@ class BroadcastMessageHandler(
         }
         
         logger(Log.INFO, "${broadcastTag(broadcastId)} [SHARED_FOLDER] Drop folder URI: ${dropFolderDoc.uri}, exists=${dropFolderDoc.exists()}, canWrite=${dropFolderDoc.canWrite()}")
-        
+
+        if (!dropFolderDoc.exists()) {
+            logger(Log.ERROR, "${broadcastTag(broadcastId)} [SHARED_FOLDER] ❌ Drop folder does not exist: ${dropFolderDoc.uri}")
+            throw IllegalStateException("Drop folder no longer exists (URI: ${dropFolderDoc.uri})")
+        }
+        if (!dropFolderDoc.canWrite()) {
+            logger(Log.ERROR, "${broadcastTag(broadcastId)} [SHARED_FOLDER] ❌ Drop folder not writable: ${dropFolderDoc.uri}")
+            throw IllegalStateException("Drop folder is not writable (permission revoked?): ${dropFolderDoc.uri}")
+        }
+
         // Find or create SharedWithMe subdirectory using DocumentFile API
         var sharedFolderDoc = dropFolderDoc.findFile("SharedWithMe")
         
@@ -865,10 +870,29 @@ class BroadcastMessageHandler(
     fun cleanupStaleTransfers() {
         virtualNode.connectionExecutor.execute {
             val now = System.currentTimeMillis()
-            
+
             incomingBroadcasts.entries.removeIf { (id, state) ->
                 if (now - state.startTime > MeshrabiyaConstants.BROADCAST_TIMEOUT_MS) {
                     logger(Log.WARN, "$TAG Broadcast $id timed out, received ${state.receivedChunks.size}/${state.metadata.totalChunks} chunks")
+                    // Notify listeners with timeout error so the UI shows a "Transfer timed out" entry
+                    val timeoutDto = com.ustadmobile.meshrabiya.api.model.BroadcastReceivedDto(
+                        broadcastId = id,
+                        messageText = state.messageText,
+                        fileId = state.metadata.fileId,
+                        fileName = state.metadata.fileName,
+                        filePath = "",
+                        senderNodeId = state.senderNodeId,
+                        latitude = state.metadata.latitude,
+                        longitude = state.metadata.longitude,
+                        receivedAt = System.currentTimeMillis(),
+                        hasError = true,
+                        errorMessage = "Transfer timed out: received ${state.receivedChunks.size}/${state.metadata.totalChunks} chunks"
+                    )
+                    if (state.senderNodeId != virtualNode.addressAsInt) {
+                        synchronized(receiveListeners) {
+                            receiveListeners.forEach { it(timeoutDto) }
+                        }
+                    }
                     true
                 } else {
                     false

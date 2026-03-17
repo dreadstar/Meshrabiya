@@ -252,6 +252,26 @@ class EmergentRoleManager(
             }
         }
 
+        // Monitor internet WiFi access — triggers gateway role re-evaluation when non-mesh internet connects
+        monitoringScope.launch {
+            Log.d(TAG, "[INTERNET_WIFI] Internet WiFi monitor coroutine STARTED")
+            try {
+                (virtualNode.meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
+                    ?.internetWifiNetworkStateFlow
+                    ?.map { it.hasInternetAccess }
+                    ?.distinctUntilChanged()
+                    ?.collect { hasInternet ->
+                        Log.d(TAG, "[INTERNET_WIFI] hasInternetAccess changed to: $hasInternet")
+                        if (hasInternet) {
+                            Log.d(TAG, "[INTERNET_WIFI] Internet access arrived, recalculating roles")
+                            updateRoles(userInitiated = false)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "[INTERNET_WIFI] Internet WiFi monitor FAILED", e)
+            }
+        }
+
         Log.d(TAG, "[WIFI_STATE] All monitoring coroutines launched successfully")
     }
 
@@ -379,7 +399,7 @@ class EmergentRoleManager(
         
         // Gateway roles: respect user preferences as filters
         // Only assign gateway roles if user has enabled them AND device meets criteria
-        if (node.hasStableConnection() && node.hasNonMeshInternetAccess && fitness > 0.8 && mesh.needsMoreGateways) {
+        if (node.hasStableConnection() && node.hasNonMeshInternetAccess && fitness > 0.6 && mesh.needsMoreGateways) {
             android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Gateway criteria MET, checking user preferences...")
             safeLog(LogLevel.INFO, "[ROLE_CALC] Gateway criteria met, checking user preferences...")
             // Check each gateway type individually
@@ -652,7 +672,9 @@ class EmergentRoleManager(
                 "Thermal=${enhancedSnapshot.thermalState}, " +
                 "Stability=${(enhancedSnapshot.stability * 100).toInt()}%")
             
-            enhancedSnapshot
+            val nonMeshInternetAccess = (virtualNode.meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
+                ?.internetWifiNetworkStateFlow?.value?.hasInternetAccess ?: false
+            enhancedSnapshot.copy(hasNonMeshInternetAccess = nonMeshInternetAccess)
             
         } catch (e: Exception) {
             // Fallback to legacy implementation if hardware manager fails

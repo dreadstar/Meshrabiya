@@ -295,9 +295,29 @@ class OriginatingMessageManager(
                 originatorMessages.remove(it.key)
             }
 
-            _state.value = OriginatingMessageState(
-                pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
-            )
+            val peerCountAfter = originatorMessages.size
+
+            // Grace period: when all peers disappear simultaneously (e.g. OS screenshot suppression),
+            // do NOT immediately emit 0-peer state. Wait lostNodeGracePeriodMs before downgrading.
+            if (nodesLost.isNotEmpty() && peerCountAfter == 0 && allPeersLostAtMs == 0L) {
+                allPeersLostAtMs = timeNow
+                logger(Log.DEBUG, { "$logPrefix : checkLostNodesRunnable: all peers lost – grace period started" })
+            }
+
+            val gracePeriodExpired = allPeersLostAtMs == 0L ||
+                    (timeNow - allPeersLostAtMs) >= lostNodeGracePeriodMs
+
+            if (peerCountAfter > 0) {
+                allPeersLostAtMs = 0L   // reset when peers come back
+                _state.value = OriginatingMessageState(
+                    pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
+                )
+            } else if (gracePeriodExpired) {
+                _state.value = OriginatingMessageState(
+                    pendingMessages = originatorMessages.mapValues { it.value.originatorMessage }
+                )
+            }
+            // else: peers gone but grace period active — suppress state emission
         } catch (e: Exception) {
             logBeta(LogLevel.ERROR, "Error checking lost nodes", e)
             logger(Log.ERROR, { "$logPrefix : checkLostNodesRunnable : exception checking lost nodes" }, e)
@@ -315,6 +335,10 @@ class OriginatingMessageManager(
     private val checkLostNodesFuture = scheduledExecutor.scheduleWithFixedDelay(
         checkLostNodesRunnable, lostNodeCheckInterval.toLong(), lostNodeCheckInterval.toLong(), TimeUnit.MILLISECONDS
     )
+
+    @Volatile
+    private var allPeersLostAtMs = 0L
+    private val lostNodeGracePeriodMs = 15_000L      // 15 s — covers OS screenshot suppression
 
     @Volatile
     private var closed = false

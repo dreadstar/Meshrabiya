@@ -299,15 +299,19 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 node.originatingMessageManager.topologyMapFlow,
                 _nonMeshWifiState,
                 node.meshrabiyaWifiManager.internetWifiNetworkStateFlow,
-                _nonMeshInternetConfirmed
-            ) { localState, topology, nonMeshWifi, internetWifiState, internetConfirmed ->
+                combine(_nonMeshInternetConfirmed, _currentMeshRolesFlow) { confirmed, roles -> Pair(confirmed, roles) }
+            ) { localState, topology, nonMeshWifi, internetWifiState, confirmedAndRoles ->
+                val internetConfirmed = confirmedAndRoles.first
+                val localRoles = confirmedAndRoles.second
                 val neighborCount = localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
-                val torGateways = topology.values.count { nodeInfo ->
+                val remoteTorGateways = topology.values.count { nodeInfo ->
                     nodeInfo.hasRole(MeshRole.TOR_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
                 }
-                val clearnetGateways = topology.values.count { nodeInfo ->
+                val remoteClearnetGateways = topology.values.count { nodeInfo ->
                     nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
                 }
+                val torGateways = remoteTorGateways + (if (MeshRoleDto.TOR_GATEWAY in localRoles) 1 else 0)
+                val clearnetGateways = remoteClearnetGateways + (if (MeshRoleDto.CLEARNET_GATEWAY in localRoles) 1 else 0)
                 val nonMeshSsid = nonMeshWifi.connectedSsid
                 val nonMeshHasInternet = (internetWifiState.hasInternetAccess || internetConfirmed)
                     .takeIf { nonMeshWifi.status == NonMeshWifiStatusDto.CONNECTED }
@@ -686,15 +690,18 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - connectedNeighbors=$connectedNeighbors, topologySize=${topology.size}")
         
         // Phase 3B: Count gateways by type
-        val torGateways = topology.values.count { nodeInfo ->
+        val localRoles = emergentRoleManager?.currentMeshRoles?.value ?: emptySet()
+        val remoteTorGateways = topology.values.count { nodeInfo ->
             nodeInfo.hasRole(MeshRole.TOR_GATEWAY) &&
             !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
         }
+        val torGateways = remoteTorGateways + (if (MeshRole.TOR_GATEWAY in localRoles) 1 else 0)
         
-        val clearnetGateways = topology.values.count { nodeInfo ->
+        val remoteClearnetGateways = topology.values.count { nodeInfo ->
             nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) &&
             !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
         }
+        val clearnetGateways = remoteClearnetGateways + (if (MeshRole.CLEARNET_GATEWAY in localRoles) 1 else 0)
         
         Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - returning NetworkInfoDto with connectedPeers=$connectedNeighbors")
 
