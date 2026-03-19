@@ -22,6 +22,7 @@ import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState
 import com.ustadmobile.meshrabiya.vnet.wifi.state.WifiDirectState
 import com.ustadmobile.meshrabiya.vnet.wifi.state.LocalOnlyHotspotState
 import com.ustadmobile.meshrabiya.vnet.wifi.WifiConnectConfig
+import com.ustadmobile.meshrabiya.vnet.wifi.MeshrabiyaWifiManagerAndroid.InternetWifiNetworkState
 import com.ustadmobile.meshrabiya.mmcp.MmcpOriginatorMessage
 import com.ustadmobile.meshrabiya.vnet.MeshRole
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
@@ -755,6 +756,15 @@ data class NonMeshWifiConnectionStateDto(
      */
     val internetConnectionIpAddress: String? = null,
 )
+
+fun InternetWifiNetworkState.toDto(): NonMeshWifiConnectionStateDto =
+    NonMeshWifiConnectionStateDto(
+        status = if (network != null) NonMeshWifiStatusDto.CONNECTED else NonMeshWifiStatusDto.IDLE,
+        connectedSsid = null,
+        errorMessage = null,
+        hasInternetAccess = hasInternetAccess,
+        internetConnectionIpAddress = ipAddress
+    )
 
 /**
  * Status values for the non-mesh WiFi internet connection lifecycle.

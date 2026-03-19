@@ -2,6 +2,9 @@ package com.ustadmobile.meshrabiya.api
 // import com.ustadmobile.meshrabiya.model.toHash
 import com.ustadmobile.meshrabiya.service.compute.model.TaskType
 import java.io.File
+import java.net.Socket
+import java.net.InetSocketAddress
+import java.io.DataInputStream
 import android.content.Context
 import android.net.Uri
 import android.net.wifi.WifiManager
@@ -84,6 +87,12 @@ import android.net.NetworkCapabilities
 import java.net.URL
 import java.net.HttpURLConnection
 import kotlinx.coroutines.withContext
+import com.ustadmobile.meshrabiya.vnet.NodeTopologyInfo
+import com.ustadmobile.meshrabiya.api.model.MeshRoleDto
+import com.ustadmobile.meshrabiya.api.model.LocalNodeStateDto
+import com.ustadmobile.meshrabiya.api.model.NonMeshWifiConnectionStateDto
+import com.ustadmobile.meshrabiya.api.model.NonMeshWifiStatusDto
+
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
 /**
@@ -137,6 +146,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         private const val GATEWAY_STALE_TIMEOUT_MS = 30_000L  // 30 seconds
         /** Interval between periodic non-mesh internet connectivity probes. */
         private const val NONMESH_INTERNET_CHECK_INTERVAL_MS = 30_000L
+        private const val MESH_INTERNET_CHECK_INTERVAL_MS = 30_000L
     }
 
     // Internal managers, initialized in initMesh
@@ -203,7 +213,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     // Confirmed internet access on non-mesh WiFi; persists across transient VALIDATED dropouts
     private val _nonMeshInternetConfirmed = MutableStateFlow(false)
     private var nonMeshInternetCheckJob: Job? = null
-    
+    // Confirmed internet access via a remote CLEARNET_GATEWAY (mesh-side probe). Set by periodic checkInternetViaMeshGateway().
+    private val _meshInternetViaGatewayConfirmed = MutableStateFlow(false)
+    private var meshInternetCheckJob: Job? = null
+
     // V3: Gateway preference state
     @Volatile
     private var currentGatewayPreference: GatewayPreference = GatewayPreference.DEFAULT
@@ -295,14 +308,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         // _nonMeshInternetConfirmed is the 5th input: persists green dot through transient VALIDATED dropouts
         eventMonitoringScope.launch {
             combine(
-                node.state,
+                node.state.map { it.toDto() },
                 node.originatingMessageManager.topologyMapFlow,
                 _nonMeshWifiState,
-                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow,
-                combine(_nonMeshInternetConfirmed, _currentMeshRolesFlow) { confirmed, roles -> Pair(confirmed, roles) }
-            ) { localState, topology, nonMeshWifi, internetWifiState, confirmedAndRoles ->
-                val internetConfirmed = confirmedAndRoles.first
-                val localRoles = confirmedAndRoles.second
+                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.map { it.toDto() },
+                combine(_nonMeshInternetConfirmed, _currentMeshRolesFlow) { confirmed: Boolean, roles: Set<MeshRoleDto> -> Pair(confirmed, roles) },
+                _meshInternetViaGatewayConfirmed
+            ) { args: Array<Any?> ->
+                val localState = args[0] as LocalNodeStateDto
+                val topology = args[1] as Map<Int, NodeTopologyInfo>
+                val nonMeshWifi = args[2] as NonMeshWifiConnectionStateDto
+                val internetWifiState = args[3] as NonMeshWifiConnectionStateDto
+                val confirmedAndRoles = args[4] as Pair<Boolean, Set<MeshRoleDto>>
+                val meshViaGatewayConfirmed = args[5] as Boolean
+
+                val (internetConfirmed, localRoles) = confirmedAndRoles
                 val neighborCount = localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
                 val remoteTorGateways = topology.values.count { nodeInfo ->
                     nodeInfo.hasRole(MeshRole.TOR_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
@@ -315,24 +335,34 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 val nonMeshSsid = nonMeshWifi.connectedSsid
                 val nonMeshHasInternet = (internetWifiState.hasInternetAccess || internetConfirmed)
                     .takeIf { nonMeshWifi.status == NonMeshWifiStatusDto.CONNECTED }
-                NetworkInfoDto(
-                    bssid = "",
-                    ssid = "",
-                    ipAddress = localState.address.addressToDotNotation(),
-                    isConnected = true,
-                    connectedPeers = neighborCount,
-                    torGateways = torGateways,
-                    clearnetGateways = clearnetGateways,
-                    nonMeshSsid = nonMeshSsid,
-                    nonMeshIpAddress = internetWifiState.ipAddress,
-                    nonMeshHasInternet = nonMeshHasInternet
+                val hasRemoteClearnetGateway = remoteClearnetGateways > 0
+                val isLocalClearnetGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles
+                val localHasInternet = nonMeshHasInternet == true
+                val meshInternetGatewayAvailable = when {
+                    isLocalClearnetGateway && !hasRemoteClearnetGateway -> localHasInternet
+                    hasRemoteClearnetGateway -> meshViaGatewayConfirmed
+                    else -> false
+                }
+                Pair(
+                    NetworkInfoDto(
+                        bssid = "",
+                        ssid = "",
+                        ipAddress = localState.address.addressToDotNotation(),
+                        isConnected = true,
+                        connectedPeers = neighborCount,
+                        torGateways = torGateways,
+                        clearnetGateways = clearnetGateways,
+                        nonMeshSsid = nonMeshSsid,
+                        nonMeshIpAddress = internetWifiState.internetConnectionIpAddress,
+                        nonMeshHasInternet = nonMeshHasInternet
+                    ),
+                    meshInternetGatewayAvailable
                 )
             }
             .distinctUntilChanged()
-            .collect { dto ->
+            .collect { (dto, meshInternetGatewayAvailable) ->
                 _networkInfoFlow.value = dto
-                _meshInternetGatewayAvailableFlow.value =
-                    dto.nonMeshHasInternet != true && dto.clearnetGateways > 0
+                _meshInternetGatewayAvailableFlow.value = meshInternetGatewayAvailable
             }
         }
 
@@ -436,6 +466,35 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     _nonMeshInternetConfirmed.value = false
                 }
             }
+            eventMonitoringScope.launch {
+                combine(
+                    node.originatingMessageManager.topologyMapFlow,
+                    _currentMeshRolesFlow
+                ) { topology, localRoles ->
+                    val remoteClearnetGateways = topology.values.count { nodeInfo ->
+                        nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+                    }
+                    val hasRemote = remoteClearnetGateways > 0
+                    val isLocalGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles
+                    Pair(hasRemote, isLocalGateway)
+                }
+                .distinctUntilChanged()
+                .collect { (hasRemote, _) ->
+                    meshInternetCheckJob?.cancel()
+                    meshInternetCheckJob = null
+                    if (hasRemote) {
+                        meshInternetCheckJob = launch {
+                            while (true) {
+                                delay(MESH_INTERNET_CHECK_INTERVAL_MS)
+                                val ok = checkInternetViaMeshGateway()
+                                _meshInternetViaGatewayConfirmed.value = ok
+                            }
+                        }
+                    } else {
+                        _meshInternetViaGatewayConfirmed.value = false
+                    }
+                }
+            }
         }
     }
     
@@ -475,6 +534,87 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
             }
         }
+
+    private suspend fun checkInternetViaMeshGateway(): Boolean =
+    withContext(Dispatchers.IO) {
+        val node = myNode ?: return@withContext false
+        startMeshProxyServer()
+        val port = getMeshProxySocksPort()
+        if (port <= 0) {
+            Log.d(TAG, "[MESH_PROBE] Mesh proxy port not ready")
+            return@withContext false
+        }
+        var socket: Socket? = null
+        try {
+            socket = Socket()
+            socket.soTimeout = 10_000
+            socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+            val out = socket.getOutputStream()
+            val inp = socket.getInputStream()
+            val din = DataInputStream(inp)
+            out.write(byteArrayOf(0x05, 0x01, 0x00))
+            out.flush()
+            val auth = ByteArray(2)
+            din.readFully(auth)
+            if (auth[0] != 0x05.toByte() || auth[1] != 0x00.toByte()) {
+                Log.d(TAG, "[MESH_PROBE] SOCKS5 auth failed")
+                return@withContext false
+            }
+            val host = "connectivitycheck.gstatic.com"
+            val hostBytes = host.toByteArray(Charsets.US_ASCII)
+            val req = ByteArray(7 + hostBytes.size)
+            req[0] = 0x05
+            req[1] = 0x01
+            req[2] = 0x00
+            req[3] = 0x03
+            req[4] = hostBytes.size.toByte()
+            System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
+            req[5 + hostBytes.size] = 0x00
+            req[6 + hostBytes.size] = 0x50
+            out.write(req)
+            out.flush()
+            val rep = ByteArray(4)
+            din.readFully(rep)
+            if (rep[0] != 0x05.toByte() || rep[1] != 0x00.toByte()) {
+                Log.d(TAG, "[MESH_PROBE] SOCKS5 CONNECT failed: ${rep[1]}")
+                return@withContext false
+            }
+            val atyp = rep[3].toInt() and 0xFF
+            when (atyp) {
+                0x01 -> din.readFully(ByteArray(6))
+                0x03 -> { val len = din.read(); din.readFully(ByteArray(len)); din.readFully(ByteArray(2)) }
+                0x04 -> din.readFully(ByteArray(18))
+            }
+            val request = "HEAD /generate_204 HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
+            out.write(request.toByteArray(Charsets.US_ASCII))
+            out.flush()
+            val buf = ByteArray(512)
+            val n = inp.read(buf)
+            if (n <= 0) {
+                Log.d(TAG, "[MESH_PROBE] No HTTP response")
+                return@withContext false
+            }
+            val line = String(buf, 0, n, Charsets.US_ASCII)
+            val code = when {
+                line.startsWith("HTTP/1.0 204") || line.startsWith("HTTP/1.1 204") -> 204
+                line.startsWith("HTTP/1.0 200") || line.startsWith("HTTP/1.1 200") -> 200
+                else -> null
+            }
+            if (code != null) return@withContext true
+            val space = line.indexOf(' ', 9)
+            if (space > 0) {
+                val codeStr = line.substring(space + 1, minOf(space + 4, line.length)).trim()
+                val c = codeStr.toIntOrNull()
+                if (c == 204 || c == 200) return@withContext true
+            }
+            false
+        } catch (e: Exception) {
+            Log.d(TAG, "[MESH_PROBE] Probe failed: ${e.javaClass.simpleName} ${e.message}")
+            false
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
 
     // --- Mesh State & Network Info ---
     // override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
