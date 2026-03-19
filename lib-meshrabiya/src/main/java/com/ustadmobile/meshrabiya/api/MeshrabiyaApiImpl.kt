@@ -185,6 +185,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private var lastJoinedMeshPassphrase: String? = null
 
     private var metricsMonitorJob: Job? = null
+
+    // Tracks the last time each direct peer (hopCount==1) was seen in an
+    // originatorMessages update. Used to detect stale peers whose routing-table
+    // entry hasn't been evicted yet even though the STA is physically gone.
+    private val peerLastSeen = mutableMapOf<Int, Long>()
+    private val PEER_STALE_THRESHOLD_MS = 20_000L   // drop a peer after 20 s of silence
+    private val PEER_LIVENESS_CHECK_MS  =  5_000L   // re-evaluate every 5 s
+
     private var distributedStorageManager: DistributedStorageManager? = null
     // distributedComputeClient accessed via myNode?.distributedComputeClient (protected property)
     // DEPRECATED: intelligentDistributedComputeService removed (2025-12-04)
@@ -435,6 +443,42 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                     )
                 } else {
                     _networkOverviewMetricsFlow.value = NetworkOverviewMetricsDto(0L, 0L, 0)
+                }
+            }
+        }
+
+        // Peer liveness watchdog: evicts stale originatorMessage entries that the
+        // routing layer has not yet removed after a STA disconnect, then re-derives
+        // meshStatusFlow from the surviving live-peer count + physical link state.
+        eventMonitoringScope.launch {
+            while (true) {
+                delay(PEER_LIVENESS_CHECK_MS)
+                val now = System.currentTimeMillis()
+
+                // Refresh timestamps from current routing table
+                val currentMessages = node.state.first().originatorMessages
+                currentMessages.entries
+                    .filter { entry -> entry.value.hopCount == 1.toByte() }
+                    .forEach { (addr, _) -> peerLastSeen[addr] = now }
+
+                // Evict peers not seen in the last PEER_STALE_THRESHOLD_MS
+                val staleBefore = now - PEER_STALE_THRESHOLD_MS
+                val evicted = peerLastSeen.entries.removeAll { entry -> entry.value < staleBefore }
+
+                val liveCount = peerLastSeen.size
+                val apActive = _meshApActiveFlow.value
+                val staActive = _wifiStateFlow.value
+                    ?.wifiStationState?.status == WifiStationState.Status.AVAILABLE.name
+                val hasPhysicalLink = apActive || staActive
+
+                val derived = when {
+                    !hasPhysicalLink -> MeshStateDto.DISCONNECTED
+                    liveCount > 0 -> MeshStateDto.CONNECTED
+                    else -> MeshStateDto.CONNECTING
+                }
+                if (_meshStatusFlow.value != derived) {
+                    Log.d(TAG, "[LIVENESS] liveCount=$liveCount evicted=$evicted → $derived")
+                    _meshStatusFlow.value = derived
                 }
             }
         }
@@ -810,7 +854,24 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun getPeerCount(): Int = myNode?.neighbors()?.size ?: 0 // myNode?.getPeerCount() ?: 0
 
     override fun refreshMeshStatus() {
-        _meshStatusFlow.value = getMeshStatus()
+        // On screen resume: evict stale peers first, then recompute.
+        // This ensures the UI doesn't show a stale CONNECTED on unlock.
+        val now = System.currentTimeMillis()
+        val staleBefore = now - PEER_STALE_THRESHOLD_MS
+        peerLastSeen.entries.removeAll { (_, lastSeen) -> lastSeen < staleBefore }
+
+        val liveCount = peerLastSeen.size
+        val apActive = _meshApActiveFlow.value
+        val staActive = _wifiStateFlow.value
+            ?.wifiStationState?.status == com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState.Status.AVAILABLE.name
+        val hasPhysicalLink = apActive || staActive
+
+        _meshStatusFlow.value = when {
+            !hasPhysicalLink -> MeshStateDto.DISCONNECTED
+            liveCount > 0    -> MeshStateDto.CONNECTED
+            else             -> MeshStateDto.CONNECTING
+        }
+        Log.d(TAG, "[REFRESH] apActive=$apActive staActive=$staActive liveCount=$liveCount → ${_meshStatusFlow.value}")
     }
     
     /**
