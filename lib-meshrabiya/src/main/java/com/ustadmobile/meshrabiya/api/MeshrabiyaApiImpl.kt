@@ -346,11 +346,11 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 val hasRemoteClearnetGateway = remoteClearnetGateways > 0
                 val isLocalClearnetGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles
                 val localHasInternet = nonMeshHasInternet == true
-                val meshInternetGatewayAvailable = when {
-                    isLocalClearnetGateway && !hasRemoteClearnetGateway -> localHasInternet
-                    hasRemoteClearnetGateway -> meshViaGatewayConfirmed
-                    else -> false
-                }
+                // meshInternetGatewayAvailable is driven solely by _meshInternetViaGatewayConfirmed
+                // for all gateway cases. This decouples the mesh green dot from the non-mesh HTTP
+                // probe result, preventing the mesh dot from disappearing when the VPN causes
+                // the non-mesh probe to fail transiently.
+                val meshInternetGatewayAvailable = meshViaGatewayConfirmed
                 Pair(
                     NetworkInfoDto(
                         bssid = "",
@@ -503,40 +503,69 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                         while (true) {
                             delay(NONMESH_INTERNET_CHECK_INTERVAL_MS)
                             val confirmed = checkNonMeshInternetAccess(node)
-                            _nonMeshInternetConfirmed.value = confirmed
+                            if (confirmed) {
+                                _nonMeshInternetConfirmed.value = true
+                            }
                         }
                     }
                 } else {
                     _nonMeshInternetConfirmed.value = false
                 }
             }
-            eventMonitoringScope.launch {
-                combine(
-                    node.originatingMessageManager.topologyMapFlow,
-                    _currentMeshRolesFlow
-                ) { topology, localRoles ->
-                    val remoteClearnetGateways = topology.values.count { nodeInfo ->
-                        nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
-                    }
-                    val hasRemote = remoteClearnetGateways > 0
-                    val isLocalGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles
-                    Pair(hasRemote, isLocalGateway)
+        }
+
+        // Mesh gateway internet check — runs on ANY mesh-connected node (AP or STA)
+        // This is intentionally a SEPARATE top-level launch, not nested inside the
+        // nonMeshWifiState collector. A pure STA node (Phone 2) must reach this path
+        // even when it has no upstream WiFi of its own.
+        eventMonitoringScope.launch {
+            combine(
+                node.originatingMessageManager.topologyMapFlow,
+                _currentMeshRolesFlow,
+                _nonMeshWifiState
+            ) { topology, localRoles, nonMeshState ->
+                val hasRemoteGateway = topology.values.any { nodeInfo ->
+                    (nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) ||
+                    nodeInfo.hasRole(MeshRole.TOR_GATEWAY)) &&
+                    !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
                 }
-                .distinctUntilChanged()
-                .collect { (hasRemote, _) ->
-                    meshInternetCheckJob?.cancel()
-                    meshInternetCheckJob = null
-                    if (hasRemote) {
-                        meshInternetCheckJob = launch {
-                            while (true) {
-                                delay(MESH_INTERNET_CHECK_INTERVAL_MS)
-                                val ok = checkInternetViaMeshGateway()
-                                _meshInternetViaGatewayConfirmed.value = ok
+                val isLocalGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles ||
+                                    MeshRoleDto.TOR_GATEWAY in localRoles
+                val nonMeshConnected = nonMeshState.status == NonMeshWifiStatusDto.CONNECTED
+                val apActive = _meshApActiveFlow.value
+                val shouldCheck = hasRemoteGateway ||
+                                (apActive && isLocalGateway && nonMeshConnected)
+                shouldCheck
+            }
+            .distinctUntilChanged()
+            .collect { shouldCheck ->
+                meshInternetCheckJob?.cancel()
+                meshInternetCheckJob = null
+                if (shouldCheck) {
+                    val capturedNode = node
+                    meshInternetCheckJob = launch {
+                        while (true) {
+                            delay(MESH_INTERNET_CHECK_INTERVAL_MS)
+                            val currentLocalRoles = _currentMeshRolesFlow.value
+                            val currentIsLocalGateway =
+                                MeshRoleDto.CLEARNET_GATEWAY in currentLocalRoles ||
+                                MeshRoleDto.TOR_GATEWAY in currentLocalRoles
+                            val currentHasRemote = capturedNode.originatingMessageManager
+                                .getTopologyMapInfo().values.any { nodeInfo ->
+                                    (nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) ||
+                                    nodeInfo.hasRole(MeshRole.TOR_GATEWAY)) &&
+                                    !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
+                                }
+                            val ok = if (currentIsLocalGateway && !currentHasRemote) {
+                                checkNonMeshInternetAccess(capturedNode)
+                            } else {
+                                checkInternetViaMeshGateway()
                             }
+                            _meshInternetViaGatewayConfirmed.value = ok
                         }
-                    } else {
-                        _meshInternetViaGatewayConfirmed.value = false
                     }
+                } else {
+                    _meshInternetViaGatewayConfirmed.value = false
                 }
             }
         }
@@ -1495,7 +1524,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             logPrefix = "[MeshProxy]",
             meshSocketFactory = node.socketFactory,
             getGatewayAddress = {
-                val gateways = node.getAvailableClearnetGatewayAddresses()
+                val gateways = node.getAvailableGatewayAddresses()
                 gateways.firstOrNull()?.let { addr -> node.getInetAddressFor(addr) }
             }
         )

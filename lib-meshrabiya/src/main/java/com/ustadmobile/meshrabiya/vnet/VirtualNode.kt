@@ -1088,6 +1088,15 @@ abstract class VirtualNode(
     fun getAvailableClearnetGatewayAddresses(): List<Int> =
         getAvailableClearnetGateways().map { it.nodeAddress }
 
+    /**
+     * Returns integer virtual addresses of all known gateway peers regardless of type.
+     * Includes both CLEARNET_GATEWAY and TOR_GATEWAY nodes, deduplicated.
+     * Used by MeshLocalSocksProxy when either gateway type is acceptable for routing.
+     */
+    fun getAvailableGatewayAddresses(): List<Int> =
+        (getAvailableClearnetGateways() + getAvailableTorGateways())
+            .distinctBy { it.nodeAddress }
+            .map { it.nodeAddress }
 
     /**
      * Selects best gateway from available list.
