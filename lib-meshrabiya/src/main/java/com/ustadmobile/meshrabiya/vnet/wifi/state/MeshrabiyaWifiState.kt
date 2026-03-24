@@ -50,21 +50,20 @@ data class MeshrabiyaWifiState(
      * Currently only WifiDirect group is supported.
      */
     val hotspotTypeToCreate: HotspotType?
-        get() {
-            return if(connectConfig != null)
-                //Hotspot already available- nothing to create
-                null
-            else if(
-                //WifiDirect Group or Local Only hotspot already being created, do nothing
-                hotspotIsStarting
-            ) {
-                null
-            } else if(concurrentApStationSupported){
-                HotspotType.LOCALONLY_HOTSPOT
-            }else {
-                HotspotType.WIFIDIRECT_GROUP
-            }
-
+    get() {
+        return if(connectConfig != null)
+            //Hotspot already available- nothing to create
+            null
+        else if(
+            //WifiDirect Group or Local Only hotspot already being created, do nothing
+            hotspotIsStarting
+        ) {
+            null
+        } else if(concurrentApStationSupported){
+            HotspotType.LOCALONLY_HOTSPOT
+        }else {
+            HotspotType.WIFIDIRECT_GROUP
         }
+    }
 
 }

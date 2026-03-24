@@ -544,8 +544,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 if (shouldCheck) {
                     val capturedNode = node
                     meshInternetCheckJob = launch {
-                        while (true) {
-                            delay(MESH_INTERNET_CHECK_INTERVAL_MS)
+                        // Helper to run one probe cycle (extracted to avoid repetition).
+                        suspend fun runProbe(): Boolean {
                             val currentLocalRoles = _currentMeshRolesFlow.value
                             val currentIsLocalGateway =
                                 MeshRoleDto.CLEARNET_GATEWAY in currentLocalRoles ||
@@ -556,12 +556,22 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                                     nodeInfo.hasRole(MeshRole.TOR_GATEWAY)) &&
                                     !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
                                 }
-                            val ok = if (currentIsLocalGateway && !currentHasRemote) {
+                            return if (currentIsLocalGateway && !currentHasRemote) {
                                 checkNonMeshInternetAccess(capturedNode)
                             } else {
                                 checkInternetViaMeshGateway()
                             }
-                            _meshInternetViaGatewayConfirmed.value = ok
+                        }
+
+                        // Fire immediately when a gateway first becomes visible in topology.
+                        // Previously this had delay() first, causing a 30-second blind window
+                        // after every join before the green dot could appear.
+                        _meshInternetViaGatewayConfirmed.value = runProbe()
+
+                        // Then continue at the normal periodic interval.
+                        while (true) {
+                            delay(MESH_INTERNET_CHECK_INTERVAL_MS)
+                            _meshInternetViaGatewayConfirmed.value = runProbe()
                         }
                     }
                 } else {
@@ -608,86 +618,69 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             }
         }
 
+    /**
+     * Probes internet connectivity via a remote CLEARNET_GATEWAY node.
+     *
+     * Connects to the gateway's [MeshInternetRelayServer] through [VirtualNode.socketFactory]
+     * (ChainSocketFactory), which routes the connection over the mesh WiFi network using the
+     * bound Network object. This deliberately avoids creating any plain Socket() that would be
+     * subject to the process-wide bindProcessToNetwork() binding set during mesh join, which
+     * makes loopback connections (127.0.0.1) permanently unreachable.
+     *
+     * Probe target: 8.8.8.8:53 (Google Public DNS over TCP) — a hardcoded IP so that no
+     * DNS resolution is needed (InetAddress.getByName() is also affected by the process
+     * network binding and would fail on a non-internet mesh network).
+     *
+     * The relay server opens a real TCP connection to 8.8.8.8:53 before sending ACK 0x00,
+     * so a successful ACK confirms the full path is live.
+     */
     private suspend fun checkInternetViaMeshGateway(): Boolean =
-    withContext(Dispatchers.IO) {
-        val node = myNode ?: return@withContext false
-        startMeshProxyServer()
-        val port = getMeshProxySocksPort()
-        if (port <= 0) {
-            Log.d(TAG, "[MESH_PROBE] Mesh proxy port not ready")
-            return@withContext false
+        withContext(Dispatchers.IO) {
+            val node = myNode ?: return@withContext false
+            val gatewayAddrs = node.getAvailableGatewayAddresses()
+            if (gatewayAddrs.isEmpty()) {
+                Log.d(TAG, "[MESH_PROBE] No gateway addresses available")
+                return@withContext false
+            }
+            val gatewayVirtualAddr = gatewayAddrs.first()
+            val gatewayInet = node.getInetAddressFor(gatewayVirtualAddr)
+            var relaySocket: java.net.Socket? = null
+            try {
+                // Open a ChainSocket to the gateway's relay server.
+                // ChainSocketFactory resolves the next-hop using the mesh network's bound socket,
+                // so this works correctly even when bindProcessToNetwork() is active.
+                relaySocket = node.socketFactory.createSocket(
+                    gatewayInet,
+                    MeshrabiyaConstants.MESH_INTERNET_RELAY_PORT
+                )
+                relaySocket.soTimeout = 10_000
+
+                val out = relaySocket.getOutputStream()
+                val inp = relaySocket.getInputStream()
+
+                // Send 6-byte relay header: [4-byte IPv4 dest][2-byte port big-endian]
+                // Target: 8.8.8.8:53 — hardcoded to avoid DNS resolution on the bound network.
+                // TCP connection to 8.8.8.8:53 confirms full internet path is reachable.
+                val probeTarget = byteArrayOf(8, 8, 8, 8, 0, 53)
+                out.write(probeTarget)
+                out.flush()
+
+                // Read 1-byte ACK from relay server (0x00 = success, 0x01 = failure)
+                val ack = inp.read()
+                if (ack == 0x00) {
+                    Log.d(TAG, "[MESH_PROBE] ✅ Internet confirmed via mesh gateway ${gatewayInet.hostAddress}")
+                    return@withContext true
+                } else {
+                    Log.d(TAG, "[MESH_PROBE] Gateway relay returned failure ack=$ack")
+                    return@withContext false
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "[MESH_PROBE] Probe failed: ${e.javaClass.simpleName} ${e.message}")
+                false
+            } finally {
+                try { relaySocket?.close() } catch (_: Exception) {}
+            }
         }
-        var socket: Socket? = null
-        try {
-            socket = Socket()
-            socket.soTimeout = 10_000
-            socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
-            val out = socket.getOutputStream()
-            val inp = socket.getInputStream()
-            val din = DataInputStream(inp)
-            out.write(byteArrayOf(0x05, 0x01, 0x00))
-            out.flush()
-            val auth = ByteArray(2)
-            din.readFully(auth)
-            if (auth[0] != 0x05.toByte() || auth[1] != 0x00.toByte()) {
-                Log.d(TAG, "[MESH_PROBE] SOCKS5 auth failed")
-                return@withContext false
-            }
-            val host = "connectivitycheck.gstatic.com"
-            val hostBytes = host.toByteArray(Charsets.US_ASCII)
-            val req = ByteArray(7 + hostBytes.size)
-            req[0] = 0x05
-            req[1] = 0x01
-            req[2] = 0x00
-            req[3] = 0x03
-            req[4] = hostBytes.size.toByte()
-            System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
-            req[5 + hostBytes.size] = 0x00
-            req[6 + hostBytes.size] = 0x50
-            out.write(req)
-            out.flush()
-            val rep = ByteArray(4)
-            din.readFully(rep)
-            if (rep[0] != 0x05.toByte() || rep[1] != 0x00.toByte()) {
-                Log.d(TAG, "[MESH_PROBE] SOCKS5 CONNECT failed: ${rep[1]}")
-                return@withContext false
-            }
-            val atyp = rep[3].toInt() and 0xFF
-            when (atyp) {
-                0x01 -> din.readFully(ByteArray(6))
-                0x03 -> { val len = din.read(); din.readFully(ByteArray(len)); din.readFully(ByteArray(2)) }
-                0x04 -> din.readFully(ByteArray(18))
-            }
-            val request = "HEAD /generate_204 HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
-            out.write(request.toByteArray(Charsets.US_ASCII))
-            out.flush()
-            val buf = ByteArray(512)
-            val n = inp.read(buf)
-            if (n <= 0) {
-                Log.d(TAG, "[MESH_PROBE] No HTTP response")
-                return@withContext false
-            }
-            val line = String(buf, 0, n, Charsets.US_ASCII)
-            val code = when {
-                line.startsWith("HTTP/1.0 204") || line.startsWith("HTTP/1.1 204") -> 204
-                line.startsWith("HTTP/1.0 200") || line.startsWith("HTTP/1.1 200") -> 200
-                else -> null
-            }
-            if (code != null) return@withContext true
-            val space = line.indexOf(' ', 9)
-            if (space > 0) {
-                val codeStr = line.substring(space + 1, minOf(space + 4, line.length)).trim()
-                val c = codeStr.toIntOrNull()
-                if (c == 204 || c == 200) return@withContext true
-            }
-            false
-        } catch (e: Exception) {
-            Log.d(TAG, "[MESH_PROBE] Probe failed: ${e.javaClass.simpleName} ${e.message}")
-            false
-        } finally {
-            try { socket?.close() } catch (_: Exception) {}
-        }
-    }
 
     // --- Mesh State & Network Info ---
     // override fun getNodeRole(): Byte = emergentRoleManager?.getCurrentMeshRoles()?.firstOrNull()?.ordinal?.toByte() ?: 0
@@ -708,56 +701,50 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // --- Mesh Network Controls ---
     override fun startMesh(callback: (Result<Unit>) -> Unit) {
-        Log.e("MeshrabiyaApiImpl", "========== startMesh() CALLED ==========")
-        Log.e("MeshrabiyaApiImpl", "This log MUST appear if startMesh is invoked")
-        Log.d("MeshrabiyaApiImpl", "myNode is null: ${myNode == null}")
-        
-        if (myNode == null) {
-            Log.e("MeshrabiyaApiImpl", "startMesh called but myNode is null - mesh not initialized!")
-            callback(Result.failure(IllegalStateException("Mesh not initialized - call initMesh() first")))
+        Log.e(TAG, "========== startMesh() CALLED ==========")
+        Log.e(TAG, "This log MUST appear if startMesh is invoked")
+        val node = myNode
+        Log.d(TAG, "myNode is null: ${node == null}")
+        if (node == null) {
+            callback(Result.failure(Exception("Node not initialized")))
             return
         }
-        
-        Log.d("MeshrabiyaApiImpl", "Launching coroutine for startMesh")
+        Log.d(TAG, "Launching coroutine for startMesh")
         eventMonitoringScope.launch {
+            Log.d(TAG, "Coroutine started, calling setWifiHotspotEnabled(enabled=true)")
             try {
-                Log.d("MeshrabiyaApiImpl", "Coroutine started, calling setWifiHotspotEnabled(enabled=true)")
-                myNode?.setWifiHotspotEnabled(
+                val hotspotResponse = node.setWifiHotspotEnabled(
                     enabled = true,
                     preferredBand = ConnectBand.BAND_5GHZ,
-                    hotspotType = HotspotType.AUTO
+                    hotspotType = HotspotType.AUTO,
                 )
-                Log.d("MeshrabiyaApiImpl", "setWifiHotspotEnabled returned successfully")
-                
-                // Load persisted role preferences and apply them to EmergentRoleManager
-                loadAndApplyPersistedRolePreferences()
-                
-                // Initialize broadcast handler (NETWORK_BROADCAST_v2 implementation)
-                                    val node = myNode
-                    if (node != null && broadcastHandler == null) {
-                        broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
-                            virtualNode = node,
-                            logger = { priority, message -> node.logger(priority, message) },
-                            cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
-                            getDropFolderCallback = { getDropFolderAsDocumentFile() }
-                        )
-                        // Wire handler to VirtualNode
-                        node.broadcastMessageHandler = broadcastHandler
-                        Log.d("MeshrabiyaApiImpl", "Broadcast handler initialized and wired to VirtualNode")
-                    
-                    // Apply any listeners registered before handler was created
-                    applyPendingBroadcastListeners()
+
+                // Propagate hotspot failure to the UI. errorCode == 0 means success;
+                // non-zero means the OS returned an error (e.g. ERROR_GENERIC = 2).
+                // Without this check, onFailed() is silently swallowed: the log says
+                // "returned successfully", the UI gets Result.success, the QR pane
+                // never opens, and the user has no indication anything went wrong.
+                val hotspotErrorCode = hotspotResponse?.errorCode ?: 0
+                if (hotspotErrorCode != 0) {
+                    Log.e(TAG, "setWifiHotspotEnabled failed: errorCode=$hotspotErrorCode")
+                    callback(Result.failure(
+                        Exception("Hotspot failed to start (errorCode=$hotspotErrorCode). Please try again.")
+                    ))
+                    return@launch
                 }
-                
+
+                Log.d(TAG, "setWifiHotspotEnabled returned successfully")
+
+                loadAndApplyPersistedRolePreferences()
+
+                Log.d(TAG, "startMesh callback invoked with success")
                 callback(Result.success(Unit))
-                Log.d("MeshrabiyaApiImpl", "startMesh callback invoked with success")
             } catch (e: Exception) {
-                Log.e("MeshrabiyaApiImpl", "startMesh failed with exception", e)
+                Log.e(TAG, "startMesh failed", e)
                 callback(Result.failure(e))
-                Log.d("MeshrabiyaApiImpl", "startMesh callback invoked with failure")
             }
         }
-        Log.d("MeshrabiyaApiImpl", "startMesh() returning (coroutine launched)")
+        Log.d(TAG, "startMesh() returning (coroutine launched)")
     }
 
     override fun stopMesh(callback: (Result<Unit>) -> Unit) {

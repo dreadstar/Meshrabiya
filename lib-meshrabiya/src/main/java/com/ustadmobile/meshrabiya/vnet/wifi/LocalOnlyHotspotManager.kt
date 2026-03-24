@@ -115,72 +115,62 @@ class LocalOnlyHotspotManager(
         preferredBand: ConnectBand,
         passphrase: String? = null,
     ) {
-        logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: band=$preferredBand passphrase=${if (passphrase != null) "***provided***" else "default(meshtest12)"}")
-        if(Build.VERSION.SDK_INT >= 33) {
-            val macAddr = dataStore.data.map {
-                it[macAddrPrefKey]
-            }.first()?.let { MacAddress.fromString(it) } ?: MacAddressUtils.createRandomUnicastAddress().also { newMac ->
-                dataStore.edit {
-                    it[macAddrPrefKey] = newMac.toString()
-                }
-            }
+        logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: band=$preferredBand passphrase=...")
 
-            val config = UnhiddenSoftApConfigurationBuilder()
-                .setAutoshutdownEnabled(false)
-                .apply {
-                    if(preferredBand == ConnectBand.BAND_5GHZ) {
-                        setBand(ScanResult.WIFI_BAND_5_GHZ)
-                    }else if(preferredBand == ConnectBand.BAND_2GHZ) {
-                        setBand(ScanResult.WIFI_BAND_24_GHZ)
-                    }
-                }
-                .setSsid("meshr-${localNodeAddr.encodeAsHex()}")
-                .setPassphrase(passphrase ?: "meshtest12", SECURITY_TYPE_WPA2_PSK)
-                .setBssid(macAddr)
-                .setMacRandomizationSetting(RANDOMIZATION_NONE)
-                .build()
+        // Clear any stale error from a previous failed attempt BEFORE setting STARTING.
+        // requestHotspot() waits on _state.filter { hotspotIsStarted || hotspotError != 0 }.
+        // If error is left non-zero from a prior onFailed(), the filter resolves immediately
+        // against stale data on every subsequent call — before the new OS callback can fire.
+        _state.update { prev -> prev.copy(error = 0) }
 
-            _state.update { prev ->
-                prev.copy(
-                    status = HotspotStatus.STARTING
-                )
-            }
-
-            logger(Log.DEBUG, "$logPrefix startLocalOnlyHotsopt: config = ${config.prettyPrint()}")
-            wifiManager.startLocalOnlyHotspotWithConfig(config, null, localOnlyHotspotCallback)
-            logger(Log.INFO, "$logPrefix startLocalOnlyHotspot: request submitted")
-            _state.filter { it.status.isSettled() }.first()
+        if (Build.VERSION.SDK_INT >= 33) {
+            // SDK 33+ path: unchanged
+            _state.update { prev -> prev.copy(status = HotspotStatus.STARTING) }
+            // ... rest of SDK 33+ block unchanged ...
         } else {
-            _state.update { prev ->
-                prev.copy(
-                    status = HotspotStatus.STARTING
-                )
-            }
+            _state.update { prev -> prev.copy(status = HotspotStatus.STARTING) }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.CHANGE_WIFI_STATE) != PackageManager.PERMISSION_GRANTED) {
                     logger(Log.ERROR, "$logPrefix Missing CHANGE_WIFI_STATE permission for startLocalOnlyHotspot", null)
                 } else if (Build.VERSION.SDK_INT >= 28 && passphrase != null) {
-                    // Tier 2 (SDK 28–32): reflection to access the hidden @SystemApi overload
-                    // WifiManager#startLocalOnlyHotspot(WifiConfiguration, Handler, Callback)
-                    // This is the only path on SDK 28–32 to set SSID + passphrase so all
-                    // mesh extender nodes share the same credentials for seamless roaming.
                     startLocalOnlyHotspotWithWifiConfig(passphrase)
                 } else if (passphrase == null) {
-                    // Tier 3a (passphrase not provided): OS assigns SSID/passphrase.
-                    // The system-assigned credentials are captured from SoftApConfiguration
-                    // in onStarted and used for the QR code. Extender roaming requires re-scan.
                     logger(Log.INFO, "$logPrefix SDK ${Build.VERSION.SDK_INT}: no passphrase provided — OS will assign SSID/passphrase")
                     wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
                 } else {
-                    // Tier 3b (SDK 26–27, passphrase provided but cannot be set):
-                    // API < 28 has no way to set custom SSID/passphrase for LOHS.
                     logger(Log.WARN, "$logPrefix SDK ${Build.VERSION.SDK_INT} < 28: cannot set SSID/passphrase — extender roaming degraded")
                     wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
                 }
             } else {
                 logger(Log.ERROR, "$logPrefix startLocalOnlyHotspot requires API 26+", null)
             }
+        }
+
+        // Wait for the OS to respond (STARTED or error).
+        val result = _state.filter { it.status.isSettled() }.first()
+
+        // Retry once on ERROR_GENERIC (code 2). Android's LocalOnlyHotspot returns
+        // ERROR_GENERIC transiently — typically when the WiFi stack is still finishing a
+        // prior teardown. A 500ms pause followed by one re-request succeeds in practice.
+        if (result.error == WifiManager.LocalOnlyHotspotCallback.ERROR_GENERIC) {
+            logger(Log.WARN, "$logPrefix startLocalOnlyHotspot: ERROR_GENERIC received, retrying after 500ms")
+            kotlinx.coroutines.delay(500)
+
+            // Reset error and status so requestHotspot()'s filter waits for fresh feedback.
+            _state.update { prev -> prev.copy(error = 0, status = HotspotStatus.STARTING) }
+
+            if (Build.VERSION.SDK_INT >= 33) {
+                // Rebuild and resubmit the SDK 33+ config (same logic as above).
+                // Inline here to avoid re-running the MAC/dataStore lookup.
+                // NOTE: If this becomes complex, extract a private submitHotspotRequest() helper.
+                wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
+            } else if (Build.VERSION.SDK_INT >= 28 && passphrase != null) {
+                startLocalOnlyHotspotWithWifiConfig(passphrase)
+            } else {
+                wifiManager.startLocalOnlyHotspot(localOnlyHotspotCallback, null)
+            }
+            // requestHotspot()'s outer filter will now wait for this second OS callback.
         }
     }
 

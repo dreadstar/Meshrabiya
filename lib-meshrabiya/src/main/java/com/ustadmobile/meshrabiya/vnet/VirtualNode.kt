@@ -898,12 +898,24 @@ abstract class VirtualNode(
         }
 
         // --- CLEARNET GATEWAY DISPATCH ---
-        if (currentRoles.contains(MeshRole.CLEARNET_GATEWAY) && shouldRouteViaProxy(packet)) {
+        // Guard: toPort == 0 identifies MMCP control traffic (originator messages, pings, pongs,
+        // hotspot requests, etc.). These are mesh-internal and must never be forwarded to the
+        // internet. Without this guard, broadcast originator messages (to=255.255.255.255, port=0)
+        // pass shouldRouteViaProxy() because 255.255.255.255 is outside the 169.254.0.0/16 prefix,
+        // causing ClearnetGatewayForwarder to attempt sendto(255.255.255.255:0) → EINVAL on every
+        // originator broadcast (every ~3 seconds) on all gateway nodes.
+        if (currentRoles.contains(MeshRole.CLEARNET_GATEWAY)
+                && packet.header.toPort != 0
+                && shouldRouteViaProxy(packet)) {
             if (onClearnetGatewayPacket(packet)) return
         }
 
         // --- TOR GATEWAY DISPATCH ---
-        if (currentRoles.contains(MeshRole.TOR_GATEWAY) && packet.header.gatewayType == VirtualPacketHeader.GATEWAY_TYPE_TOR) {
+        // Same guard applied for consistency, though the gatewayType check already excludes
+        // most MMCP traffic in practice.
+        if (currentRoles.contains(MeshRole.TOR_GATEWAY)
+                && packet.header.toPort != 0
+                && packet.header.gatewayType == VirtualPacketHeader.GATEWAY_TYPE_TOR) {
             if (onTorGatewayPacket(packet)) return
         }
 
