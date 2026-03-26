@@ -737,6 +737,23 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
                 loadAndApplyPersistedRolePreferences()
 
+                // Initialize broadcast handler for the AP/startMesh path.
+                // joinMesh and mergeMesh initialize this in their own success paths;
+                // startMesh was the only entry point that never did, causing
+                // broadcastMessageAndFile to throw "Mesh is not running" even when
+                // the mesh was genuinely connected.
+                if (broadcastHandler == null) {
+                    broadcastHandler = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler(
+                        virtualNode = node,
+                        logger = { priority, message -> node.logger(priority, message) },
+                        cacheDir = appContext?.cacheDir ?: throw IllegalStateException("Context required for broadcast handler"),
+                        getDropFolderCallback = { getDropFolderAsDocumentFile() }
+                    )
+                    node.broadcastMessageHandler = broadcastHandler
+                    Log.d(TAG, "Broadcast handler initialized and wired to VirtualNode (startMesh)")
+                    applyPendingBroadcastListeners()
+                }
+
                 Log.d(TAG, "startMesh callback invoked with success")
                 callback(Result.success(Unit))
             } catch (e: Exception) {
