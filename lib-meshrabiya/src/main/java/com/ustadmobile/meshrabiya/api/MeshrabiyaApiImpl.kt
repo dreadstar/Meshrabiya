@@ -10,6 +10,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
+import java.util.UUID
 import androidx.documentfile.provider.DocumentFile
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
@@ -2487,54 +2488,55 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     // ========================================
     override suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto {
-        Log.i(TAG, "[NONMESH] connectToNonMeshWifi start ssid='$ssid' passphrasePresent=${passphrase.isNotEmpty()} meshInitialized=${myNode != null}")
+        val correlationId = UUID.randomUUID().toString()
+        Log.i(TAG, "[NONMESH_FLOW][$correlationId] connectToNonMeshWifi start ssid='$ssid' passphrasePresent=${passphrase.isNotEmpty()} meshInitialized=${myNode != null}")
 
-        // do **not** abort just because the mesh hasn’t been started;
-        // the caller asked for a plain Wi‑Fi connection.
-        // keep the hotspot‑self check though.
         getHotspotInfo()?.ssid?.let { current ->
             if (current == ssid) {
                 val failed = NonMeshWifiConnectionStateDto(
                     status = NonMeshWifiStatusDto.FAILED,
                     errorMessage = "Cannot connect to own hotspot"
                 )
-                Log.w(TAG, "[NONMESH] abort – cannot connect to own hotspot ($ssid)")
+                Log.w(TAG, "[NONMESH_FLOW][$correlationId] abort - cannot connect to own hotspot (self ssid=$ssid)")
                 _nonMeshWifiState.value = failed
                 return failed
             }
         }
 
-        _nonMeshWifiState.value =
-            NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
+        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
+        Log.d(TAG, "[NONMESH_FLOW][$correlationId] state=CONNECTING")
+
         val result = try {
             myNode?.meshrabiyaWifiManager
                 ?.connectToInternetWifi(ssid, passphrase)
                 ?: Result.failure(IllegalStateException("Mesh node unavailable"))
         } catch (e: Exception) {
-            Log.e(TAG, "[NONMESH] exception from manager", e)
+            Log.e(TAG, "[NONMESH_FLOW][$correlationId] exception in manager connectToInternetWifi", e)
             Result.failure(e)
         }
 
         if (result.isSuccess) {
-            Log.i(TAG, "[NONMESH] manager reported success for $ssid")
+            Log.i(TAG, "[NONMESH_FLOW][$correlationId] manager reported success for $ssid")
             _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(
                 status = NonMeshWifiStatusDto.CONNECTED,
                 connectedSsid = ssid,
             )
+
             val finalState = try {
                 withTimeout(10_000) {
                     _nonMeshWifiState.first { it.hasInternetAccess }
                 }
-            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                Log.w(TAG, "[NONMESH] validation timeout for $ssid")
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                Log.w(TAG, "[NONMESH_FLOW][$correlationId] validation timeout for $ssid; current=${_nonMeshWifiState.value}")
                 _nonMeshWifiState.value
             }
-            Log.i(TAG, "[NONMESH] final state for $ssid = $finalState")
-            _networkInfoFlow.value = getNetworkInfo()   // immediate UI update
+
+            Log.i(TAG, "[NONMESH_FLOW][$correlationId] final state for $ssid = $finalState")
+            _networkInfoFlow.value = getNetworkInfo()
             return finalState
         } else {
             val error = result.exceptionOrNull()
-            Log.w(TAG, "[NONMESH] connection failed for $ssid", error)
+            Log.w(TAG, "[NONMESH_FLOW][$correlationId] connection failed for $ssid; error=${error?.message}", error)
             val failed = NonMeshWifiConnectionStateDto(
                 status = NonMeshWifiStatusDto.FAILED,
                 errorMessage = error?.message,
@@ -2622,6 +2624,14 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
 
     override fun isWifiEnabled(): Boolean {
         return myNode?.meshrabiyaWifiManager?.isWifiEnabled() ?: false
+    }
+
+    private fun logNonMeshState(correlationId: String, prefix: String, state: NonMeshWifiConnectionStateDto) {
+        Log.d(TAG, "[NONMESH_FLOW][$correlationId][$prefix] status=${state.status} connectedSsid=${state.connectedSsid} hasInternetAccess=${state.hasInternetAccess} error=${state.errorMessage}")
+    }
+
+    private fun logNetworkInfo(correlationId: String, info: NetworkInfoDto?) {
+        Log.d(TAG, "[NONMESH_FLOW][$correlationId] networkInfo: peers=${info?.connectedPeers} nonMeshSsid=${info?.nonMeshSsid} nonMeshHasInternet=${info?.nonMeshHasInternet}")
     }
 
 }

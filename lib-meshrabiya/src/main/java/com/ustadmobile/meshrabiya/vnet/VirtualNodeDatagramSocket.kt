@@ -86,17 +86,29 @@ class VirtualNodeDatagramSocket(
     fun send(
         nextHopAddress: InetAddress,
         nextHopPort: Int,
-        virtualPacket: VirtualPacket
+        virtualPacket: VirtualPacket,
+        sourceLabel: String = "VirtualNodeDatagramSocket"
     ) {
         val datagramPacket = virtualPacket.toDatagramPacket()
         datagramPacket.address = nextHopAddress
         datagramPacket.port = nextHopPort
         
-        logger(Log.INFO, "$logPrefix ⬆️ SENDING packet to ${nextHopAddress}:${nextHopPort} from=${virtualPacket.header.fromAddr.addressToDotNotation()} to=${virtualPacket.header.toAddr.addressToDotNotation()} size=${datagramPacket.length} bytes", null)
-        
+        logger(Log.INFO,
+            "$logPrefix ⬆️ SENDING packet to ${nextHopAddress}:${nextHopPort} " +
+            "source=$sourceLabel " +
+            "len=${datagramPacket.length} local=${socket.localAddress}:${socket.localPort} " +
+            "boundNetwork=${boundNetwork ?: "none"}",
+            null
+        )
+
         socket.send(datagramPacket)
-        
-        logger(Log.DEBUG, "$logPrefix ✅ Packet sent successfully to ${nextHopAddress}:${nextHopPort}", null)
+
+        logger(Log.DEBUG,
+            "$logPrefix ✅ Packet sent successfully to ${nextHopAddress}:${nextHopPort} " +
+            "local=${socket.localAddress}:${socket.localPort} " +
+            "source=$sourceLabel",
+            null
+        )
         router.incrementUploadBytes(datagramPacket.length.toLong())
     }
 

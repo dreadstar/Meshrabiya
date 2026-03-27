@@ -190,6 +190,20 @@ abstract class VirtualNode(
 
     // MeshConnectionPool: instantiate and initialize singleton
     protected val meshConnectionPool: MeshConnectionPool = MeshConnectionPool(this)
+
+    fun acquireMeshConnection(timeoutMs: Long = MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS): MeshConnectionPool.Connection? {
+        return try {
+            meshConnectionPool.acquireConnection(timeoutMs)
+        } catch (e: Exception) {
+            logger(Log.WARN, "$logPrefix acquireMeshConnection failed: ${e.message}")
+            null
+        }
+    }
+
+    fun releaseMeshConnection(connection: MeshConnectionPool.Connection) {
+        meshConnectionPool.releaseConnection(connection)
+    }
+
     init {
         MeshConnectionPool.init(this)
         // Coroutine to calculate and update real-time bit rates
@@ -330,7 +344,8 @@ abstract class VirtualNode(
         router = this,
         localNodeVirtualAddress = addressAsInt,
         logger = logger,
-        // parentNode = this
+        name = "main-virtual-node",
+        boundNetwork = null
     )
 
     protected val chainSocketFactory: ChainSocketFactory = ChainSocketFactoryImpl(

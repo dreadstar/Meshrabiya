@@ -215,43 +215,38 @@ class LocalOnlyHotspotManager(
         hotspotMonitoringJob = CoroutineScope(Dispatchers.Default).launch {
             var checkCount = 0
             var wifiReconnectCount = 0
-            
+
             while (isActive) {
-                delay(2000) // Check every 2 seconds
+                delay(2000)
                 checkCount++
-                
+
                 val currentStatus = _state.value.status
                 val wifiInfo = wifiManager.connectionInfo
                 val isWifiConnected = wifiInfo?.networkId != -1
                 val wifiSSID = wifiInfo?.ssid ?: "null"
-                
-                logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR #$checkCount] Hotspot: $currentStatus | WiFi: $isWifiConnected | SSID: $wifiSSID")
-                
-                // PHASE 2: Continuous WiFi Suppression - actively prevent reconnection.
-                // SKIP suppression when concurrent AP+STA is supported: the WiFi connection
-                // is the intentional MESH_ROUTER internet link and must not be removed.
+                val reservationActive = (localOnlyHotspotReservation != null)
+                val concurrentSupported = concurrentApStationSupported()
+
+                logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR #$checkCount] Hotspot: $currentStatus | WiFi: $isWifiConnected | SSID: $wifiSSID | concurrentApStationSupported: $concurrentSupported | reservationActive: $reservationActive")
+
                 if (currentStatus == HotspotStatus.STARTED && isWifiConnected && wifiSSID != "<unknown ssid>") {
-                    if (concurrentApStationSupported()) {
-                        // AP+STA mode: WiFi connection is the internet link. Log and do NOT suppress.
-                        logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR] AP+STA mode: WiFi ($wifiSSID) is internet link \u2014 suppression skipped")
+                    if (concurrentSupported) {
+                        logger(Log.DEBUG, "$logPrefix [HOTSPOT MONITOR] AP+STA mode: WiFi ($wifiSSID) is internet link — suppression skipped")
                     } else {
                         wifiReconnectCount++
                         logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: WiFi reconnected (#$wifiReconnectCount) to $wifiSSID! Forcing disconnect...")
-                        
+
                         try {
-                            // Use removeNetwork() to force disconnection
                             val reconnectedNetworkId = wifiInfo.networkId
                             wifiManager.disconnect()
                             wifiManager.removeNetwork(reconnectedNetworkId)
                             wifiManager.configuredNetworks?.forEach { config ->
                                 wifiManager.disableNetwork(config.networkId)
                             }
-                            logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] WiFi disconnected, removed network, and disabled all networks")
-                            
-                            // Alert every 3 reconnections
+                            logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] WiFi disconnected, removed network, and disabled all networks (networkId=$reconnectedNetworkId, ssid=${wifiInfo.ssid})")
+
                             if (wifiReconnectCount % 3 == 0) {
                                 logger(Log.WARN, "$logPrefix [HOTSPOT MONITOR] WiFi interference: $wifiReconnectCount reconnection attempts suppressed")
-                                // Trigger UI notification
                                 router.notifyHotspotInterference(wifiReconnectCount)
                             }
                         } catch (e: Exception) {
@@ -259,25 +254,19 @@ class LocalOnlyHotspotManager(
                         }
                     }
                 }
-                
-                // PHASE 2: Detect if hotspot was lost/stopped unexpectedly
-                if (currentStatus == HotspotStatus.STARTED) {
-                    // Check if hotspot is actually active by verifying the reservation is still valid
-                    val reservation = localOnlyHotspotReservation
-                    if (reservation == null) {
-                        logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: Hotspot reservation lost while status is STARTED!")
-                        router.notifyHotspotLost("Hotspot reservation lost unexpectedly")
-                        break
-                    }
+
+                if (currentStatus == HotspotStatus.STARTED && !reservationActive) {
+                    logger(Log.ERROR, "$logPrefix [HOTSPOT MONITOR] CRITICAL: Hotspot reservation lost while status is STARTED!")
+                    router.notifyHotspotLost("Hotspot reservation lost unexpectedly")
+                    break
                 }
-                
-                // Stop monitoring if hotspot stopped
+
                 if (currentStatus == HotspotStatus.STOPPED) {
                     logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] Hotspot stopped, ending monitoring. WiFi reconnections suppressed: $wifiReconnectCount")
                     break
                 }
             }
-            
+
             logger(Log.INFO, "$logPrefix [HOTSPOT MONITOR] Monitoring ended")
         }
     }

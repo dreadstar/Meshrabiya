@@ -4,8 +4,10 @@ import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import com.ustadmobile.meshrabiya.api.model.BroadcastResultDto
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.vnet.VirtualNode
+import com.ustadmobile.meshrabiya.vnet.VirtualNodeDatagramSocket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacket
 import com.ustadmobile.meshrabiya.vnet.VirtualPacketHeader
+import com.ustadmobile.meshrabiya.ext.addressToDotNotation
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -50,6 +52,50 @@ class BroadcastMessageHandler(
     private fun broadcastTag(broadcastId: String): String {
         val shortId = broadcastId.take(8)
         return "$TAG[$shortId]"
+    }
+
+    /**
+     * Send a broadcast packet to a single neighbor via the node's mesh socket.
+     * This ensures that even when a non-mesh STA connection is active, we stay on the
+     * mesh overlay path and use MeshConnectionPool for concurrency control.
+     */
+    private fun sendPacketToNeighbor(
+        packet: VirtualPacket,
+        neighborAddr: java.net.InetAddress,
+        neighborPort: Int,
+        broadcastId: String,
+        chunkIndex: Int? = null,
+        sendSocket: VirtualNodeDatagramSocket? = null
+    ){
+        val connection = virtualNode.acquireMeshConnection(MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS)
+
+        if (connection == null) {
+            val chunkLabel = chunkIndex?.toString() ?: "meta"
+            Log.w(TAG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: no mesh connection available")
+            return
+        }
+
+        try {
+            // Mesh-only requirement: always use virtualNode.datagramSocket.
+            // Do NOT use the shared neighbor-return socket here for mesh broadcast payload.
+            val meshSocket = virtualNode.datagramSocket
+            val chunkLabel = chunkIndex?.toString() ?: "meta"
+            logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: sending via mesh-only socket to ${neighborAddr.hostAddress}:$neighborPort boundNetwork=${meshSocket.boundNetwork ?: "none"}")
+
+            meshSocket.send(
+                nextHopAddress = neighborAddr,
+                nextHopPort = neighborPort,
+                virtualPacket = packet,
+                sourceLabel = "mesh-only"
+            )
+
+            logger(Log.VERBOSE, "$TAG Broadcast $broadcastId chunk=$chunkLabel sent mesh-only -> ${neighborAddr.hostAddress}:$neighborPort")
+        } catch (e: Exception) {
+            val chunkLabel = chunkIndex?.toString() ?: "meta"
+            Log.e(TAG, "$TAG Broadcast $broadcastId chunk=$chunkLabel failed send to ${neighborAddr.hostAddress}:$neighborPort via mesh-only socket", e)
+        } finally {
+            virtualNode.releaseMeshConnection(connection)
+        }
     }
     
     /**
@@ -226,16 +272,14 @@ class BroadcastMessageHandler(
                     } else {
                         logger(Log.DEBUG, "$TAG Text-only broadcast $broadcastId: sending to ${neighbors.size} neighbor(s)")
                         neighbors.forEach { (neighborAddr, lastMsg) ->
-                            try {
-                                lastMsg.receivedFromSocket.send(
-                                    nextHopAddress = lastMsg.lastHopRealInetAddr,
-                                    nextHopPort = lastMsg.lastHopRealPort,
-                                    virtualPacket = packet
-                                )
-                                logger(Log.VERBOSE, "$TAG Text-only broadcast $broadcastId: sent to neighbor $neighborAddr")
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Text-only broadcast $broadcastId: failed to send to neighbor $neighborAddr", e)
-                            }
+                            sendPacketToNeighbor(
+                                packet = packet,
+                                neighborAddr = lastMsg.lastHopRealInetAddr,
+                                neighborPort = lastMsg.lastHopRealPort,
+                                broadcastId = broadcastId,
+                                chunkIndex = 0,
+                                sendSocket = lastMsg.receivedFromSocket
+                            )
                         }
                     }
                     
@@ -351,22 +395,20 @@ class BroadcastMessageHandler(
                     // Send directly to all neighbors, no role check required
                     // ANY node (station, hub, router) can originate broadcasts
                     val neighbors = virtualNode.originatingMessageManager.neighbors()
-                    
+
                     if (neighbors.isEmpty()) {
                         logger(Log.WARN, "$TAG Broadcast $broadcastId chunk $chunkIndex: No neighbors found")
                     } else {
                         logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk $chunkIndex: sending to ${neighbors.size} neighbor(s)")
                         neighbors.forEach { (neighborAddr, lastMsg) ->
-                            try {
-                                lastMsg.receivedFromSocket.send(
-                                    nextHopAddress = lastMsg.lastHopRealInetAddr,
-                                    nextHopPort = lastMsg.lastHopRealPort,
-                                    virtualPacket = packet
-                                )
-                                logger(Log.VERBOSE, "$TAG Broadcast $broadcastId chunk $chunkIndex: sent to neighbor $neighborAddr")
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Broadcast $broadcastId chunk $chunkIndex: failed to send to neighbor $neighborAddr", e)
-                            }
+                            sendPacketToNeighbor(
+                                packet = packet,
+                                neighborAddr = lastMsg.lastHopRealInetAddr,
+                                neighborPort = lastMsg.lastHopRealPort,
+                                broadcastId = broadcastId,
+                                chunkIndex = chunkIndex,
+                                sendSocket = lastMsg.receivedFromSocket
+                            )
                         }
                     }
                     
@@ -471,7 +513,7 @@ class BroadcastMessageHandler(
             val (broadcastId, messageText, chunkPair) = BroadcastPacketSerializer.deserialize(payload)
             val (metadata, chunkData) = chunkPair
             
-            logger(Log.DEBUG, "$TAG Received broadcast chunk: id=$broadcastId, chunk=${metadata.chunkIndex}/${metadata.totalChunks}")
+            logger(Log.DEBUG, "$TAG [BROADCAST_CHUNK_RX] id=$broadcastId chunk=${metadata.chunkIndex}/${metadata.totalChunks} from=${packet.header.fromAddr.addressToDotNotation()} hop=${packet.header.hopCount} to=${packet.header.toAddr.addressToDotNotation()}")
             
             // Get or create incoming state
             val state = incomingBroadcasts.getOrPut(broadcastId) {
@@ -507,13 +549,17 @@ class BroadcastMessageHandler(
                 logger(Log.WARN, "$TAG Broadcast $broadcastId chunk ${metadata.chunkIndex}: hash mismatch, discarding")
                 return
             }
-            
+
+            val wasDuplicate = state.receivedChunks.containsKey(metadata.chunkIndex)
             state.receivedChunks[metadata.chunkIndex] = chunkData
-                
-                logger(Log.DEBUG, "$TAG Broadcast $broadcastId: ${state.receivedChunks.size}/${metadata.totalChunks} chunks received")
-                
-                // COMPREHENSIVE DEBUG: Check completion status
-                logger(Log.DEBUG, "$TAG [BROADCAST_COMPLETE_CHECK] broadcastId=$broadcastId, receivedChunks=${state.receivedChunks.size}, totalChunks=${metadata.totalChunks}, isComplete=${state.isComplete()}")
+
+            val missingChunks = (0 until metadata.totalChunks).filterNot { state.receivedChunks.containsKey(it) }
+            logger(Log.INFO, "$TAG Broadcast $broadcastId chunk ${metadata.chunkIndex}: ${if (wasDuplicate) "duplicate" else "stored"}, totalReceived=${state.receivedChunks.size}/${metadata.totalChunks}, missingCount=${missingChunks.size}, upcomingMissing=${missingChunks.take(5)}")
+
+            logger(Log.DEBUG, "$TAG Broadcast $broadcastId: ${state.receivedChunks.size}/${metadata.totalChunks} chunks received")
+
+            // COMPREHENSIVE DEBUG: Check completion status
+            logger(Log.DEBUG, "$TAG [BROADCAST_COMPLETE_CHECK] broadcastId=$broadcastId, receivedChunks=${state.receivedChunks.size}, totalChunks=${metadata.totalChunks}, isComplete=${state.isComplete()}")
                 
                 // Check if complete
                 if (state.isComplete()) {
@@ -584,13 +630,13 @@ class BroadcastMessageHandler(
     
     /**
      * Monitor incomplete broadcast and send NACK request if timeout occurs
-     * Runs in background thread, waits 60 seconds then checks if broadcast completed
+     * Runs in background thread, waits 5 seconds then checks if broadcast completed
      */
     private fun startTimeoutMonitor(broadcastId: String, senderNodeId: Int) {
         virtualNode.connectionExecutor.execute {
             try {
-                // Wait for timeout period (60 seconds)
-                Thread.sleep(60_000)
+                // Wait for timeout period (5 seconds)
+                Thread.sleep(5_000)
                 
                 val state = incomingBroadcasts[broadcastId]
                 
