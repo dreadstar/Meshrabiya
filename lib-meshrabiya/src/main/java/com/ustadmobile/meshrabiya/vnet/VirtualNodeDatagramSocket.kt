@@ -61,9 +61,27 @@ class VirtualNodeDatagramSocket(
                 socket.receive(rxPacket)
 
                 logger(Log.INFO, "$logPrefix ⬇️ RECEIVED packet from ${rxPacket.address}:${rxPacket.port} size=${rxPacket.length} bytes", null)
+                logger(Log.INFO, "$logPrefix [PKT_RX_RAW] src=${rxPacket.address?.hostAddress}:${rxPacket.port} dst=${socket.localAddress?.hostAddress}:${socket.localPort} boundNetwork=$boundNetwork len=${rxPacket.length} payload=${rxPacket.data.copyOfRange(rxPacket.offset, rxPacket.offset + rxPacket.length).joinToString("") { "%02x".format(it) }}")
 
                 val rxVirtualPacket = VirtualPacket.fromDatagramPacket(rxPacket)
                 logger(Log.INFO, "$logPrefix 📦 Packet details: from=${rxVirtualPacket.header.fromAddr.addressToDotNotation()}:${rxVirtualPacket.header.fromPort} to=${rxVirtualPacket.header.toAddr.addressToDotNotation()}:${rxVirtualPacket.header.toPort} hopCount=${rxVirtualPacket.header.hopCount} payloadSize=${rxVirtualPacket.header.payloadSize}", null)
+
+                // --- DEEP PACKET INSPECTION LOGGING ---
+                try {
+                    val payload = rxVirtualPacket.data.copyOfRange(rxVirtualPacket.payloadOffset, rxVirtualPacket.payloadOffset + rxVirtualPacket.header.payloadSize)
+                    if (payload.isNotEmpty()) {
+                        val packetType = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastPacketSerializer.getPacketType(payload)
+                        if (packetType == com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK) {
+                            val (broadcastId, _, chunkPair) = com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastPacketSerializer.deserialize(payload)
+                            val chunkMeta = chunkPair.first
+                            logger(Log.INFO, "$logPrefix [DEEP_INSPECT] BROADCAST_CHUNK: broadcastId=$broadcastId chunkId=${chunkMeta.chunkId} chunkIndex=${chunkMeta.chunkIndex} totalChunks=${chunkMeta.totalChunks} fileId=${chunkMeta.fileId} from=${rxVirtualPacket.header.fromAddr.addressToDotNotation()}:${rxVirtualPacket.header.fromPort} to=${rxVirtualPacket.header.toAddr.addressToDotNotation()}:${rxVirtualPacket.header.toPort} hopCount=${rxVirtualPacket.header.hopCount} stateVars={routerState=${router.currentNodeState}}", null)
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger(Log.WARN, "$logPrefix [DEEP_INSPECT] Failed to parse broadcast chunk for logging: ${e.message}", e)
+                }
+                // --- END DEEP PACKET INSPECTION LOGGING ---
+
                 router.incrementDownloadBytes(rxPacket.length.toLong())
                 
                 router.route(

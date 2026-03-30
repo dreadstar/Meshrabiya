@@ -126,7 +126,6 @@ class MeshEcosystemListener(
      * @param message The deserialized MeshEcosystemMessage
      */
     fun routeMessage(senderId: Int, message: MeshEcosystemMessage) {
-        // Deduplication for broadcast messages (by unique broadcastId or taskId)
         val maybeBroadcastId = when (message) {
             is TaskScheduledMessage -> message.taskId
             is TaskAssignmentMessage -> message.taskId
@@ -135,14 +134,20 @@ class MeshEcosystemListener(
         }
         if (maybeBroadcastId != null) {
             val now = System.currentTimeMillis()
-            // Clean up old entries
             broadcastTimestamps.entries.removeIf { now - it.value > broadcastTtlMs }
             if (seenBroadcasts.contains(maybeBroadcastId)) {
-                // Already seen, skip routing
+                android.util.Log.i(
+                    "MeshEcosystemListener",
+                    "[DEDUP_DROP] Dropping broadcast $maybeBroadcastId from sender $senderId (already seen). seenBroadcasts.size=${seenBroadcasts.size} broadcastTimestamps.size=${broadcastTimestamps.size} now=$now"
+                )
                 return
             } else {
                 seenBroadcasts.add(maybeBroadcastId)
                 broadcastTimestamps[maybeBroadcastId] = now
+                android.util.Log.i(
+                    "MeshEcosystemListener",
+                    "[DEDUP_PASS] Accepting broadcast $maybeBroadcastId from sender $senderId. seenBroadcasts.size=${seenBroadcasts.size} broadcastTimestamps.size=${broadcastTimestamps.size} now=$now"
+                )
             }
         }
         if (isShutdown.get()) {

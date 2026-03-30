@@ -191,6 +191,14 @@ abstract class VirtualNode(
     // MeshConnectionPool: instantiate and initialize singleton
     protected val meshConnectionPool: MeshConnectionPool = MeshConnectionPool(this)
 
+    /**
+     * Public exposure for mesh connection pool metrics (available/total).
+     * Used by BroadcastMessageHandler for diagnostics without requiring protected access.
+     */
+    fun getMeshConnectionPoolStats(): Pair<Int, Int> {
+        return meshConnectionPool.availableConnections() to meshConnectionPool.maxPoolSize()
+    }
+
     fun acquireMeshConnection(timeoutMs: Long = MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS): MeshConnectionPool.Connection? {
         return try {
             meshConnectionPool.acquireConnection(timeoutMs)
@@ -639,19 +647,17 @@ abstract class VirtualNode(
         datagramPacket: DatagramPacket?,
         datagramSocket: VirtualNodeDatagramSocket?,
     ) : Boolean {
-        
+        // CRITICAL FIX: Check if this is a broadcast packet BEFORE attempting MMCP parsing
         val payload = virtualPacket.data
         val payloadSize = virtualPacket.header.payloadSize
         val offset = virtualPacket.payloadOffset
-        
-        // COMPREHENSIVE DEBUG: Log ALL packet structure details
+
         logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] dataSize=${payload.size}, payloadOffset=$offset, payloadSize=$payloadSize, toPort=${virtualPacket.header.toPort}, fromAddr=${virtualPacket.header.fromAddr.addressToDotNotation()}")
         logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] isEmpty=${payload.isEmpty()}, offsetValid=${offset < payload.size}, boundsCheck=${offset + payloadSize <= payload.size}")
-        
+
         
 
         // Handle GATEWAY_DOWN before full MMCP parsing — what=18 is not a registered MMCP class
-        // and would throw IllegalArgumentException in fromVirtualPacket().
         val payloadOff = virtualPacket.payloadOffset
         if (payload.size > payloadOff && payload[payloadOff] == MmcpMessage.WHAT_GATEWAY_DOWN) {
             val senderAddr = virtualPacket.header.fromAddr
@@ -756,50 +762,6 @@ abstract class VirtualNode(
         }
     }
 
-    private fun onIncomingBroadcastMessage(
-        virtualPacket: VirtualPacket,
-        datagramPacket: DatagramPacket?,
-        datagramSocket: VirtualNodeDatagramSocket?,
-    ) : Boolean {
-        // CRITICAL FIX: Check if this is a broadcast packet BEFORE attempting MMCP parsing
-        // Root cause: MMCP parser was intercepting broadcast packets and rejecting them as
-        // "Invalid what: 0" because broadcast packet type byte (0x01) is not a valid MMCP type
-        // See: BROADCAST_TRANSFER_ROOT_CAUSE_ANALYSIS_02112026.md
-        val payload = virtualPacket.data
-        val payloadSize = virtualPacket.header.payloadSize
-        val offset = virtualPacket.payloadOffset
-        
-        // COMPREHENSIVE DEBUG: Log ALL packet structure details
-        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] dataSize=${payload.size}, payloadOffset=$offset, payloadSize=$payloadSize, toPort=${virtualPacket.header.toPort}, fromAddr=${virtualPacket.header.fromAddr.addressToDotNotation()}")
-        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] isEmpty=${payload.isEmpty()}, offsetValid=${offset < payload.size}, boundsCheck=${offset + payloadSize <= payload.size}")
-        
-        // Enhanced bounds checking for broadcast packet detection
-        if (payloadSize > 0 && offset >= 0 && offset + payloadSize <= payload.size) {
-            val packetPayload = payload.copyOfRange(offset, offset + payloadSize)
-            val isBroadcastPacket = BroadcastPacketSerializer.isBroadcastPacket(packetPayload)
-            val packetTypeByte = if (isBroadcastPacket) BroadcastPacketSerializer.getPacketType(packetPayload).toByte() else (-1).toByte()
-            val packetFlags = if (isBroadcastPacket) BroadcastPacketSerializer.getFlags(packetPayload) else 0
-            val packetTypeHex = if (isBroadcastPacket) "0x${String.format("%02x", packetTypeByte)}" else "N/A"
-            val flagsHex = "0x${String.format("%02x", packetFlags)}"
-
-            logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] ✓ Bounds valid - packetType=$packetTypeHex, flags=$flagsHex, BROADCAST_CHUNK=0x${String.format("%02x", BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK.toByte())}, NACK=0x${String.format("%02x", BroadcastPacketSerializer.TYPE_NACK_REQUEST.toByte())}")
-
-            if (isBroadcastPacket) {
-                logger(Log.INFO, "$logPrefix: [PKT_CHECK] ✅ BROADCAST PACKET DETECTED (type=$packetTypeHex) flags=$flagsHex - routing to BroadcastMessageHandler")
-                broadcastMessageHandler?.onReceiveBroadcastPacket(virtualPacket)
-                return false
-            } else {
-                logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] Not broadcast packet - attempting MMCP parsing")
-                return true
-            }
-        } else {
-            logger(Log.WARN, "$logPrefix: [PKT_CHECK] ❌ BOUNDS CHECK FAILED - payloadSize=$payloadSize, offset=$offset, dataSize=${payload.size}, boundsOK=${offset >= 0 && offset + payloadSize <= payload.size}")
-            return true
-        }
-
-        
-    }
-
     // Deduplication cache for broadcast packets
     private val seenBroadcasts = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val broadcastTtlMs: Long = 60_000L
@@ -822,6 +784,26 @@ abstract class VirtualNode(
             payloadOffset = packet.payloadOffset,
             headerAlreadyInData = true
         )
+
+        // Log routing decision and packet details
+        logger(Log.DEBUG, "$logPrefix Routing packet: from=${packetCopy.header.fromAddr.addressToDotNotation()} to=${packetCopy.header.toAddr.addressToDotNotation()} size=${packetCopy.header.payloadSize}")
+
+        // --- ADDED: Deep packet inspection for broadcast chunk ---
+        try {
+            val payloadSize = packetCopy.header.payloadSize
+            if (payloadSize > 0) {
+                val payload = packetCopy.data.copyOfRange(packetCopy.payloadOffset, packetCopy.payloadOffset + payloadSize)
+                val packetType = BroadcastPacketSerializer.getPacketType(payload)
+                if (packetType == BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK) {
+                    val (broadcastId, _, chunkPair) = BroadcastPacketSerializer.deserialize(payload)
+                    val chunkMeta = chunkPair.first
+                    logger(Log.INFO, "$logPrefix [ROUTE_BROADCAST_CHUNK] from=${packetCopy.header.fromAddr.addressToDotNotation()} to=${packetCopy.header.toAddr.addressToDotNotation()} broadcastId=$broadcastId chunkId=${chunkMeta.chunkId} chunkIndex=${chunkMeta.chunkIndex}")
+                }
+            }
+        } catch (e: Exception) {
+            logger(Log.WARN, "$logPrefix [ROUTE_BROADCAST_CHUNK] failed to inspect broadcast chunk: ${e.message}")
+        }
+        // --- END ADDED ---
 
         // Offload ALL processing to connection pool to free IO thread immediately
         connectionExecutor.execute {
@@ -881,6 +863,25 @@ abstract class VirtualNode(
         datagramPacket: DatagramPacket?,
         virtualNodeDatagramSocket: VirtualNodeDatagramSocket?
     ) {
+        val srcAddr = packet.header.fromAddr.addressToDotNotation()
+        val dstAddr = packet.header.toAddr.addressToDotNotation()
+        val payloadLen = packet.header.payloadSize
+        logger(Log.DEBUG, "route() called: src=$srcAddr, dst=$dstAddr, toPort=${packet.header.toPort}, hopCount=${packet.header.hopCount}, payloadLen=$payloadLen")
+
+        // If this is a broadcast chunk, log broadcastId/chunkId if possible
+        if (payloadLen > 0) {
+            val payload = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + payloadLen)
+            try {
+                val packetType = BroadcastPacketSerializer.getPacketType(payload)
+                if (packetType == BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK) {
+                    val (broadcastId, _, chunkPair) = BroadcastPacketSerializer.deserialize(payload)
+                    val chunkMeta = chunkPair.first
+                    logger(Log.INFO, "ROUTE_BROADCAST_CHUNK: src=$srcAddr, dst=$dstAddr, broadcastId=$broadcastId, chunkId=${chunkMeta.chunkId}, chunkIndex=${chunkMeta.chunkIndex}, payloadLen=$payloadLen")
+                }
+            } catch (e: Exception) {
+                logger(Log.WARN, "ROUTE_BROADCAST_CHUNK: failed to inspect broadcast chunk: ${e.message}")
+            }
+        }
         val fromLastHop = packet.header.lastHopAddr
 
         if(packet.header.hopCount >= config.maxHops) {
@@ -891,36 +892,17 @@ abstract class VirtualNode(
             return
         }
 
-        val payload = packet.data
-        val offset = packet.payloadOffset
-        val packetPayload = payload.copyOfRange(offset, offset + packet.header.payloadSize)
-
-        val packetType = BroadcastPacketSerializer.getPacketType(packetPayload)
-        val packetFlags = BroadcastPacketSerializer.getFlags(packetPayload)
-        val packetTypeHex = "0x${String.format("%02x", packetType)}"
-        val flagsHex = "0x${String.format("%02x", packetFlags)}"
-
-        val isBroadcastType = BroadcastPacketSerializer.isBroadcastPacket(packetPayload)
-
-        logger(Log.DEBUG, "$logPrefix [PKT_TRACE] from=${packet.header.fromAddr.addressToDotNotation()} to=${packet.header.toAddr.addressToDotNotation()} toPort=${packet.header.toPort} packetType=$packetTypeHex flags=$flagsHex payloadSize=${packet.header.payloadSize} isBroadcastType=$isBroadcastType")
-
         // MMCP message handling (unchanged)
-        if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt && !isBroadcastType){
+        if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
             logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
-            if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
-                logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
+            val (shouldRoute, dropReason) = onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)
+            if(!shouldRoute) {
+                logger(Log.DEBUG,
+                    "$logPrefix Drop mmcp packet from ${packet.header.fromAddr} reason=${dropReason ?: "UNKNOWN"}"
+                )
             }
-        } else if(packet.header.toPort == 0){
+        }else if(packet.header.toPort == 0){
             logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
-        }
-
-        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] ✓ Broadcast path check packetType=$packetTypeHex flags=$flagsHex isBroadcastType=$isBroadcastType")
-        if (isBroadcastType) {
-            logger(Log.INFO, "$logPrefix: [PKT_CHECK] ✅ BROADCAST PACKET DETECTED (type=$packetTypeHex flags=$flagsHex) - routing to BroadcastMessageHandler")
-            broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
-            return
-        } else {
-            logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] Not broadcast type ($packetTypeHex) - attempting EcosystemMeshListener parsing")
         }
 
         // Ecosystem message handling (UDP broadcast or direct)
@@ -1338,14 +1320,6 @@ abstract class VirtualNode(
                 null
             )
         }
-    }
-
-    /**
-     * Public exposure for mesh connection pool metrics (available/total).
-     * Used by BroadcastMessageHandler for diagnostics without requiring protected access.
-     */
-    fun getMeshConnectionPoolStats(): Pair<Int, Int> {
-        return meshConnectionPool.availableConnections() to meshConnectionPool.maxPoolSize()
     }
 
     override fun lookupNextHopForChainSocket(address: InetAddress, port: Int): ChainSocketNextHop {

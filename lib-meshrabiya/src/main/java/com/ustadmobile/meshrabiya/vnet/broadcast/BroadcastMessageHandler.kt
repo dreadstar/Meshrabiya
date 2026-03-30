@@ -67,34 +67,47 @@ class BroadcastMessageHandler(
         chunkIndex: Int? = null,
         sendSocket: VirtualNodeDatagramSocket? = null
     ){
+        val chunkLabel = chunkIndex?.toString() ?: "meta"
+
+        val payload = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
+        val packetType = BroadcastPacketSerializer.getPacketType(payload)
+        val packetFlags = BroadcastPacketSerializer.getFlags(payload)
+        val packetTypeHex = "0x${String.format("%02x", packetType)}"
+        val packetFlagsHex = "0x${String.format("%02x", packetFlags)}"
+
+        logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: packetType=$packetTypeHex flags=$packetFlagsHex payloadSize=${packet.header.payloadSize} from=${packet.header.fromAddr.addressToDotNotation()} to=${packet.header.toAddr.addressToDotNotation()}")
+
+        val poolStats = virtualNode.getMeshConnectionPoolStats()
+        val poolAvailBefore = poolStats.first
+        val poolMax = poolStats.second
+
+        logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: pool before acquire $poolAvailBefore/$poolMax")
+
         val connection = virtualNode.acquireMeshConnection(MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS)
 
         if (connection == null) {
-            val chunkLabel = chunkIndex?.toString() ?: "meta"
-            Log.w(TAG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: no mesh connection available")
+            Log.w(TAG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: no mesh connection available, pool $poolAvailBefore/$poolMax")
             return
         }
 
         try {
-            // Mesh-only requirement: always use virtualNode.datagramSocket.
-            // Do NOT use the shared neighbor-return socket here for mesh broadcast payload.
             val meshSocket = virtualNode.datagramSocket
-            val chunkLabel = chunkIndex?.toString() ?: "meta"
             logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: sending via mesh-only socket to ${neighborAddr.hostAddress}:$neighborPort boundNetwork=${meshSocket.boundNetwork ?: "none"}")
-
             meshSocket.send(
                 nextHopAddress = neighborAddr,
                 nextHopPort = neighborPort,
                 virtualPacket = packet,
                 sourceLabel = "mesh-only"
             )
-
             logger(Log.VERBOSE, "$TAG Broadcast $broadcastId chunk=$chunkLabel sent mesh-only -> ${neighborAddr.hostAddress}:$neighborPort")
         } catch (e: Exception) {
-            val chunkLabel = chunkIndex?.toString() ?: "meta"
             Log.e(TAG, "$TAG Broadcast $broadcastId chunk=$chunkLabel failed send to ${neighborAddr.hostAddress}:$neighborPort via mesh-only socket", e)
         } finally {
             virtualNode.releaseMeshConnection(connection)
+            val poolStatsAfter = virtualNode.getMeshConnectionPoolStats()
+            val poolAvailAfter = poolStatsAfter.first
+            val poolMaxAfter = poolStatsAfter.second
+            logger(Log.DEBUG, "$TAG Broadcast $broadcastId chunk=$chunkLabel: pool after release $poolAvailAfter/$poolMaxAfter")
         }
     }
     
@@ -220,6 +233,7 @@ class BroadcastMessageHandler(
                     callback = callback
                 )
                 outgoingBroadcasts[broadcastId] = state
+                logger(Log.DEBUG, "$TAG Broadcast $broadcastId: registered outgoing state totalChunks=$totalChunks")
                 
                 // If text-only (no chunks), complete immediately
                 if (!hasFile) {
@@ -300,7 +314,8 @@ class BroadcastMessageHandler(
                     )
                     
                     callback(Result.success(result))
-                    outgoingBroadcasts.remove(broadcastId)
+                    logger(Log.DEBUG, "$TAG Broadcast $broadcastId: text-only send completed, state retained for NACK window")
+                    // outgoingBroadcasts.remove(broadcastId) removed here and handled by stale cleanup
                     releaseWakeLock()
                     return@execute
                 }
@@ -310,16 +325,7 @@ class BroadcastMessageHandler(
                 val totalBatches = (totalChunks + batchSize - 1) / batchSize
                 
                 // Register outgoing state
-                // val state = OutgoingBroadcastState(
-                //     broadcastId = broadcastId,
-                //     messageText = messageText,
-                //     fileId = fileId,
-                //     fileName = file.name,
-                //     filePath = filePath,  // Store full path for NACK resend
-                //     totalChunks = totalChunks,
-                //     callback = callback
-                // )
-                // outgoingBroadcasts[broadcastId] = state
+                
                 
                 // Send each chunk
                 
@@ -454,7 +460,8 @@ class BroadcastMessageHandler(
                 )
                 
                 callback(Result.success(result))
-                outgoingBroadcasts.remove(broadcastId)
+                logger(Log.DEBUG, "$TAG Broadcast $broadcastId: file send completed, state retained for NACK window")
+                // outgoingBroadcasts.remove(broadcastId) removed here and handled by stale cleanup
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Broadcast send failed: ${e.message}", e)
@@ -470,22 +477,47 @@ class BroadcastMessageHandler(
      * Called by VirtualNode when broadcast packet arrives (chunk or NACK)
      */
     fun onReceiveBroadcastPacket(packet: VirtualPacket) {
-        
-        try {
-            // Extract payload from packet data
-            val payload = packet.data.copyOfRange(
-                packet.payloadOffset, 
-                packet.payloadOffset + packet.header.payloadSize
-            )
-            
-            // Determine packet type and route accordingly
-            val packetType = try {
-                BroadcastPacketSerializer.getPacketType(payload)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to determine packet type: ${e.message}", e)
-                return
+        val payload = packet.data.copyOfRange(packet.payloadOffset, packet.payloadOffset + packet.header.payloadSize)
+
+        if (payload.isEmpty()) {
+            logger(Log.WARN, "[BROADCAST_HANDLER] Empty payload on received broadcast packet from=${packet.header.fromAddr.addressToDotNotation()}")
+            return
+        }
+
+        if (!BroadcastPacketSerializer.isBroadcastPacket(payload)) {
+            logger(Log.WARN, "[BROADCAST_HANDLER] Not a recognized broadcast packet format from=${packet.header.fromAddr.addressToDotNotation()}")
+            return
+        }
+
+        val packetType = BroadcastPacketSerializer.getPacketType(payload)
+        val flags = BroadcastPacketSerializer.getFlags(payload)
+        val hasText = BroadcastPacketSerializer.hasText(payload)
+        val hasGps = BroadcastPacketSerializer.hasGps(payload)
+        val hasFile = BroadcastPacketSerializer.hasFile(payload)
+
+        logger(Log.INFO, "[BROADCAST_HANDLER] Received broadcast packetType=0x${"%02x".format(packetType)} flags=0x${"%02x".format(flags)} text=$hasText gps=$hasGps file=$hasFile from=${packet.header.fromAddr.addressToDotNotation()}")
+
+        val (broadcastId, chunkId) = try {
+            when (packetType) {
+                BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK -> {
+                    val (bId, _, pair) = BroadcastPacketSerializer.deserialize(payload)
+                    val meta = pair.first
+                    bId to (meta.chunkId?.toString() ?: "unknown")
+                }
+                BroadcastPacketSerializer.TYPE_NACK_REQUEST -> {
+                    val (bId, _) = BroadcastPacketSerializer.deserializeNackRequest(payload)
+                    bId to "NACK"
+                }
+                else -> "unknown" to "unknown"
             }
-            
+        } catch (e: Exception) {
+            logger(Log.WARN, "[BROADCAST_HANDLER] Failed to parse payload: ${e.message}")
+            "unknown" to "unknown"
+        }
+
+        logger(Log.INFO, "[BROADCAST_HANDLER] Received broadcastId=$broadcastId chunkId=$chunkId from=${packet.header.fromAddr.addressToDotNotation()}")
+
+        try {
             when (packetType) {
                 BroadcastPacketSerializer.TYPE_BROADCAST_CHUNK -> {
                     handleBroadcastChunk(packet, payload)
@@ -494,14 +526,12 @@ class BroadcastMessageHandler(
                     handleNackRequest(packet, payload)
                 }
                 else -> {
-                    logger(Log.WARN, "$TAG Unknown packet type: $packetType")
+                    logger(Log.WARN, "$TAG Unknown broadcast packet type packetType=0x${"%02x".format(packetType)}")
                 }
             }
-            
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process broadcast packet: ${e.message}", e)
         }
-        
     }
     
     /**
@@ -643,7 +673,7 @@ class BroadcastMessageHandler(
                 // Check if still incomplete
                 if (state != null && !state.isComplete() && state.isTimedOut()) {
                     val missingChunks = state.getMissingChunks()
-                    logger(Log.WARN, "$TAG Broadcast $broadcastId: incomplete after 60s, ${missingChunks.size} chunks missing")
+                    logger(Log.WARN, "$TAG Broadcast $broadcastId: incomplete after 5s, totalChunks=${state.metadata.totalChunks}, received=${state.receivedChunks.size}, missing=${missingChunks.size}, missingIndices=${missingChunks.joinToString(",")}")
                     
                     // Send NACK request to sender
                     sendNackRequest(broadcastId, senderNodeId, missingChunks)
@@ -715,9 +745,13 @@ class BroadcastMessageHandler(
             // Check if we're the sender of this broadcast
             val outgoingState = outgoingBroadcasts[broadcastId]
             if (outgoingState == null) {
-                logger(Log.WARN, "$TAG NACK received for unknown broadcast $broadcastId, ignoring")
+                logger(Log.ERROR, "$TAG NACK received for unknown broadcast $broadcastId from ${packet.header.fromAddr}; missing=${missingChunks.joinToString(",")}; outgoing keys=${outgoingBroadcasts.keys}")
                 return
             }
+
+            logger(Log.INFO, "$TAG NACK received for broadcast $broadcastId from node ${packet.header.fromAddr}: missingChunks=${missingChunks.joinToString(",")}")
+            logger(Log.INFO, "$TAG Broadcast $broadcastId outgoing state age=${System.currentTimeMillis()-outgoingState.startTime}ms totalChunks=${outgoingState.totalChunks} chunksSent=${outgoingState.chunksSent}")
+            logger(Log.INFO, "$TAG Resending ${missingChunks.size} missing chunks for broadcast $broadcastId")
             
             logger(Log.INFO, "$TAG Resending ${missingChunks.size} missing chunks for broadcast $broadcastId")
             
@@ -939,6 +973,15 @@ class BroadcastMessageHandler(
                             receiveListeners.forEach { it(timeoutDto) }
                         }
                     }
+                    true
+                } else {
+                    false
+                }
+            }
+
+            outgoingBroadcasts.entries.removeIf { (id, state) ->
+                if (now - state.startTime > MeshrabiyaConstants.BROADCAST_TIMEOUT_MS) {
+                    logger(Log.WARN, "$TAG Broadcast $id outgoing state timed out, sent ${state.chunksSent}/${state.totalChunks} chunks")
                     true
                 } else {
                     false

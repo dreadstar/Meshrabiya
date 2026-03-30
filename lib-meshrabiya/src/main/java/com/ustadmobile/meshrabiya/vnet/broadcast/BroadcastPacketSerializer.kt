@@ -9,20 +9,31 @@ import java.nio.ByteOrder
  */
 object BroadcastPacketSerializer {
     
-    private const val VERSION = 1
     
-    // Packet types for NACK protocol
+    // Packet types for broadcast protocol
     const val TYPE_BROADCAST_CHUNK = 0x01
     const val TYPE_NACK_REQUEST = 0x02
+
+    // Packet flags
+    const val FLAG_HAS_TEXT = 1 shl 0   // 0x01
+    const val FLAG_HAS_GPS = 1 shl 1    // 0x02
+    const val FLAG_HAS_FILE = 1 shl 2   // 0x04
+
+    // Wire format constants
+    const val PROTOCOL_VERSION = 1
+    const val HEADER_VERSION_SIZE = 4
+    const val HEADER_FLAGS_SIZE = 1
+    const val HEADER_TYPE_SIZE = 1
+    const val HEADER_SIZE = HEADER_VERSION_SIZE + HEADER_FLAGS_SIZE + HEADER_TYPE_SIZE  // 6 bytes
     
     /**
-     * Serialize a NACK (negative acknowledgment) request for missing chunks
-     * 
-     * Format:
-     * [0-3]: Version (Int32BE) = 1
-     * [4]: Packet Type (Byte) = TYPE_NACK_REQUEST
-     * [5-8]: Broadcast ID length (Int32)
-     * [9-X]: Broadcast ID (UTF-8 UUID)
+     * Serialize a NACK (negative acknowledgment) request for missing chunks.
+     * Envelope format:
+     * [0-3]: PROTOCOL_VERSION (Int32BE)
+     * [4]: flags (for NACK we keep 0)
+     * [5]: packetType = TYPE_NACK_REQUEST
+     * [6-9]: Broadcast ID length (Int32)
+     * [10-X]: Broadcast ID (UTF-8 UUID)
      * [X-X+3]: Missing chunks count (Int32)
      * [X+4-Y]: Missing chunk indices (Int32 array)
      */
@@ -31,27 +42,40 @@ object BroadcastPacketSerializer {
         missingChunks: List<Int>
     ): ByteArray {
         val broadcastIdBytes = broadcastId.toByteArray(Charsets.UTF_8)
-        val totalSize = 4 + 1 + 4 + broadcastIdBytes.size + 4 + (missingChunks.size * 4)
+        val totalSize = HEADER_SIZE + 4 + broadcastIdBytes.size + 4 + (missingChunks.size * 4)
         val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
-        
-        buffer.putInt(VERSION)
+
+        buffer.putInt(PROTOCOL_VERSION)
+        buffer.put(0.toByte()) // no flags for NACK
         buffer.put(TYPE_NACK_REQUEST.toByte())
+
         buffer.putInt(broadcastIdBytes.size)
         buffer.put(broadcastIdBytes)
         buffer.putInt(missingChunks.size)
         missingChunks.forEach { buffer.putInt(it) }
-        
+
+        return buffer.array()
+    }
+
+    fun serializeSubtypeWithFlags(
+        flags: Int,
+        payloadBody: ByteArray
+    ): ByteArray {
+        val totalSize = 1 + payloadBody.size
+        val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
+        buffer.put(flags.toByte())
+        buffer.put(payloadBody)
         return buffer.array()
     }
     
     /**
-     * Serialize a broadcast message+chunk into packet payload bytes
-     * 
-     * Format:
-     * [0-3]: Version (Int32BE) = 1
-     * [4]: Packet Type (Byte) = TYPE_BROADCAST_CHUNK
-     * [5-8]: Broadcast ID length (Int32)
-     * [8-X]: Broadcast ID (UTF-8 UUID)
+     * Serialize a broadcast message+chunk into packet payload bytes.
+     * Envelope format:
+     * [0-3]: PROTOCOL_VERSION (Int32BE)
+     * [4]: flags (text/GPS/file bitmask from payload and metadata)
+     * [5]: packetType = TYPE_BROADCAST_CHUNK
+     * [6-9]: Broadcast ID length (Int32)
+     * [10-X]: Broadcast ID (UTF-8 UUID)
      * [X-X+3]: Message length (Int32)
      * [X+4-Y]: Message text (UTF-8)
      * [Y-Y+3]: Chunk metadata length (Int32)
@@ -67,129 +91,153 @@ object BroadcastPacketSerializer {
         require(messageText.length <= MeshrabiyaConstants.MAX_BROADCAST_MESSAGE_LENGTH) {
             "Message exceeds max length: ${messageText.length} > ${MeshrabiyaConstants.MAX_BROADCAST_MESSAGE_LENGTH}"
         }
-        
+
         val broadcastIdBytes = broadcastId.toByteArray(Charsets.UTF_8)
         val messageBytes = messageText.toByteArray(Charsets.UTF_8)
         val metadataBytes = chunkMetadata.toJson().toByteArray(Charsets.UTF_8)
-        
-        val totalSize = 4 + // version
-                       1 + // packet type
-                       4 + broadcastIdBytes.size + // broadcastId
-                       4 + messageBytes.size + // message
-                       4 + metadataBytes.size + // metadata
-                       chunkData.size // chunk data
-        
+
+        var flags = 0
+        if (messageText.isNotEmpty()) flags = flags or FLAG_HAS_TEXT
+        if (chunkMetadata.latitude != null && chunkMetadata.longitude != null) flags = flags or FLAG_HAS_GPS
+        if (chunkMetadata.fileId.isNotEmpty()) flags = flags or FLAG_HAS_FILE
+
+        val totalSize = HEADER_SIZE +
+                        4 + broadcastIdBytes.size +
+                        4 + messageBytes.size +
+                        4 + metadataBytes.size +
+                        chunkData.size
         val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
-        
-        // Version
-        buffer.putInt(VERSION)
-        
-        // Packet type
+
+        buffer.putInt(PROTOCOL_VERSION)
+        buffer.put(flags.toByte())
         buffer.put(TYPE_BROADCAST_CHUNK.toByte())
-        
-        // Broadcast ID
+
         buffer.putInt(broadcastIdBytes.size)
         buffer.put(broadcastIdBytes)
-        
-        // Message
+
         buffer.putInt(messageBytes.size)
         buffer.put(messageBytes)
-        
-        // Metadata
+
         buffer.putInt(metadataBytes.size)
         buffer.put(metadataBytes)
-        
-        // Chunk data
+
         buffer.put(chunkData)
-        
         return buffer.array()
     }
     
     /**
-     * Deserialize packet payload into broadcast components
-     * 
+     * Deserialize packet payload into broadcast components.
+     * Supports both new envelope format (version + flags + type) and legacy type-at-offset-zero.
      * @return Triple of (broadcastId, messageText, (metadata, chunkData))
      */
     fun deserialize(payload: ByteArray): Triple<String, String, Pair<BroadcastChunkMetadata, ByteArray>> {
         val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        
-        // Version check
-        val version = buffer.getInt()
-        require(version == VERSION) { "Unsupported broadcast packet version: $version" }
-        
-        // Packet type check
-        val packetType = buffer.get().toInt()
+        val packetType: Int
+
+        if (payload.size >= HEADER_SIZE) {
+            val version = buffer.int
+            if (version == PROTOCOL_VERSION) {
+                buffer.get() // flags
+                packetType = buffer.get().toInt() and 0xFF
+            } else {
+                buffer.rewind()
+                packetType = buffer.get().toInt() and 0xFF
+            }
+        } else {
+            packetType = buffer.get().toInt() and 0xFF
+        }
+
         require(packetType == TYPE_BROADCAST_CHUNK) { "Expected broadcast chunk, got type: $packetType" }
-        
-        // Broadcast ID
-        val broadcastIdLength = buffer.getInt()
-        val broadcastIdBytes = ByteArray(broadcastIdLength)
-        buffer.get(broadcastIdBytes)
+
+        // For new envelope, body starts either at pos 6 or 1 for legacy
+        val bodyStart = if (payload.size >= HEADER_SIZE && ByteBuffer.wrap(payload,0,4).order(ByteOrder.BIG_ENDIAN).int == PROTOCOL_VERSION) HEADER_SIZE else 1
+        val bodyBuffer = ByteBuffer.wrap(payload, bodyStart, payload.size - bodyStart).order(ByteOrder.BIG_ENDIAN)
+
+        val broadcastIdLength = bodyBuffer.getInt()
+        val broadcastIdBytes = ByteArray(broadcastIdLength); bodyBuffer.get(broadcastIdBytes)
         val broadcastId = String(broadcastIdBytes, Charsets.UTF_8)
-        
-        // Message
-        val messageLength = buffer.getInt()
-        val messageBytes = ByteArray(messageLength)
-        buffer.get(messageBytes)
+
+        val messageLength = bodyBuffer.getInt()
+        val messageBytes = ByteArray(messageLength); bodyBuffer.get(messageBytes)
         val messageText = String(messageBytes, Charsets.UTF_8)
-        
-        // Metadata
-        val metadataLength = buffer.getInt()
-        val metadataBytes = ByteArray(metadataLength)
-        buffer.get(metadataBytes)
-        val metadataJson = String(metadataBytes, Charsets.UTF_8)
-        val metadata = BroadcastChunkMetadata.fromJson(metadataJson)
-        
-        // Chunk data (rest of buffer)
-        val chunkData = ByteArray(buffer.remaining())
-        buffer.get(chunkData)
-        
+
+        val metadataLength = bodyBuffer.getInt()
+        val metadataBytes = ByteArray(metadataLength); bodyBuffer.get(metadataBytes)
+        val metadata = BroadcastChunkMetadata.fromJson(String(metadataBytes, Charsets.UTF_8))
+
+        val chunkData = ByteArray(bodyBuffer.remaining()); bodyBuffer.get(chunkData)
         return Triple(broadcastId, messageText, Pair(metadata, chunkData))
     }
-    
+
     /**
-     * Deserialize NACK request packet
-     * 
+     * Deserialize NACK request packet.
+     * Supports both new envelope format and legacy.
      * @return Pair of (broadcastId, missingChunkIndices)
      */
     fun deserializeNackRequest(payload: ByteArray): Pair<String, List<Int>> {
         val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        
-        // Version check
-        val version = buffer.getInt()
-        require(version == VERSION) { "Unsupported NACK packet version: $version" }
-        
-        // Packet type check
-        val packetType = buffer.get().toInt()
+        val packetType: Int
+
+        if (payload.size >= HEADER_SIZE) {
+            val version = buffer.int
+            if (version == PROTOCOL_VERSION) {
+                buffer.get() // flags
+                packetType = buffer.get().toInt() and 0xFF
+            } else {
+                buffer.rewind()
+                packetType = buffer.get().toInt() and 0xFF
+            }
+        } else {
+            packetType = buffer.get().toInt() and 0xFF
+        }
+
         require(packetType == TYPE_NACK_REQUEST) { "Expected NACK packet, got type: $packetType" }
-        
-        // Broadcast ID
-        val broadcastIdLength = buffer.getInt()
-        val broadcastIdBytes = ByteArray(broadcastIdLength)
-        buffer.get(broadcastIdBytes)
+
+        val bodyStart = if (payload.size >= HEADER_SIZE && ByteBuffer.wrap(payload,0,4).order(ByteOrder.BIG_ENDIAN).int == PROTOCOL_VERSION) HEADER_SIZE else 1
+        val bodyBuffer = ByteBuffer.wrap(payload, bodyStart, payload.size - bodyStart).order(ByteOrder.BIG_ENDIAN)
+
+        val broadcastIdLength = bodyBuffer.getInt()
+        val broadcastIdBytes = ByteArray(broadcastIdLength); bodyBuffer.get(broadcastIdBytes)
         val broadcastId = String(broadcastIdBytes, Charsets.UTF_8)
-        
-        // Missing chunks
-        val chunkCount = buffer.getInt()
-        val missingChunks = (0 until chunkCount).map { buffer.getInt() }
-        
+
+        val chunkCount = bodyBuffer.getInt()
+        val missingChunks = (0 until chunkCount).map { bodyBuffer.getInt() }
         return Pair(broadcastId, missingChunks)
     }
-    
+
     /**
-     * Get packet type from payload without full deserialization
-     * Useful for routing packets before processing
+     * Get packet type from payload without full deserialization.
+     * Uses new envelope when available, falls back to legacy.
      */
     fun getPacketType(payload: ByteArray): Int {
-        if (payload.size < 5) {
-            throw IllegalArgumentException("Payload too small to determine packet type")
+        if (payload.size >= HEADER_SIZE) {
+            val version = ByteBuffer.wrap(payload, 0, 4).order(ByteOrder.BIG_ENDIAN).int
+            if (version == PROTOCOL_VERSION) {
+                return payload[HEADER_VERSION_SIZE + HEADER_FLAGS_SIZE].toInt() and 0xFF
+            }
         }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        
-        // Skip version (4 bytes)
-        buffer.getInt()
-        
-        // Read packet type (1 byte)
-        return buffer.get().toInt()
+
+        if (payload.isEmpty()) throw IllegalArgumentException("Payload too small")
+        return payload[0].toInt() and 0xFF
+    }
+
+    fun getFlags(payload: ByteArray): Int {
+        if (payload.size >= HEADER_SIZE) {
+            val version = ByteBuffer.wrap(payload, 0, 4).order(ByteOrder.BIG_ENDIAN).int
+            if (version == PROTOCOL_VERSION) {
+                return payload[HEADER_VERSION_SIZE].toInt() and 0xFF
+            }
+        }
+        return 0
+    }
+
+    fun hasText(payload: ByteArray): Boolean = getFlags(payload) and FLAG_HAS_TEXT != 0
+    fun hasGps(payload: ByteArray): Boolean = getFlags(payload) and FLAG_HAS_GPS != 0
+    fun hasFile(payload: ByteArray): Boolean = getFlags(payload) and FLAG_HAS_FILE != 0
+
+    fun isBroadcastPacket(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
+        val packetType = getPacketType(payload)
+        return packetType == TYPE_BROADCAST_CHUNK || packetType == TYPE_NACK_REQUEST
     }
 }
