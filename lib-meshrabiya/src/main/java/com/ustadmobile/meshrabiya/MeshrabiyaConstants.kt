@@ -56,7 +56,8 @@ object MeshrabiyaConstants {
      * Prevents network flooding while maintaining good throughput.
      * Lower values = faster transfer but higher network load.
      */
-    const val BROADCAST_CHUNK_DELAY_MS = 1L
+    const val BROADCAST_CHUNK_DELAY_MS = 20L
+    const val BROADCAST_NACK_TIMEOUT_MS = 5_000L
 
     /**
      * Delay between sending batches of chunks (milliseconds).
@@ -187,6 +188,8 @@ object MeshrabiyaConstants {
     fun setEcosystemGossipPort(port: Int) {
         prefs?.edit()?.putInt("ecosystem_gossip_port", port)?.apply()
     }
+
+    const val BROADCAST_MESH_PORT = 8648
 
     private const val DEFAULT_CONNECTION_POOL_SIZE = 8
 

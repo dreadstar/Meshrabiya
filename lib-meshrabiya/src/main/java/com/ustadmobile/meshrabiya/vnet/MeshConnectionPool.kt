@@ -1,6 +1,7 @@
 package com.ustadmobile.meshrabiya.vnet
 import com.ustadmobile.meshrabiya.MeshrabiyaConstants
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -31,9 +32,9 @@ class MeshConnectionPool constructor(private val virtualNode: VirtualNode) {
         }
     }
 
-    private val connectionQueue = ConcurrentLinkedQueue<Connection>()
-    private val totalConnections = AtomicInteger(0)
     private val maxPoolSize = MeshrabiyaConstants.getConnectionPoolSize()
+    private val connectionQueue = ArrayBlockingQueue<Connection>(maxPoolSize)
+    private val totalConnections = AtomicInteger(0)
 
     init {
         repeat(maxPoolSize) {
@@ -43,22 +44,11 @@ class MeshConnectionPool constructor(private val virtualNode: VirtualNode) {
     }
 
     /**
-     * Acquire a connection from the pool.
-     * Blocks if no connection is available, unless timeoutMs is specified.
+     * Acquire a connection from the pool, blocking up to [timeoutMs] milliseconds.
+     * Returns null if no connection becomes available within the timeout.
      */
-    @Throws(InterruptedException::class)
-    fun acquireConnection(timeoutMs: Long = 0): Connection {
-        val startTime = System.currentTimeMillis()
-        while (true) {
-            val conn = connectionQueue.poll()
-            if (conn != null) {
-                return conn
-            }
-            if (timeoutMs > 0 && System.currentTimeMillis() - startTime > timeoutMs) {
-                throw RuntimeException("Timeout waiting for connection from pool")
-            }
-            Thread.sleep(10)
-        }
+    fun acquireConnection(timeoutMs: Long = MeshrabiyaConstants.ROUTE_CONNECTION_ACQUIRE_TIMEOUT_MS): Connection? {
+        return connectionQueue.poll(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
     }
 
     /**

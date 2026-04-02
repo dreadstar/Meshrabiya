@@ -266,7 +266,7 @@ class BroadcastMessageHandler(
                     val packet = VirtualPacket.fromHeaderAndPayloadData(
                         header = VirtualPacketHeader(
                             toAddr = VirtualPacket.ADDR_BROADCAST,
-                            toPort = 0,
+                            toPort = MeshrabiyaConstants.BROADCAST_MESH_PORT,
                             fromAddr = virtualNode.addressAsInt,
                             fromPort = 0,
                             lastHopAddr = virtualNode.addressAsInt,
@@ -384,7 +384,7 @@ class BroadcastMessageHandler(
                     val packet = VirtualPacket.fromHeaderAndPayloadData(
                         header = VirtualPacketHeader(
                             toAddr = VirtualPacket.ADDR_BROADCAST,
-                            toPort = 0,  // MMCP port
+                            toPort = MeshrabiyaConstants.BROADCAST_MESH_PORT,
                             fromAddr = virtualNode.addressAsInt,
                             fromPort = 0,
                             lastHopAddr = virtualNode.addressAsInt,
@@ -428,8 +428,6 @@ class BroadcastMessageHandler(
                         val percentComplete = (chunkIndex * 100) / totalChunks
                         logger(Log.INFO, "$TAG Broadcast $broadcastId: $percentComplete% complete ($chunkIndex/$totalChunks chunks)")
                     }
-                    
-                    state.chunksSent++
                     
                     // Delay between chunks within batch
                     Thread.sleep(MeshrabiyaConstants.BROADCAST_CHUNK_DELAY_MS)
@@ -494,8 +492,9 @@ class BroadcastMessageHandler(
         val hasText = BroadcastPacketSerializer.hasText(payload)
         val hasGps = BroadcastPacketSerializer.hasGps(payload)
         val hasFile = BroadcastPacketSerializer.hasFile(payload)
+        val payloadCRC = BroadcastPacketSerializer.checksumPayloadCRC32(payload)
 
-        logger(Log.INFO, "[BROADCAST_HANDLER] Received broadcast packetType=0x${"%02x".format(packetType)} flags=0x${"%02x".format(flags)} text=$hasText gps=$hasGps file=$hasFile from=${packet.header.fromAddr.addressToDotNotation()}")
+        logger(Log.INFO, "[BROADCAST_HANDLER] Received broadcast packetType=0x${"%02x".format(packetType)} flags=0x${"%02x".format(flags)} text=$hasText gps=$hasGps file=$hasFile payloadCRC32=0x${payloadCRC.toString(16)} from=${packet.header.fromAddr.addressToDotNotation()}")
 
         val (broadcastId, chunkId) = try {
             when (packetType) {
@@ -665,13 +664,12 @@ class BroadcastMessageHandler(
     private fun startTimeoutMonitor(broadcastId: String, senderNodeId: Int) {
         virtualNode.connectionExecutor.execute {
             try {
-                // Wait for timeout period (5 seconds)
-                Thread.sleep(5_000)
-                
-                val state = incomingBroadcasts[broadcastId]
-                
+                // Wait for timeout period (NACK window)
+                Thread.sleep(MeshrabiyaConstants.BROADCAST_NACK_TIMEOUT_MS)
+
                 // Check if still incomplete
-                if (state != null && !state.isComplete() && state.isTimedOut()) {
+                val state = incomingBroadcasts[broadcastId]
+                if (state != null && !state.isComplete()) {
                     val missingChunks = state.getMissingChunks()
                     logger(Log.WARN, "$TAG Broadcast $broadcastId: incomplete after 5s, totalChunks=${state.metadata.totalChunks}, received=${state.receivedChunks.size}, missing=${missingChunks.size}, missingIndices=${missingChunks.joinToString(",")}")
                     
@@ -709,7 +707,7 @@ class BroadcastMessageHandler(
             val nackPacket = VirtualPacket.fromHeaderAndPayloadData(
                 header = VirtualPacketHeader(
                     toAddr = senderNodeId,  // Direct to sender, not broadcast
-                    toPort = 0,
+                    toPort = MeshrabiyaConstants.BROADCAST_MESH_PORT,
                     fromAddr = virtualNode.addressAsInt,
                     fromPort = 0,
                     lastHopAddr = virtualNode.addressAsInt,
@@ -825,7 +823,7 @@ class BroadcastMessageHandler(
                     val packet = VirtualPacket.fromHeaderAndPayloadData(
                         header = VirtualPacketHeader(
                             toAddr = requestorNodeId,  // Direct to requestor, not broadcast
-                            toPort = 0,
+                            toPort = MeshrabiyaConstants.BROADCAST_MESH_PORT,
                             fromAddr = virtualNode.addressAsInt,
                             fromPort = 0,
                             lastHopAddr = virtualNode.addressAsInt,
@@ -838,13 +836,26 @@ class BroadcastMessageHandler(
                         payloadOffset = VirtualPacketHeader.HEADER_SIZE
                     )
                     
-                    // Route packet to requestor
-                    virtualNode.route(packet)
+                    // Send directly to requestor via outbound path (not route() which loops through
+                    // processRoutePacket() and would cause the sender's own handler to consume the packet)
+                    val neighbor = virtualNode.originatingMessageManager.neighbors()
+                        .firstOrNull { (neighborAddr, _) -> neighborAddr == requestorNodeId }?.second
+                    if (neighbor != null) {
+                        sendPacketToNeighbor(
+                            packet = packet,
+                            neighborAddr = neighbor.lastHopRealInetAddr,
+                            neighborPort = neighbor.lastHopRealPort,
+                            broadcastId = broadcastId,
+                            chunkIndex = chunkIndex,
+                            sendSocket = neighbor.receivedFromSocket
+                        )
+                        logger(Log.DEBUG, "$TAG Resent chunk $chunkIndex for broadcast $broadcastId to node $requestorNodeId")
+                    } else {
+                        logger(Log.WARN, "$TAG Cannot resend chunk $chunkIndex — requestor $requestorNodeId not in neighbor table")
+                    }
                     
-                    logger(Log.DEBUG, "$TAG Resent chunk $chunkIndex for broadcast $broadcastId to node $requestorNodeId")
-                    
-                    // Small delay between chunks (same as original broadcast)
-                    Thread.sleep(1)
+                    // Delay between resent chunks (mirrors original broadcast pacing)
+                    Thread.sleep(MeshrabiyaConstants.BROADCAST_CHUNK_DELAY_MS)
                     
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to resend chunk $chunkIndex for broadcast $broadcastId", e)

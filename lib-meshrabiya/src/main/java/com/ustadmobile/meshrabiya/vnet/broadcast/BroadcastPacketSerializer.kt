@@ -20,20 +20,17 @@ object BroadcastPacketSerializer {
     const val FLAG_HAS_FILE = 1 shl 2   // 0x04
 
     // Wire format constants
-    const val PROTOCOL_VERSION = 1
-    const val HEADER_VERSION_SIZE = 4
     const val HEADER_FLAGS_SIZE = 1
     const val HEADER_TYPE_SIZE = 1
-    const val HEADER_SIZE = HEADER_VERSION_SIZE + HEADER_FLAGS_SIZE + HEADER_TYPE_SIZE  // 6 bytes
+    const val HEADER_SIZE = HEADER_FLAGS_SIZE + HEADER_TYPE_SIZE  // 2 bytes
     
     /**
      * Serialize a NACK (negative acknowledgment) request for missing chunks.
      * Envelope format:
-     * [0-3]: PROTOCOL_VERSION (Int32BE)
-     * [4]: flags (for NACK we keep 0)
-     * [5]: packetType = TYPE_NACK_REQUEST
-     * [6-9]: Broadcast ID length (Int32)
-     * [10-X]: Broadcast ID (UTF-8 UUID)
+     * [0]: flags (for NACK we keep 0)
+     * [1]: packetType = TYPE_NACK_REQUEST
+     * [2-5]: Broadcast ID length (Int32)
+     * [6-X]: Broadcast ID (UTF-8 UUID)
      * [X-X+3]: Missing chunks count (Int32)
      * [X+4-Y]: Missing chunk indices (Int32 array)
      */
@@ -45,7 +42,6 @@ object BroadcastPacketSerializer {
         val totalSize = HEADER_SIZE + 4 + broadcastIdBytes.size + 4 + (missingChunks.size * 4)
         val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
 
-        buffer.putInt(PROTOCOL_VERSION)
         buffer.put(0.toByte()) // no flags for NACK
         buffer.put(TYPE_NACK_REQUEST.toByte())
 
@@ -71,10 +67,9 @@ object BroadcastPacketSerializer {
     /**
      * Serialize a broadcast message+chunk into packet payload bytes.
      * Envelope format:
-     * [0-3]: PROTOCOL_VERSION (Int32BE)
-     * [4]: flags (text/GPS/file bitmask from payload and metadata)
-     * [5]: packetType = TYPE_BROADCAST_CHUNK
-     * [6-9]: Broadcast ID length (Int32)
+     * [0]: flags (text/GPS/file bitmask from payload and metadata)
+     * [1]: packetType = TYPE_BROADCAST_CHUNK
+     * [2-5]: Broadcast ID length (Int32)
      * [10-X]: Broadcast ID (UTF-8 UUID)
      * [X-X+3]: Message length (Int32)
      * [X+4-Y]: Message text (UTF-8)
@@ -108,7 +103,6 @@ object BroadcastPacketSerializer {
                         chunkData.size
         val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
 
-        buffer.putInt(PROTOCOL_VERSION)
         buffer.put(flags.toByte())
         buffer.put(TYPE_BROADCAST_CHUNK.toByte())
 
@@ -122,7 +116,12 @@ object BroadcastPacketSerializer {
         buffer.put(metadataBytes)
 
         buffer.put(chunkData)
-        return buffer.array()
+        val packet = buffer.array()
+        val payloadCRC = checksumPayloadCRC32(packet)
+        // diagnostics: flags/type invariant maintained by protocol
+        // no behavior change
+        println("[BroadcastPacketSerializer] serialize: packetType=0x01 flags=0x${String.format("%02x", flags)} payloadCRC32=0x${payloadCRC.toString(16)}")
+        return packet
     }
     
     /**
@@ -131,27 +130,18 @@ object BroadcastPacketSerializer {
      * @return Triple of (broadcastId, messageText, (metadata, chunkData))
      */
     fun deserialize(payload: ByteArray): Triple<String, String, Pair<BroadcastChunkMetadata, ByteArray>> {
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        val packetType: Int
-
-        if (payload.size >= HEADER_SIZE) {
-            val version = buffer.int
-            if (version == PROTOCOL_VERSION) {
-                buffer.get() // flags
-                packetType = buffer.get().toInt() and 0xFF
-            } else {
-                buffer.rewind()
-                packetType = buffer.get().toInt() and 0xFF
-            }
-        } else {
-            packetType = buffer.get().toInt() and 0xFF
+        if (payload.size < HEADER_SIZE) {
+            throw IllegalArgumentException("Payload too small for broadcast packet: ${payload.size}")
         }
+
+        val flags = payload[0].toInt() and 0xFF
+        val packetType = payload[1].toInt() and 0xFF
+        val payloadCRC = checksumPayloadCRC32(payload)
+        println("[BroadcastPacketSerializer] deserialize: packetType=0x${String.format("%02x", packetType)} flags=0x${String.format("%02x", flags)} payloadCRC32=0x${payloadCRC.toString(16)}")
 
         require(packetType == TYPE_BROADCAST_CHUNK) { "Expected broadcast chunk, got type: $packetType" }
 
-        // For new envelope, body starts either at pos 6 or 1 for legacy
-        val bodyStart = if (payload.size >= HEADER_SIZE && ByteBuffer.wrap(payload,0,4).order(ByteOrder.BIG_ENDIAN).int == PROTOCOL_VERSION) HEADER_SIZE else 1
-        val bodyBuffer = ByteBuffer.wrap(payload, bodyStart, payload.size - bodyStart).order(ByteOrder.BIG_ENDIAN)
+        val bodyBuffer = ByteBuffer.wrap(payload, HEADER_SIZE, payload.size - HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
 
         val broadcastIdLength = bodyBuffer.getInt()
         val broadcastIdBytes = ByteArray(broadcastIdLength); bodyBuffer.get(broadcastIdBytes)
@@ -175,26 +165,16 @@ object BroadcastPacketSerializer {
      * @return Pair of (broadcastId, missingChunkIndices)
      */
     fun deserializeNackRequest(payload: ByteArray): Pair<String, List<Int>> {
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        val packetType: Int
-
-        if (payload.size >= HEADER_SIZE) {
-            val version = buffer.int
-            if (version == PROTOCOL_VERSION) {
-                buffer.get() // flags
-                packetType = buffer.get().toInt() and 0xFF
-            } else {
-                buffer.rewind()
-                packetType = buffer.get().toInt() and 0xFF
-            }
-        } else {
-            packetType = buffer.get().toInt() and 0xFF
+        if (payload.size < HEADER_SIZE) {
+            throw IllegalArgumentException("Payload too small for NACK packet: ${payload.size}")
         }
+
+        val flags = payload[0].toInt() and 0xFF
+        val packetType = payload[1].toInt() and 0xFF
 
         require(packetType == TYPE_NACK_REQUEST) { "Expected NACK packet, got type: $packetType" }
 
-        val bodyStart = if (payload.size >= HEADER_SIZE && ByteBuffer.wrap(payload,0,4).order(ByteOrder.BIG_ENDIAN).int == PROTOCOL_VERSION) HEADER_SIZE else 1
-        val bodyBuffer = ByteBuffer.wrap(payload, bodyStart, payload.size - bodyStart).order(ByteOrder.BIG_ENDIAN)
+        val bodyBuffer = ByteBuffer.wrap(payload, HEADER_SIZE, payload.size - HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
 
         val broadcastIdLength = bodyBuffer.getInt()
         val broadcastIdBytes = ByteArray(broadcastIdLength); bodyBuffer.get(broadcastIdBytes)
@@ -210,25 +190,13 @@ object BroadcastPacketSerializer {
      * Uses new envelope when available, falls back to legacy.
      */
     fun getPacketType(payload: ByteArray): Int {
-        if (payload.size >= HEADER_SIZE) {
-            val version = ByteBuffer.wrap(payload, 0, 4).order(ByteOrder.BIG_ENDIAN).int
-            if (version == PROTOCOL_VERSION) {
-                return payload[HEADER_VERSION_SIZE + HEADER_FLAGS_SIZE].toInt() and 0xFF
-            }
-        }
-
-        if (payload.isEmpty()) throw IllegalArgumentException("Payload too small")
-        return payload[0].toInt() and 0xFF
+        if (payload.size < HEADER_SIZE) throw IllegalArgumentException("Payload too small: ${payload.size}")
+        return payload[HEADER_FLAGS_SIZE].toInt() and 0xFF
     }
 
     fun getFlags(payload: ByteArray): Int {
-        if (payload.size >= HEADER_SIZE) {
-            val version = ByteBuffer.wrap(payload, 0, 4).order(ByteOrder.BIG_ENDIAN).int
-            if (version == PROTOCOL_VERSION) {
-                return payload[HEADER_VERSION_SIZE].toInt() and 0xFF
-            }
-        }
-        return 0
+        if (payload.size < HEADER_SIZE) return 0
+        return payload[0].toInt() and 0xFF
     }
 
     fun hasText(payload: ByteArray): Boolean = getFlags(payload) and FLAG_HAS_TEXT != 0
@@ -239,5 +207,11 @@ object BroadcastPacketSerializer {
         if (payload.isEmpty()) return false
         val packetType = getPacketType(payload)
         return packetType == TYPE_BROADCAST_CHUNK || packetType == TYPE_NACK_REQUEST
+    }
+
+    fun checksumPayloadCRC32(payload: ByteArray): Long {
+        val crc = java.util.zip.CRC32()
+        crc.update(payload)
+        return crc.value
     }
 }

@@ -805,7 +805,10 @@ abstract class VirtualNode(
     private val broadcastTtlMs: Long = 60_000L
     
     private fun computeBroadcastId(packet: VirtualPacket): String {
-        return "${packet.header.fromAddr}-${packet.header.fromPort}-${packet.header.payloadSize}"
+        val payloadCRC = java.util.zip.CRC32().also {
+            it.update(packet.data, packet.payloadOffset, packet.header.payloadSize)
+        }.value
+        return "${packet.header.fromAddr}-${packet.header.fromPort}-${packet.header.payloadSize}-$payloadCRC"
     }
 
     override fun route(
@@ -901,11 +904,12 @@ abstract class VirtualNode(
         val flagsHex = "0x${String.format("%02x", packetFlags)}"
 
         val isBroadcastType = BroadcastPacketSerializer.isBroadcastPacket(packetPayload)
+        val payloadCRC = BroadcastPacketSerializer.checksumPayloadCRC32(packetPayload)
 
-        logger(Log.DEBUG, "$logPrefix [PKT_TRACE] from=${packet.header.fromAddr.addressToDotNotation()} to=${packet.header.toAddr.addressToDotNotation()} toPort=${packet.header.toPort} packetType=$packetTypeHex flags=$flagsHex payloadSize=${packet.header.payloadSize} isBroadcastType=$isBroadcastType")
+        logger(Log.DEBUG, "$logPrefix [PKT_TRACE] from=${packet.header.fromAddr.addressToDotNotation()} to=${packet.header.toAddr.addressToDotNotation()} toPort=${packet.header.toPort} packetType=$packetTypeHex flags=$flagsHex payloadSize=${packet.header.payloadSize} payloadCRC32=0x${payloadCRC.toString(16)} isBroadcastType=$isBroadcastType")
 
-        // MMCP message handling (unchanged)
-        if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt && !isBroadcastType){
+        // MMCP message handling (port 0 only, broadcast uses dedicated port)
+        if(packet.header.toPort == 0 && packet.header.fromAddr != addressAsInt){
             logger(Log.DEBUG, "$logPrefix route: Processing MMCP message from ${packet.header.fromAddr.addressToDotNotation()} toPort=${packet.header.toPort}", null)
             if(!onIncomingMmcpMessage(packet, datagramPacket, virtualNodeDatagramSocket)){
                 logger(Log.DEBUG, "Drop mmcp packet from ${packet.header.fromAddr}", null)
@@ -914,15 +918,39 @@ abstract class VirtualNode(
             logger(Log.DEBUG, "$logPrefix route: Skipping MMCP from self (fromAddr=${packet.header.fromAddr.addressToDotNotation()} myAddr=${addressAsInt.addressToDotNotation()})", null)
         }
 
-        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] ✓ Broadcast path check packetType=$packetTypeHex flags=$flagsHex isBroadcastType=$isBroadcastType")
-        if (isBroadcastType) {
-            logger(Log.INFO, "$logPrefix: [PKT_CHECK] ✅ BROADCAST PACKET DETECTED (type=$packetTypeHex flags=$flagsHex) - routing to BroadcastMessageHandler")
+        logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] ✓ Broadcast path check port=${packet.header.toPort} packetType=$packetTypeHex flags=$flagsHex")
+        if (packet.header.toPort == MeshrabiyaConstants.BROADCAST_MESH_PORT &&
+            (packet.header.toAddr == ADDR_BROADCAST || packet.header.toAddr == addressAsInt)) {
+            logger(Log.INFO, "$logPrefix: [PKT_CHECK] ✅ BROADCAST PACKET DETECTED (port=${packet.header.toPort} type=$packetTypeHex flags=$flagsHex) - routing to BroadcastMessageHandler")
             broadcastMessageHandler?.onReceiveBroadcastPacket(packet)
+            if (packet.header.toAddr == addressAsInt) return  // unicast (NACK reply to this node): fully handled
+            // Broadcast chunk: also relay to mesh neighbors for multi-hop support
+            packet.updateLastHopAddrAndIncrementHopCountInData(addressAsInt)
+            val fwdId = computeBroadcastId(packet)
+            val fwdNow = System.currentTimeMillis()
+            if (seenBroadcasts.putIfAbsent(fwdId, fwdNow) == null && packet.header.maxHops > 0) {
+                val meshRoles = emergentRoleManager.getCurrentMeshRoles()
+                if (meshRoles.contains(MeshRole.MESH_ROUTER) || meshRoles.contains(MeshRole.MESH_HUB)) {
+                    val roleType = when {
+                        meshRoles.contains(MeshRole.MESH_ROUTER) -> "MESH_ROUTER"
+                        else -> "MESH_HUB"
+                    }
+                    logger(Log.VERBOSE, "$logPrefix: Broadcast chunk $fwdId forwarding to neighbors (role=$roleType, hops remaining: ${packet.header.maxHops})")
+                    originatingMessageManager.neighbors().filter {
+                        it.first != fromLastHop && it.first != packet.header.fromAddr
+                    }.forEach {
+                        it.second.receivedFromSocket.send(
+                            nextHopAddress = it.second.lastHopRealInetAddr,
+                            nextHopPort = it.second.lastHopRealPort,
+                            virtualPacket = packet,
+                        )
+                    }
+                }
+            }
             return
         } else {
             logger(Log.DEBUG, "$logPrefix: [PKT_CHECK] Not broadcast type ($packetTypeHex) - attempting EcosystemMeshListener parsing")
         }
-
         // Ecosystem message handling (UDP broadcast or direct)
         // Route ALL Distributed Storage & Compute messages to MeshEcosystemListener
         val ecosystemPort = MeshrabiyaConstants.getEcosystemGossipPort()
