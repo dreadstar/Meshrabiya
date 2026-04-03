@@ -658,27 +658,36 @@ class BroadcastMessageHandler(
         }
     
     /**
-     * Monitor incomplete broadcast and send NACK request if timeout occurs
-     * Runs in background thread, waits 5 seconds then checks if broadcast completed
+     * Monitor incomplete broadcast and send NACK request if timeout occurs.
+     * Retries up to maxNackAttempts times (each attempt waits BROADCAST_NACK_TIMEOUT_MS).
      */
     private fun startTimeoutMonitor(broadcastId: String, senderNodeId: Int) {
         virtualNode.connectionExecutor.execute {
             try {
-                // Wait for timeout period (NACK window)
-                Thread.sleep(MeshrabiyaConstants.BROADCAST_NACK_TIMEOUT_MS)
+                val maxNackAttempts = 3
+                for (attempt in 1..maxNackAttempts) {
+                    // Wait for timeout period (NACK window)
+                    Thread.sleep(MeshrabiyaConstants.BROADCAST_NACK_TIMEOUT_MS)
 
-                // Check if still incomplete
-                val state = incomingBroadcasts[broadcastId]
-                if (state != null && !state.isComplete()) {
-                    val missingChunks = state.getMissingChunks()
-                    logger(Log.WARN, "$TAG Broadcast $broadcastId: incomplete after 5s, totalChunks=${state.metadata.totalChunks}, received=${state.receivedChunks.size}, missing=${missingChunks.size}, missingIndices=${missingChunks.joinToString(",")}")
-                    
-                    // Send NACK request to sender
-                    sendNackRequest(broadcastId, senderNodeId, missingChunks)
-                } else if (state == null) {
-                    logger(Log.DEBUG, "$TAG Broadcast $broadcastId: already completed and cleaned up")
-                } else if (state.isComplete()) {
-                    logger(Log.DEBUG, "$TAG Broadcast $broadcastId: completed before timeout")
+                    // Check if still incomplete
+                    val state = incomingBroadcasts[broadcastId]
+                    if (state == null) {
+                        logger(Log.DEBUG, "$TAG Broadcast $broadcastId: already completed and cleaned up")
+                        break
+                    } else if (state.isComplete()) {
+                        logger(Log.DEBUG, "$TAG Broadcast $broadcastId: completed before timeout (attempt $attempt)")
+                        break
+                    } else {
+                        val missingChunks = state.getMissingChunks()
+                        logger(Log.WARN, "$TAG Broadcast $broadcastId: incomplete after ${attempt * 5}s (attempt $attempt/$maxNackAttempts), totalChunks=${state.metadata.totalChunks}, received=${state.receivedChunks.size}, missing=${missingChunks.size}, missingIndices=${missingChunks.joinToString(",")}")
+
+                        // Send NACK request to sender
+                        sendNackRequest(broadcastId, senderNodeId, missingChunks)
+
+                        if (attempt == maxNackAttempts) {
+                            logger(Log.ERROR, "$TAG Broadcast $broadcastId: failed after $maxNackAttempts NACK attempts, still missing ${missingChunks.size} chunks")
+                        }
+                    }
                 }
             } catch (e: InterruptedException) {
                 logger(Log.DEBUG, "$TAG Timeout monitor interrupted for broadcast $broadcastId")
