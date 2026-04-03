@@ -91,8 +91,9 @@ import kotlinx.coroutines.withContext
 import com.ustadmobile.meshrabiya.vnet.NodeTopologyInfo
 import com.ustadmobile.meshrabiya.api.model.MeshRoleDto
 import com.ustadmobile.meshrabiya.api.model.LocalNodeStateDto
-import com.ustadmobile.meshrabiya.api.model.NonMeshWifiConnectionStateDto
-import com.ustadmobile.meshrabiya.api.model.NonMeshWifiStatusDto
+
+
+import com.ustadmobile.meshrabiya.api.model.VpnStateDto
 
 // import com.ustadmobile.meshrabiya.model.ServiceAnnouncement
 
@@ -167,8 +168,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private val _networkOverviewMetricsFlow = MutableStateFlow(NetworkOverviewMetricsDto(0L, 0L, 0))
     override val networkOverviewMetricsFlow: StateFlow<NetworkOverviewMetricsDto> = _networkOverviewMetricsFlow.asStateFlow()
 
-    // Non-mesh WiFi connection state Flow — updated by connectToNonMeshWifi/disconnectFromNonMeshWifi
-    private val _nonMeshWifiState = MutableStateFlow(NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE))
+    // VPN state — pushed by TorStatusMonitor via notifyVpnStateChanged()
+    private val _vpnStateFlow = MutableStateFlow(VpnStateDto.INACTIVE)
 
     private val _meshExtenderHotspotState = MutableStateFlow(MeshExtenderHotspotStateDto.INACTIVE)
     override val meshExtenderHotspotStateFlow: StateFlow<MeshExtenderHotspotStateDto> = _meshExtenderHotspotState.asStateFlow()
@@ -219,9 +220,6 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private val eventMonitoringScope = CoroutineScope(Dispatchers.Default)
     private var stateMonitorJob: Job? = null
     private var peerMonitorJob: Job? = null
-    // Confirmed internet access on non-mesh WiFi; persists across transient VALIDATED dropouts
-    private val _nonMeshInternetConfirmed = MutableStateFlow(false)
-    private var nonMeshInternetCheckJob: Job? = null
     // Confirmed internet access via a remote CLEARNET_GATEWAY (mesh-side probe). Set by periodic checkInternetViaMeshGateway().
     private val _meshInternetViaGatewayConfirmed = MutableStateFlow(false)
     private var meshInternetCheckJob: Job? = null
@@ -313,25 +311,21 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
         }
 
-        // Reactively derive NetworkInfoDto from topology + wifi + non-mesh state — no polling
-        // _nonMeshInternetConfirmed is the 5th input: persists green dot through transient VALIDATED dropouts
+        // Reactively derive NetworkInfoDto from topology + wifi + vpn state — no polling
         eventMonitoringScope.launch {
             combine(
                 node.state.map { it.toDto() },
                 node.originatingMessageManager.topologyMapFlow,
-                _nonMeshWifiState,
-                node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.map { it.toDto() },
-                combine(_nonMeshInternetConfirmed, _currentMeshRolesFlow) { confirmed: Boolean, roles: Set<MeshRoleDto> -> Pair(confirmed, roles) },
-                _meshInternetViaGatewayConfirmed
+                _vpnStateFlow,
+                combine(_currentMeshRolesFlow, _meshInternetViaGatewayConfirmed) { roles: Set<MeshRoleDto>, confirmed: Boolean -> Pair(roles, confirmed) }
             ) { args: Array<Any?> ->
                 val localState = args[0] as LocalNodeStateDto
                 val topology = args[1] as Map<Int, NodeTopologyInfo>
-                val nonMeshWifi = args[2] as NonMeshWifiConnectionStateDto
-                val internetWifiState = args[3] as NonMeshWifiConnectionStateDto
-                val confirmedAndRoles = args[4] as Pair<Boolean, Set<MeshRoleDto>>
-                val meshViaGatewayConfirmed = args[5] as Boolean
+                @Suppress("UNCHECKED_CAST")
+                val rolesAndConfirmed = args[3] as Pair<Set<MeshRoleDto>, Boolean>
+                val meshViaGatewayConfirmed = rolesAndConfirmed.second
+                val localRoles = rolesAndConfirmed.first
 
-                val (internetConfirmed, localRoles) = confirmedAndRoles
                 val neighborCount = localState.originatorMessages.count { it.value.hopCount == 1.toByte() }
                 val remoteTorGateways = topology.values.count { nodeInfo ->
                     nodeInfo.hasRole(MeshRole.TOR_GATEWAY) && !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
@@ -341,17 +335,9 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
                 val torGateways = remoteTorGateways + (if (MeshRoleDto.TOR_GATEWAY in localRoles) 1 else 0)
                 val clearnetGateways = remoteClearnetGateways + (if (MeshRoleDto.CLEARNET_GATEWAY in localRoles) 1 else 0)
-                val nonMeshSsid = nonMeshWifi.connectedSsid
-                val nonMeshHasInternet = (internetWifiState.hasInternetAccess || internetConfirmed)
-                    .takeIf { nonMeshWifi.status == NonMeshWifiStatusDto.CONNECTED }
-                val hasRemoteClearnetGateway = remoteClearnetGateways > 0
-                val isLocalClearnetGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles
-                val localHasInternet = nonMeshHasInternet == true
-                // meshInternetGatewayAvailable is driven solely by _meshInternetViaGatewayConfirmed
-                // for all gateway cases. This decouples the mesh green dot from the non-mesh HTTP
-                // probe result, preventing the mesh dot from disappearing when the VPN causes
-                // the non-mesh probe to fail transiently.
+                // meshInternetGatewayAvailable is driven solely by _meshInternetViaGatewayConfirmed.
                 val meshInternetGatewayAvailable = meshViaGatewayConfirmed
+                val currentVpn = _vpnStateFlow.value
                 Pair(
                     NetworkInfoDto(
                         bssid = "",
@@ -361,9 +347,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                         connectedPeers = neighborCount,
                         torGateways = torGateways,
                         clearnetGateways = clearnetGateways,
-                        nonMeshSsid = nonMeshSsid,
-                        nonMeshIpAddress = internetWifiState.internetConnectionIpAddress,
-                        nonMeshHasInternet = nonMeshHasInternet
+                        vpnHasInternet = currentVpn.active,
+                        vpnOverWifi = currentVpn.vpnOverWifi,
                     ),
                     meshInternetGatewayAvailable
                 )
@@ -483,103 +468,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
             }
         }
-
-        // Immediately confirm internet when OS validates (for fast initial green dot appearance)
-        eventMonitoringScope.launch {
-            node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.collect { state ->
-                if (state.hasInternetAccess) {
-                    _nonMeshInternetConfirmed.value = true
-                }
-            }
-        }
-
-        // Periodic active internet probe: keeps green dot alive through transient VALIDATED dropouts
-        // (e.g., caused by VPN activation). Cancels and resets on disconnect.
-        eventMonitoringScope.launch {
-            _nonMeshWifiState.collect { nonMeshState ->
-                nonMeshInternetCheckJob?.cancel()
-                nonMeshInternetCheckJob = null
-                if (nonMeshState.status == NonMeshWifiStatusDto.CONNECTED) {
-                    nonMeshInternetCheckJob = launch {
-                        while (true) {
-                            delay(NONMESH_INTERNET_CHECK_INTERVAL_MS)
-                            val confirmed = checkNonMeshInternetAccess(node)
-                            if (confirmed) {
-                                _nonMeshInternetConfirmed.value = true
-                            }
-                        }
-                    }
-                } else {
-                    _nonMeshInternetConfirmed.value = false
-                }
-            }
-        }
-
-        // Mesh gateway internet check — runs on ANY mesh-connected node (AP or STA)
-        // This is intentionally a SEPARATE top-level launch, not nested inside the
-        // nonMeshWifiState collector. A pure STA node (Phone 2) must reach this path
-        // even when it has no upstream WiFi of its own.
-        eventMonitoringScope.launch {
-            combine(
-                node.originatingMessageManager.topologyMapFlow,
-                _currentMeshRolesFlow,
-                _nonMeshWifiState
-            ) { topology, localRoles, nonMeshState ->
-                val hasRemoteGateway = topology.values.any { nodeInfo ->
-                    (nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) ||
-                    nodeInfo.hasRole(MeshRole.TOR_GATEWAY)) &&
-                    !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
-                }
-                val isLocalGateway = MeshRoleDto.CLEARNET_GATEWAY in localRoles ||
-                                    MeshRoleDto.TOR_GATEWAY in localRoles
-                val nonMeshConnected = nonMeshState.status == NonMeshWifiStatusDto.CONNECTED
-                val apActive = _meshApActiveFlow.value
-                val shouldCheck = hasRemoteGateway ||
-                                (apActive && isLocalGateway && nonMeshConnected)
-                shouldCheck
-            }
-            .distinctUntilChanged()
-            .collect { shouldCheck ->
-                meshInternetCheckJob?.cancel()
-                meshInternetCheckJob = null
-                if (shouldCheck) {
-                    val capturedNode = node
-                    meshInternetCheckJob = launch {
-                        // Helper to run one probe cycle (extracted to avoid repetition).
-                        suspend fun runProbe(): Boolean {
-                            val currentLocalRoles = _currentMeshRolesFlow.value
-                            val currentIsLocalGateway =
-                                MeshRoleDto.CLEARNET_GATEWAY in currentLocalRoles ||
-                                MeshRoleDto.TOR_GATEWAY in currentLocalRoles
-                            val currentHasRemote = capturedNode.originatingMessageManager
-                                .getTopologyMapInfo().values.any { nodeInfo ->
-                                    (nodeInfo.hasRole(MeshRole.CLEARNET_GATEWAY) ||
-                                    nodeInfo.hasRole(MeshRole.TOR_GATEWAY)) &&
-                                    !nodeInfo.isStale(GATEWAY_STALE_TIMEOUT_MS)
-                                }
-                            return if (currentIsLocalGateway && !currentHasRemote) {
-                                checkNonMeshInternetAccess(capturedNode)
-                            } else {
-                                checkInternetViaMeshGateway()
-                            }
-                        }
-
-                        // Fire immediately when a gateway first becomes visible in topology.
-                        // Previously this had delay() first, causing a 30-second blind window
-                        // after every join before the green dot could appear.
-                        _meshInternetViaGatewayConfirmed.value = runProbe()
-
-                        // Then continue at the normal periodic interval.
-                        while (true) {
-                            delay(MESH_INTERNET_CHECK_INTERVAL_MS)
-                            _meshInternetViaGatewayConfirmed.value = runProbe()
-                        }
-                    }
-                } else {
-                    _meshInternetViaGatewayConfirmed.value = false
-                }
-            }
-        }
+        
     }
     
     /**
@@ -597,27 +486,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
      * Sends an HTTP HEAD to Google's generate_204 endpoint via the bound [internetWifiNetwork],
      * bypassing any active VPN. Falls back to ConnectivityManager VALIDATED check on failure.
      */
-    private suspend fun checkNonMeshInternetAccess(node: AndroidVirtualNode): Boolean =
-        withContext(Dispatchers.IO) {
-            val network = node.meshrabiyaWifiManager.internetWifiNetwork ?: return@withContext false
-            try {
-                val url = URL("http://connectivitycheck.gstatic.com/generate_204")
-                val conn = network.openConnection(url) as HttpURLConnection
-                conn.connectTimeout = 5_000
-                conn.readTimeout = 5_000
-                conn.requestMethod = "HEAD"
-                conn.connect()
-                val code = conn.responseCode
-                conn.disconnect()
-                code == 204 || code == 200
-            } catch (e: Exception) {
-                Log.d(TAG, "[NONMESH] internet probe failed (${e.javaClass.simpleName}), trying VALIDATED")
-                val ctx = appContext ?: return@withContext false
-                val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return@withContext false
-                cm.getNetworkCapabilities(network)
-                    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-            }
-        }
+    
 
     /**
      * Probes internet connectivity via a remote CLEARNET_GATEWAY node.
@@ -940,19 +809,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
         
         Log.d("MeshrabiyaApiImpl", "getNetworkInfo() - returning NetworkInfoDto with connectedPeers=$connectedNeighbors")
 
-        // if the node has a non-mesh connection, include it
-        val nonMeshState = _nonMeshWifiState.value
-        val nonMeshSsid = nonMeshState.connectedSsid
-        // IP address comes from the WifiManager's internetWifiNetworkStateFlow so that
-        // MeshrabiyaApiImpl contains no networking logic of its own.
-        val nonMeshIp = node.meshrabiyaWifiManager.internetWifiNetworkStateFlow.value.ipAddress
-        val nonMeshHasInternet = nonMeshState.hasInternetAccess
-            .takeIf { nonMeshState.status == NonMeshWifiStatusDto.CONNECTED }
-
-        if (nonMeshSsid != null) {
-            Log.d(TAG, "[NETWORKINFO] non-mesh connected ssid=$nonMeshSsid ip=$nonMeshIp internet=$nonMeshHasInternet")
-        }
-
+        val vpn = _vpnStateFlow.value
         return NetworkInfoDto(
             bssid = "",
             ssid = "",
@@ -961,9 +818,8 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
             connectedPeers = connectedNeighbors,
             torGateways = torGateways,
             clearnetGateways = clearnetGateways,
-            nonMeshSsid = nonMeshSsid,
-            nonMeshIpAddress = nonMeshIp,
-            nonMeshHasInternet = nonMeshHasInternet
+            vpnHasInternet = vpn.active,
+            vpnOverWifi = vpn.vpnOverWifi,
         )
     }
     override fun getNodeId(): Int {
@@ -1683,6 +1539,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     override fun isTorActive(): Boolean {
         return isTorRunning
     }
+
+    override fun notifyVpnStateChanged(vpnState: VpnStateDto) {
+        _vpnStateFlow.value = vpnState
+    }
+
+    override fun getVpnStateFlow(): StateFlow<VpnStateDto> = _vpnStateFlow.asStateFlow()
 
     /**
      * V3: Internal method to update Tor status from TorStatusMonitor.
@@ -2487,151 +2349,12 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     }
 
     // ========================================
-    override suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto {
-        val correlationId = UUID.randomUUID().toString()
-        Log.i(TAG, "[NONMESH_FLOW][$correlationId] connectToNonMeshWifi start ssid='$ssid' passphrasePresent=${passphrase.isNotEmpty()} meshInitialized=${myNode != null}")
 
-        getHotspotInfo()?.ssid?.let { current ->
-            if (current == ssid) {
-                val failed = NonMeshWifiConnectionStateDto(
-                    status = NonMeshWifiStatusDto.FAILED,
-                    errorMessage = "Cannot connect to own hotspot"
-                )
-                Log.w(TAG, "[NONMESH_FLOW][$correlationId] abort - cannot connect to own hotspot (self ssid=$ssid)")
-                _nonMeshWifiState.value = failed
-                return failed
-            }
-        }
-
-        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.CONNECTING)
-        Log.d(TAG, "[NONMESH_FLOW][$correlationId] state=CONNECTING")
-
-        val result = try {
-            myNode?.meshrabiyaWifiManager
-                ?.connectToInternetWifi(ssid, passphrase)
-                ?: Result.failure(IllegalStateException("Mesh node unavailable"))
-        } catch (e: Exception) {
-            Log.e(TAG, "[NONMESH_FLOW][$correlationId] exception in manager connectToInternetWifi", e)
-            Result.failure(e)
-        }
-
-        if (result.isSuccess) {
-            Log.i(TAG, "[NONMESH_FLOW][$correlationId] manager reported success for $ssid")
-            _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(
-                status = NonMeshWifiStatusDto.CONNECTED,
-                connectedSsid = ssid,
-            )
-
-            val finalState = try {
-                withTimeout(10_000) {
-                    _nonMeshWifiState.first { it.hasInternetAccess }
-                }
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                Log.w(TAG, "[NONMESH_FLOW][$correlationId] validation timeout for $ssid; current=${_nonMeshWifiState.value}")
-                _nonMeshWifiState.value
-            }
-
-            Log.i(TAG, "[NONMESH_FLOW][$correlationId] final state for $ssid = $finalState")
-            _networkInfoFlow.value = getNetworkInfo()
-            return finalState
-        } else {
-            val error = result.exceptionOrNull()
-            Log.w(TAG, "[NONMESH_FLOW][$correlationId] connection failed for $ssid; error=${error?.message}", error)
-            val failed = NonMeshWifiConnectionStateDto(
-                status = NonMeshWifiStatusDto.FAILED,
-                errorMessage = error?.message,
-            )
-            _nonMeshWifiState.value = failed
-            _networkInfoFlow.value = getNetworkInfo()
-            return failed
-        }
-    }
-
-    override suspend fun disconnectFromNonMeshWifi(): Boolean {
-        val node = myNode ?: return false
-        // Notify mesh peers before dropping internet WiFi if this node acts as a gateway
-        val roles = emergentRoleManager?.getCurrentMeshRoles() ?: emptySet()
-        if (roles.any { it == MeshRole.TOR_GATEWAY || it == MeshRole.CLEARNET_GATEWAY }) {
-            node.broadcastGatewayDown()
-        }
-        node.meshrabiyaWifiManager.disconnectFromInternetWifi()
-        _nonMeshWifiState.value = NonMeshWifiConnectionStateDto(status = NonMeshWifiStatusDto.IDLE)
-        _networkInfoFlow.value = getNetworkInfo()
-        return true
-    }
-
-    override fun getNonMeshWifiStateFlow(): StateFlow<NonMeshWifiConnectionStateDto> {
-        return _nonMeshWifiState.asStateFlow()
-    }
-
-    override suspend fun scanAvailableWifiNetworks(): List<NonMeshWifiNetworkDto> {
-        val ctx = appContext ?: return emptyList()
-        val wifiManager = ctx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return emptyList()
-        // Block until the OS signals SCAN_RESULTS_AVAILABLE (guarantees fresh results).
-        // Falls back to cached results if broadcast doesn't arrive within 5 s.
-        val scanCompleted = withTimeoutOrNull(5_000) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                val receiver = object : BroadcastReceiver() {
-                    override fun onReceive(context: Context, intent: Intent) {
-                        try { ctx.unregisterReceiver(this) } catch (_: Exception) {}
-                        if (cont.isActive) cont.resumeWith(Result.success(Unit))
-                    }
-                }
-                ctx.registerReceiver(receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
-                cont.invokeOnCancellation {
-                    try { ctx.unregisterReceiver(receiver) } catch (_: Exception) {}
-                }
-                @Suppress("DEPRECATION")
-                wifiManager.startScan()
-            }
-        }
-        if (scanCompleted == null) {
-            Log.w(TAG, "scanAvailableWifiNetworks: scan broadcast timed out, using cached results")
-        }
-        @Suppress("DEPRECATION")
-        val results = wifiManager.scanResults ?: return emptyList()
-        val list = results
-            .filter { it.SSID.isNotEmpty() }
-            .map { scanResult ->
-                NonMeshWifiNetworkDto(
-                    ssid = scanResult.SSID,
-                    bssid = scanResult.BSSID,
-                    signalStrength = scanResult.level,
-                    isSecured = scanResult.capabilities.contains("WPA") ||
-                                scanResult.capabilities.contains("WEP"),
-                )
-            }
-            .sortedByDescending { it.signalStrength }
-        Log.i(TAG, "scanAvailableWifiNetworks: found ${list.size} SSIDs ${list.map{it.ssid}}")
-        return list
-    }
-
-    override fun isInternetWifiFeatureAvailable(): Boolean {
-        val node = myNode ?: return false
-        val wifiState = node.meshrabiyaWifiManager.currentWifiState
-        if (wifiState.hotspotIsStarted && wifiState.concurrentApStationSupported) {
-            return true
-        }
-        if (!wifiState.hotspotIsStarted &&
-            wifiState.wifiStationState.status == com.ustadmobile.meshrabiya.vnet.wifi.state.WifiStationState.Status.AVAILABLE &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            wifiState.staStaConcurrencySupported) {
-            return true
-        }
-        return false
-    }
 
     override fun isWifiEnabled(): Boolean {
         return myNode?.meshrabiyaWifiManager?.isWifiEnabled() ?: false
     }
 
-    private fun logNonMeshState(correlationId: String, prefix: String, state: NonMeshWifiConnectionStateDto) {
-        Log.d(TAG, "[NONMESH_FLOW][$correlationId][$prefix] status=${state.status} connectedSsid=${state.connectedSsid} hasInternetAccess=${state.hasInternetAccess} error=${state.errorMessage}")
-    }
-
-    private fun logNetworkInfo(correlationId: String, info: NetworkInfoDto?) {
-        Log.d(TAG, "[NONMESH_FLOW][$correlationId] networkInfo: peers=${info?.connectedPeers} nonMeshSsid=${info?.nonMeshSsid} nonMeshHasInternet=${info?.nonMeshHasInternet}")
-    }
+    
 
 }

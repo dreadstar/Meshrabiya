@@ -64,8 +64,8 @@ data class NodeCapabilitySnapshot(
     val networkQuality: Float, // 0.0-1.0
     val stability: Float, // 0.0-1.0 based on uptime/connectivity history
     val timestamp: Long = System.currentTimeMillis(),
-    /** True if device has non-mesh WiFi with validated internet access. */
-    val hasNonMeshInternetAccess: Boolean = false,
+    /** True if the Orbot VPN tunnel is active (internet access via VPN). */
+    val hasVpnInternetAccess: Boolean = false,
 ) {
     fun hasStableConnection(): Boolean = networkQuality > 0.7f && stability > 0.6f
     
@@ -399,7 +399,7 @@ class EmergentRoleManager(
         
         // Gateway roles: respect user preferences as filters
         // Only assign gateway roles if user has enabled them AND device meets criteria
-        if (node.hasStableConnection() && node.hasNonMeshInternetAccess && fitness > 0.6 && mesh.needsMoreGateways) {
+        if (node.hasStableConnection() && node.hasVpnInternetAccess && fitness > 0.6 && mesh.needsMoreGateways) {
             android.util.Log.i("EmergentRoleManager", "[CALC_TARGET] Gateway criteria MET, checking user preferences...")
             safeLog(LogLevel.INFO, "[ROLE_CALC] Gateway criteria met, checking user preferences...")
             // Check each gateway type individually
@@ -672,9 +672,9 @@ class EmergentRoleManager(
                 "Thermal=${enhancedSnapshot.thermalState}, " +
                 "Stability=${(enhancedSnapshot.stability * 100).toInt()}%")
             
-            val nonMeshInternetAccess = (virtualNode.meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
-                ?.internetWifiNetworkStateFlow?.value?.hasInternetAccess ?: false
-            enhancedSnapshot.copy(hasNonMeshInternetAccess = nonMeshInternetAccess)
+            val vpnActive = com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
+                .getInstance().getVpnStateFlow().value.active
+            enhancedSnapshot.copy(hasVpnInternetAccess = vpnActive)
             
         } catch (e: Exception) {
             // Fallback to legacy implementation if hardware manager fails
@@ -712,8 +712,8 @@ class EmergentRoleManager(
                 thermalState = ThermalState.COOL, // Fallback: assume cool
                 networkQuality = (fitnessScore.signalStrength / 100.0f).coerceIn(0.0f, 1.0f),
                 stability = 0.8f, // Fallback: assume good stability
-                hasNonMeshInternetAccess = (virtualNode.meshrabiyaWifiManager as? MeshrabiyaWifiManagerAndroid)
-                    ?.internetWifiNetworkStateFlow?.value?.hasInternetAccess ?: false,
+                hasVpnInternetAccess = com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
+                    .getInstance().getVpnStateFlow().value.active,
             )
         }
     }

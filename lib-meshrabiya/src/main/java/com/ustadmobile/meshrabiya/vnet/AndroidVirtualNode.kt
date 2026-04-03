@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.Preferences
 import com.ustadmobile.meshrabiya.log.MNetLoggerStdout
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import com.ustadmobile.meshrabiya.vnet.bluetooth.MeshrabiyaBluetoothState
+import com.ustadmobile.meshrabiya.api.MeshrabiyaApiImpl
 import com.ustadmobile.meshrabiya.vnet.wifi.ConnectBand
 import com.ustadmobile.meshrabiya.vnet.wifi.HotspotType
 import com.ustadmobile.meshrabiya.vnet.wifi.LocalHotspotResponse
@@ -243,12 +244,12 @@ class AndroidVirtualNode(
     }
 
     override fun onClearnetGatewayPacket(packet: VirtualPacket): Boolean {
-        val internetNetwork = meshrabiyaWifiManager.internetWifiNetwork
-        return if (internetNetwork != null) {
-            clearnetGatewayForwarder.forward(packet, internetNetwork)
+        val vpnActive = MeshrabiyaApiImpl.getInstance().getVpnStateFlow().value.active
+        return if (vpnActive) {
+            clearnetGatewayForwarder.forwardViaTun(packet)
             true
         } else {
-            logger(Log.WARN, "$logPrefix CLEARNET gateway: no internet WiFi network bound, dropping packet", null)
+            logger(Log.WARN, "$logPrefix CLEARNET gateway: VPN not active, dropping packet", null)
             false
         }
     }

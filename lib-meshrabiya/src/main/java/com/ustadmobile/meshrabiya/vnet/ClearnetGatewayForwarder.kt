@@ -1,6 +1,5 @@
 package com.ustadmobile.meshrabiya.vnet
 
-import android.net.Network
 import android.util.Log
 import com.ustadmobile.meshrabiya.log.MNetLogger
 import kotlinx.coroutines.CoroutineScope
@@ -29,7 +28,7 @@ class ClearnetGatewayForwarder(
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
 
-    fun forward(packet: VirtualPacket, internetWifiNetwork: Network) {
+    fun forwardViaTun(packet: VirtualPacket) {
         scope.launch {
             try {
                 val header = packet.header
@@ -45,10 +44,9 @@ class ClearnetGatewayForwarder(
                     packet.payloadOffset + payloadSize
                 )
 
-                logger(Log.DEBUG, "$logPrefix forward: dst=${destInetAddr.hostAddress}:$destPort payloadSize=$payloadSize")
+                logger(Log.DEBUG, "$logPrefix forwardViaTun: dst=${destInetAddr.hostAddress}:$destPort payloadSize=$payloadSize")
 
                 val socket = DatagramSocket()
-                internetWifiNetwork.bindSocket(socket)
                 socket.soTimeout = 5_000
                 socket.send(DatagramPacket(payload, payload.size, InetSocketAddress(destInetAddr, destPort)))
 

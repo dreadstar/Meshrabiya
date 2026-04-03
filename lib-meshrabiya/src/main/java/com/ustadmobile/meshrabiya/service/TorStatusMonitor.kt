@@ -178,8 +178,29 @@ class TorStatusMonitor : BroadcastReceiver() {
         try {
             val api = MeshrabiyaApiImpl.getInstance()
             api.updateTorStatus(isTorActive)
-            
-            Log.d(TAG, "Updated MeshrabiyaApi.isTorActive = $isTorActive")
+
+            // Determine whether the VPN tunnel is riding over WiFi.
+            val vpnOverWifi = if (isTorActive && context != null) {
+                val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+                val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true &&
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            } else false
+
+            val socksPort = if (isTorActive)
+                intent.getIntExtra("org.torproject.android.intent.extra.SOCKS_PROXY_PORT", -1)
+                    .takeIf { it > 0 }
+            else null
+
+            api.notifyVpnStateChanged(
+                com.ustadmobile.meshrabiya.api.model.VpnStateDto(
+                    active = isTorActive,
+                    vpnOverWifi = vpnOverWifi,
+                    socksPort = socksPort,
+                )
+            )
+
+            Log.d(TAG, "Updated MeshrabiyaApi.isTorActive = $isTorActive vpnOverWifi=$vpnOverWifi")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update MeshrabiyaApi Tor status", e)
         }

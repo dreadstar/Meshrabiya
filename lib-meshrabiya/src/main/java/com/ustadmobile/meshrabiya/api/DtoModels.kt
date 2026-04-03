@@ -82,18 +82,21 @@ data class NetworkInfoDto(
     val ipAddress: String,
     val connectedPeers: Int,
     val isConnected: Boolean,
-    val nonMeshSsid: String? = null,
-    val nonMeshIpAddress: String? = null,
-    val nonMeshHasInternet: Boolean? = null,
+    /** True when the Orbot VPN tunnel is active and has confirmed internet access. */
+    val vpnHasInternet: Boolean = false,
+    /**
+     * True when the VPN tunnel's underlying transport is WiFi (determined in TorStatusMonitor).
+     * When true on a single-radio device the mesh cannot run simultaneously.
+     */
+    val vpnOverWifi: Boolean = false,
     val torGateways: Int,
     val clearnetGateways: Int,
     val meshProxyActive: Boolean = false,
 )
 
 fun NetworkInfo.toDto(
-    nonMeshSsid: String? = null,
-    nonMeshIpAddress: String? = null,
-    nonMeshHasInternet: Boolean? = null,
+    vpnHasInternet: Boolean = false,
+    vpnOverWifi: Boolean = false,
     meshProxyActive: Boolean = false,
 ) = NetworkInfoDto(
     ssid,
@@ -101,9 +104,8 @@ fun NetworkInfo.toDto(
     ipAddress,
     connectedPeers,
     isConnected,
-    nonMeshSsid,
-    nonMeshIpAddress,
-    nonMeshHasInternet,
+    vpnHasInternet,
+    vpnOverWifi,
     torGateways,
     clearnetGateways,
     meshProxyActive,
@@ -737,52 +739,6 @@ data class WifiConnectionRequestDto(
 )
 
 /**
- * State of the current non-mesh WiFi internet connection.
- * Observed via MeshrabiyaApi.getNonMeshWifiStateFlow().
- */
-data class NonMeshWifiConnectionStateDto(
-    val status: NonMeshWifiStatusDto,
-    val connectedSsid: String? = null,
-    val errorMessage: String? = null,
-    /**
-     * True when Android's ConnectivityService has confirmed this network has internet access
-     * via NET_CAPABILITY_VALIDATED (HTTP 204 probe to connectivitycheck.gstatic.com succeeded).
-     * Updated asynchronously after onCapabilitiesChanged() fires following connection.
-     */
-    val hasInternetAccess: Boolean = false,
-    /**
-     * IPv4 address assigned to the device on this internet WiFi connection, or null if
-     * not yet available or not connected. Extracted from LinkProperties.linkAddresses.
-     */
-    val internetConnectionIpAddress: String? = null,
-)
-
-fun InternetWifiNetworkState.toDto(): NonMeshWifiConnectionStateDto =
-    NonMeshWifiConnectionStateDto(
-        status = if (network != null) NonMeshWifiStatusDto.CONNECTED else NonMeshWifiStatusDto.IDLE,
-        connectedSsid = null,
-        errorMessage = null,
-        hasInternetAccess = hasInternetAccess,
-        internetConnectionIpAddress = ipAddress
-    )
-
-/**
- * Status values for the non-mesh WiFi internet connection lifecycle.
- * Named with Dto suffix following [MeshStateDto] convention — observed-state enum in api.model.
- * Contrast with [GatewayPreference] (api package) which is a user policy enum.
- */
-enum class NonMeshWifiStatusDto {
-    /** No internet WiFi connection active or attempted. */
-    IDLE,
-    /** Connection attempt is in progress (WifiNetworkSuggestion submitted, awaiting onAvailable). */
-    CONNECTING,
-    /** Connected and internet WiFi Network object is available. */
-    CONNECTED,
-    /** Connection attempt failed (onUnavailable or addNetworkSuggestions returned error). */
-    FAILED,
-}
-
-/**
  * Represents the current state of the mesh extender (AP extension) hotspot.
  * INACTIVE: Not started.
  * STARTING: Hotspot start in progress.
@@ -794,4 +750,26 @@ enum class MeshExtenderHotspotStateDto {
     STARTING,
     ACTIVE,
     STOPPING
+}
+
+/**
+ * Snapshot of the Orbot VPN state as seen by Meshrabiya.
+ * Pushed by the app layer via MeshrabiyaApi.notifyVpnStateChanged().
+ */
+data class VpnStateDto(
+    /** True when Orbot VPN tunnel is fully active ("ON"). */
+    val active: Boolean,
+    /**
+     * True when the VPN tunnel's underlying transport is WiFi (not cellular).
+     * Determined by NetworkCapabilities.hasTransport(TRANSPORT_VPN) &&
+     * hasTransport(TRANSPORT_WIFI) on the active network.
+     * When true the mesh cannot use the WiFi radio simultaneously on single-radio devices.
+     */
+    val vpnOverWifi: Boolean = false,
+    /** SOCKS port Orbot is listening on, or null if not active. */
+    val socksPort: Int? = null,
+) {
+    companion object {
+        val INACTIVE = VpnStateDto(active = false)
+    }
 }

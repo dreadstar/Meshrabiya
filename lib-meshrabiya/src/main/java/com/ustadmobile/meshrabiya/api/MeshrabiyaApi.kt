@@ -389,21 +389,20 @@ interface MeshrabiyaApi {
     fun rotateUserKey(): User
 
     // ========================================
-    // WiFi Internet Connection API (WIFI_AP_CON)
+    // VPN State API
     // ========================================
 
     /**
-     * Connect to a non-mesh WiFi network while the mesh remains active.
-     *
-     * Requires AP+STA concurrency (hotspot mode, API 30+) or STA/STA concurrency
-     * (Join Mesh mode, API 31+). Returns failure if hardware does not support the
-     * required mode.
-     *
-     * @param ssid Target WiFi network SSID.
-     * @param passphrase WPA2 passphrase. Pass empty string for open networks.
-     * @return NonMeshWifiConnectionStateDto with status CONNECTED on success, FAILED on failure.
+     * Called by the app layer whenever Orbot VPN transitions: started → active, or active → stopped.
+     * Meshrabiya uses this to gate gateway functionality and update NetworkInfoDto.vpnHasInternet.
      */
-    suspend fun connectToNonMeshWifi(ssid: String, passphrase: String): NonMeshWifiConnectionStateDto
+    fun notifyVpnStateChanged(vpnState: VpnStateDto)
+
+    /**
+     * Returns a StateFlow that emits [VpnStateDto] whenever the Orbot VPN state changes.
+     * Initial emission is the current state (initially all-false).
+     */
+    fun getVpnStateFlow(): StateFlow<VpnStateDto>
 
     /**
      * Returns true if this device is capable of hosting a Wi‑Fi hotspot / AP.
@@ -429,13 +428,6 @@ interface MeshrabiyaApi {
     fun isStaStaConcurrentCapable(): Boolean
 
     /**
-     * Disconnect from the non-mesh internet WiFi.
-     * Removes the WifiNetworkSuggestion and releases the internet Network object.
-     * @return true if disconnection was performed, false if no connection was active.
-     */
-    suspend fun disconnectFromNonMeshWifi(): Boolean
-
-    /**
      * Starts a local-only hotspot using the passphrase stored from the most recent joinMesh() QR scan.
      * This allows nearby devices to join this node's AP and reach the mesh (AP extension mode).
      * Only works reliably on API 33+; on older devices the OS assigns a random passphrase.
@@ -459,30 +451,6 @@ interface MeshrabiyaApi {
      * should never emit true here.
      */
     val meshApActiveFlow: StateFlow<Boolean>
-
-    /**
-     * Observe the current non-mesh WiFi connection state.
-     * Emits [NonMeshWifiConnectionStateDto] updates as connection state changes.
-     */
-    fun getNonMeshWifiStateFlow(): StateFlow<NonMeshWifiConnectionStateDto>
-
-    /**
-     * Scan for available WiFi networks.
-     * Requires ACCESS_FINE_LOCATION permission.
-     * @return List of discovered networks, ordered by signal strength descending.
-     */
-    suspend fun scanAvailableWifiNetworks(): List<NonMeshWifiNetworkDto>
-
-    /**
-     * Returns true when the internet WiFi connection feature is currently available.
-     *
-     * Two paths to true:
-     *   1. AP+STA mode: hotspot is running AND isStaApConcurrencySupported = true (API 30+)
-     *   2. STA/STA mode: in Join Mesh AND isStaStaConcurrencySupported = true (API 31+)
-     *
-     * Returns false when mesh is not initialized, API < 30, or neither capability is present.
-     */
-    fun isInternetWifiFeatureAvailable(): Boolean
 
     /**
      * Returns true if the Android WiFi radio is currently enabled (WifiManager.isWifiEnabled).
