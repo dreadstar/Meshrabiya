@@ -468,6 +468,18 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 }
             }
         }
+
+        meshInternetCheckJob?.cancel()
+        meshInternetCheckJob = eventMonitoringScope.launch {
+            while (true) {
+                val confirmed = checkInternetViaMeshGateway()
+                if (_meshInternetViaGatewayConfirmed.value != confirmed) {
+                    _meshInternetViaGatewayConfirmed.value = confirmed
+                    Log.d(TAG, "[MESH_CHECK] Gateway internet confirmed=$confirmed")
+                }
+                delay(MESH_INTERNET_CHECK_INTERVAL_MS)
+            }
+        }
         
     }
     
@@ -477,8 +489,10 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private fun stopEventMonitoring() {
         stateMonitorJob?.cancel()
         peerMonitorJob?.cancel()
+        meshInternetCheckJob?.cancel()
         stateMonitorJob = null
         peerMonitorJob = null
+        meshInternetCheckJob = null
     }
 
     /**
@@ -507,12 +521,25 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
     private suspend fun checkInternetViaMeshGateway(): Boolean =
         withContext(Dispatchers.IO) {
             val node = myNode ?: return@withContext false
-            val gatewayAddrs = node.getAvailableGatewayAddresses()
-            if (gatewayAddrs.isEmpty()) {
+
+            // Path 1: TOR_GATEWAY — the presence of any non-stale TOR_GATEWAY peer
+            // confirms internet via Tor is available. TOR_GATEWAY nodes route at the SOCKS
+            // layer; they do NOT run MeshInternetRelayServer on port 9080, so no TCP probe
+            // is possible or needed. TOR_GATEWAY role is only advertised when Orbot is fully
+            // active on the peer, so advertising == internet reachable via Tor.
+            val torGatewayAddrs = node.getAvailableTorGatewayAddresses()
+            if (torGatewayAddrs.isNotEmpty()) {
+                Log.d(TAG, "[MESH_PROBE] ✅ Internet confirmed via TOR_GATEWAY ${torGatewayAddrs.first().addressToDotNotation()}")
+                return@withContext true
+            }
+
+            // Path 2: CLEARNET_GATEWAY — probe port 9080 (MeshInternetRelayServer).
+            val clearnetGatewayAddrs = node.getAvailableClearnetGatewayAddresses()
+            if (clearnetGatewayAddrs.isEmpty()) {
                 Log.d(TAG, "[MESH_PROBE] No gateway addresses available")
                 return@withContext false
             }
-            val gatewayVirtualAddr = gatewayAddrs.first()
+            val gatewayVirtualAddr = clearnetGatewayAddrs.first()
             val gatewayInet = node.getInetAddressFor(gatewayVirtualAddr)
             var relaySocket: java.net.Socket? = null
             try {
@@ -538,7 +565,7 @@ class MeshrabiyaApiImpl : MeshrabiyaApi {
                 // Read 1-byte ACK from relay server (0x00 = success, 0x01 = failure)
                 val ack = inp.read()
                 if (ack == 0x00) {
-                    Log.d(TAG, "[MESH_PROBE] ✅ Internet confirmed via mesh gateway ${gatewayInet.hostAddress}")
+                    Log.d(TAG, "[MESH_PROBE] ✅ Internet confirmed via CLEARNET_GATEWAY ${gatewayInet.hostAddress}")
                     return@withContext true
                 } else {
                     Log.d(TAG, "[MESH_PROBE] Gateway relay returned failure ack=$ack")

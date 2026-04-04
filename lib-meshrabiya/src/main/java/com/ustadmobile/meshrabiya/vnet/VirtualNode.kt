@@ -62,6 +62,7 @@ import com.ustadmobile.meshrabiya.MeshrabiyaConstants
 import android.content.Context
 // import com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastMessageHandler
 import com.ustadmobile.meshrabiya.vnet.broadcast.BroadcastPacketSerializer
+import com.ustadmobile.meshrabiya.vnet.gateway.MeshInternetRelayServer
 
 //Generate a random Automatic Private IP Address
 fun randomApipaAddr(): Int {
@@ -287,7 +288,8 @@ abstract class VirtualNode(
         virtualNode = this,
         context = appContext,
         getTopologyMap = { originatingMessageManager.getTopologyMapInfo() },
-        getCurrentNodeCapabilities = { getCurrentNodeCapabilities() }
+        getCurrentNodeCapabilities = { getCurrentNodeCapabilities() },
+        meshInternetRelayServer = MeshInternetRelayServer(logger, "[MeshRelay/${address.hostAddress}]")
     )
 
     // === STEP 2: Create OriginatingMessageManager with EmergentRoleManager callbacks ===
@@ -1181,6 +1183,15 @@ abstract class VirtualNode(
      */
     fun getAvailableClearnetGatewayAddresses(): List<Int> =
         getAvailableClearnetGateways().map { it.nodeAddress }
+
+    /**
+     * Returns integer virtual addresses of all known TOR_GATEWAY peers.
+     * Used by [MeshrabiyaApiImpl] to confirm internet via Tor is reachable without a TCP
+     * probe: the presence of a non-stale TOR_GATEWAY peer is sufficient evidence the Tor
+     * path is live (TOR_GATEWAY nodes route at the SOCKS layer, not via port 9080).
+     */
+    fun getAvailableTorGatewayAddresses(): List<Int> =
+        getAvailableTorGateways().map { it.nodeAddress }
 
     /**
      * Returns integer virtual addresses of all known gateway peers regardless of type.

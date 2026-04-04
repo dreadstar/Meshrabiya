@@ -111,7 +111,7 @@ class TorStatusMonitor : BroadcastReceiver() {
                 context,
                 this,
                 filter,
-                ContextCompat.RECEIVER_NOT_EXPORTED
+                ContextCompat.RECEIVER_EXPORTED
             )
             isRegistered = true
             Log.i(TAG, "TorStatusMonitor registered for Orbot status broadcasts")
